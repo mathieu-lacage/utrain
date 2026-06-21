@@ -8,6 +8,7 @@ import uuid
 import fastapi
 import pydantic
 import sqlalchemy
+import sqlalchemy.engine
 import sqlalchemy.orm
 import yaml
 
@@ -38,35 +39,42 @@ _RUN_COLS = [
 ]
 
 
-def _row_to_out(
-    row: tuple[str, str, str, str, int | None, float | None, float | None],
+def _mapping_to_out(
+    row: sqlalchemy.engine.RowMapping,
     phase_events: list[services.metrics_reader.PhaseEvent],
 ) -> RunOut:
+    pid = row["pid"]
+    started_at = row["started_at"]
+    ended_at = row["ended_at"]
     return RunOut(
-        id=row[0],
-        project_id=row[1],
-        run_dir=row[2],
-        status=row[3],
-        pid=row[4],
-        started_at=row[5],
-        ended_at=row[6],
+        id=str(row["id"]),
+        project_id=str(row["project_id"]),
+        run_dir=str(row["run_dir"]),
+        status=str(row["status"]),
+        pid=int(pid) if pid is not None else None,
+        started_at=float(started_at) if started_at is not None else None,
+        ended_at=float(ended_at) if ended_at is not None else None,
         phase_events=phase_events,
     )
 
 
-def _get_run_row(
+def _get_run(
     db: sqlalchemy.orm.Session,
     project_id: str,
     run_id: str,
-) -> tuple[str, str, str, str, int | None, float | None, float | None]:
-    row = db.execute(
-        sqlalchemy.select(*_RUN_COLS).where(
-            (models.runs.c.id == run_id) & (models.runs.c.project_id == project_id)
+) -> sqlalchemy.engine.RowMapping:
+    row = (
+        db.execute(
+            sqlalchemy.select(*_RUN_COLS).where(
+                (models.runs.c.id == run_id) & (models.runs.c.project_id == project_id)
+            )
         )
-    ).fetchone()
+        .mappings()
+        .fetchone()
+    )
     if row is None:
         raise fastapi.HTTPException(status_code=404, detail="Run not found")
-    return row  # type: ignore[return-value]
+    return row
 
 
 def _find_free_port() -> int:
@@ -80,17 +88,21 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunOut:
     db = ctx.db.get()
     settings = ctx.settings.get()
 
-    project_row = db.execute(
-        sqlalchemy.select(
-            models.projects.c.preset_name,
-            models.projects.c.config,
-        ).where(models.projects.c.id == project_id)
-    ).fetchone()
+    project_row = (
+        db.execute(
+            sqlalchemy.select(
+                models.projects.c.preset_name,
+                models.projects.c.config,
+            ).where(models.projects.c.id == project_id)
+        )
+        .mappings()
+        .fetchone()
+    )
     if project_row is None:
         raise fastapi.HTTPException(status_code=404, detail="Project not found")
 
-    preset_name = project_row[0]
-    project_config: dict[str, object] = json.loads(project_row[1])
+    preset_name = str(project_row["preset_name"])
+    project_config: dict[str, object] = json.loads(str(project_row["config"]))
     image = settings.presets.get(preset_name)
     if image is None:
         raise fastapi.HTTPException(
@@ -148,28 +160,29 @@ def list_runs(project_id: str) -> list[RunOut]:
             .where(models.runs.c.project_id == project_id)
             .order_by(models.runs.c.started_at.desc())
         )
+        .mappings()
         .fetchall()
     )
-    result = []
+    result: list[RunOut] = []
     for row in rows:
-        run_dir = pathlib.Path(row[2])
+        run_dir = pathlib.Path(str(row["run_dir"]))
         events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
-        result.append(_row_to_out(row, events))  # type: ignore[arg-type]
+        result.append(_mapping_to_out(row, events))
     return result
 
 
 @router.get("/{run_id}")
 def get_run(project_id: str, run_id: str) -> RunOut:
-    row = _get_run_row(ctx.db.get(), project_id, run_id)
-    run_dir = pathlib.Path(row[2])
+    row = _get_run(ctx.db.get(), project_id, run_id)
+    run_dir = pathlib.Path(str(row["run_dir"]))
     events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
-    return _row_to_out(row, events)
+    return _mapping_to_out(row, events)
 
 
 @router.post("/{run_id}/stop", status_code=204)
 def stop_run(project_id: str, run_id: str) -> None:
-    row = _get_run_row(ctx.db.get(), project_id, run_id)
-    run_dir = pathlib.Path(row[2])
+    row = _get_run(ctx.db.get(), project_id, run_id)
+    run_dir = pathlib.Path(str(row["run_dir"]))
     services.runner.stop_run(run_id, run_dir)
     ctx.db.get().execute(
         sqlalchemy.update(models.runs)
@@ -186,8 +199,8 @@ def get_metrics(
     name: str | None = None,
     since_step: int = 0,
 ) -> list[services.metrics_reader.Metric]:
-    row = _get_run_row(ctx.db.get(), project_id, run_id)
-    run_dir = pathlib.Path(row[2])
+    row = _get_run(ctx.db.get(), project_id, run_id)
+    run_dir = pathlib.Path(str(row["run_dir"]))
     return services.metrics_reader.read_metrics(
         run_dir / "metrics.db", phase=phase, name=name, since_step=since_step
     )
@@ -200,8 +213,8 @@ def get_logs(
     stderr: bool = False,
     tail: int = 200,
 ) -> dict[str, str]:
-    row = _get_run_row(ctx.db.get(), project_id, run_id)
-    run_dir = pathlib.Path(row[2])
+    row = _get_run(ctx.db.get(), project_id, run_id)
+    run_dir = pathlib.Path(str(row["run_dir"]))
     log_file = run_dir / "logs" / ("stderr.log" if stderr else "stdout.log")
     if not log_file.exists():
         return {"content": ""}
@@ -217,16 +230,22 @@ class ServeOut(pydantic.BaseModel):
 def start_serve(project_id: str, run_id: str) -> ServeOut:
     db = ctx.db.get()
     settings = ctx.settings.get()
-    row = _get_run_row(db, project_id, run_id)
-    run_dir = pathlib.Path(row[2])
+    row = _get_run(db, project_id, run_id)
+    run_dir = pathlib.Path(str(row["run_dir"]))
 
-    project_row = db.execute(
-        sqlalchemy.select(models.projects.c.preset_name).where(models.projects.c.id == project_id)
-    ).fetchone()
+    project_row = (
+        db.execute(
+            sqlalchemy.select(models.projects.c.preset_name).where(
+                models.projects.c.id == project_id
+            )
+        )
+        .mappings()
+        .fetchone()
+    )
     if project_row is None:
         raise fastapi.HTTPException(status_code=404, detail="Project not found")
 
-    image = settings.presets.get(project_row[0])
+    image = settings.presets.get(str(project_row["preset_name"]))
     if image is None:
         raise fastapi.HTTPException(status_code=422, detail="Preset image not configured")
 
@@ -243,7 +262,7 @@ def start_serve(project_id: str, run_id: str) -> ServeOut:
 
 @router.delete("/{run_id}/serve", status_code=204)
 def stop_serve_endpoint(project_id: str, run_id: str) -> None:
-    _get_run_row(ctx.db.get(), project_id, run_id)
+    _get_run(ctx.db.get(), project_id, run_id)
     services.runner.stop_serve(run_id)
     ctx.db.get().execute(
         sqlalchemy.delete(models.serve_processes).where(models.serve_processes.c.run_id == run_id)

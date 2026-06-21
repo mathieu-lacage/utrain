@@ -3,10 +3,13 @@ import contextlib
 import pathlib
 
 import fastapi
-import fastapi.middleware.base
 import fastapi.staticfiles
 import sqlalchemy
 import sqlalchemy.orm
+import starlette.middleware.base
+import starlette.requests
+import starlette.responses
+import starlette.types
 import uvicorn
 
 from . import config, ctx, models, routers
@@ -22,30 +25,30 @@ def _create_engine(settings: config.Settings) -> sqlalchemy.Engine:
     return engine
 
 
-class SettingsMiddleware(fastapi.middleware.base.BaseHTTPMiddleware):
-    def __init__(self, app: fastapi.FastAPI, settings: config.Settings) -> None:
+class SettingsMiddleware(starlette.middleware.base.BaseHTTPMiddleware):
+    def __init__(self, app: starlette.types.ASGIApp, settings: config.Settings) -> None:
         super().__init__(app)
         self._settings = settings
 
     async def dispatch(
         self,
-        request: fastapi.Request,
-        call_next: fastapi.middleware.base.RequestResponseEndpoint,
-    ) -> fastapi.Response:
+        request: starlette.requests.Request,
+        call_next: starlette.middleware.base.RequestResponseEndpoint,
+    ) -> starlette.responses.Response:
         with ctx.settings(self._settings):
             return await call_next(request)
 
 
-class DbMiddleware(fastapi.middleware.base.BaseHTTPMiddleware):
-    def __init__(self, app: fastapi.FastAPI, engine: sqlalchemy.Engine) -> None:
+class DbMiddleware(starlette.middleware.base.BaseHTTPMiddleware):
+    def __init__(self, app: starlette.types.ASGIApp, engine: sqlalchemy.Engine) -> None:
         super().__init__(app)
         self._engine = engine
 
     async def dispatch(
         self,
-        request: fastapi.Request,
-        call_next: fastapi.middleware.base.RequestResponseEndpoint,
-    ) -> fastapi.Response:
+        request: starlette.requests.Request,
+        call_next: starlette.middleware.base.RequestResponseEndpoint,
+    ) -> starlette.responses.Response:
         with sqlalchemy.orm.Session(self._engine) as session:
             with ctx.db(session):
                 response = await call_next(request)
@@ -57,7 +60,7 @@ def create_app(settings: config.Settings) -> fastapi.FastAPI:
     engine = _create_engine(settings)
 
     @contextlib.asynccontextmanager
-    async def lifespan(_app: fastapi.FastAPI) -> collections.abc.AsyncIterator[None]:
+    async def lifespan(_app: fastapi.FastAPI) -> collections.abc.AsyncGenerator[None, None]:
         _app.state.engine = engine
         yield
 

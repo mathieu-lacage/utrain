@@ -1,3 +1,4 @@
+import collections.abc
 import contextlib
 import contextvars
 import typing
@@ -17,7 +18,7 @@ class _Var(typing.Generic[T]):
         return self._var.get()
 
     @contextlib.contextmanager
-    def __call__(self, value: T) -> typing.Iterator[None]:
+    def __call__(self, value: T) -> collections.abc.Generator[None, None, None]:
         token = self._var.set(value)
         try:
             yield

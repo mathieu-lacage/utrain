@@ -1,5 +1,4 @@
 import sqlalchemy
-import sqlalchemy.orm
 
 metadata = sqlalchemy.MetaData()
 
@@ -9,7 +8,7 @@ projects = sqlalchemy.Table(
     sqlalchemy.Column("id", sqlalchemy.Text, primary_key=True),
     sqlalchemy.Column("name", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("preset_name", sqlalchemy.Text, nullable=False),
-    sqlalchemy.Column("config", sqlalchemy.Text, nullable=False),  # JSON
+    sqlalchemy.Column("config", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("created_at", sqlalchemy.Float, nullable=False),
 )
 
@@ -19,12 +18,7 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("id", sqlalchemy.Text, primary_key=True),
     sqlalchemy.Column("project_id", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("run_dir", sqlalchemy.Text, nullable=False),
-    sqlalchemy.Column(
-        "status",
-        sqlalchemy.Text,
-        nullable=False,
-        default="pending",
-    ),  # pending|running|stopped|done|failed
+    sqlalchemy.Column("status", sqlalchemy.Text, nullable=False, default="pending"),
     sqlalchemy.Column("pid", sqlalchemy.Integer, nullable=True),
     sqlalchemy.Column("started_at", sqlalchemy.Float, nullable=True),
     sqlalchemy.Column("ended_at", sqlalchemy.Float, nullable=True),

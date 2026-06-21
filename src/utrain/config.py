@@ -18,16 +18,16 @@ class Settings(pydantic_settings.BaseSettings):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def load_yaml(cls, data: object) -> object:
-        if not isinstance(data, dict):
-            data = {}
+    def load_yaml(cls, data: object) -> dict[str, object]:
+        raw: dict[str, object] = (
+            {str(k): v for k, v in data.items()} if isinstance(data, dict) else {}
+        )
         yaml_path = pathlib.Path("utrain.yaml")
         if yaml_path.exists():
             with open(yaml_path) as f:
-                file_data = yaml.safe_load(f) or {}
-            merged = {**file_data, **data}
-            return merged
-        return data
+                file_data: dict[str, object] = yaml.safe_load(f) or {}
+            return {**file_data, **raw}
+        return raw
 
     @property
     def db_path(self) -> pathlib.Path:
