@@ -1,4 +1,4 @@
-.PHONY: containers/fake containers/shakespeare-char
+.PHONY: containers/fake containers/shakespeare-char frontend check
 
 all: presets
 
