@@ -17,7 +17,7 @@ from .. import ctx, models, services
 router = fastapi.APIRouter(prefix="/api/projects/{project_id}/runs", tags=["runs"])
 
 
-class RunOut(pydantic.BaseModel):
+class RunResponse(pydantic.BaseModel):
     id: str
     project_id: str
     run_dir: str
@@ -39,14 +39,14 @@ _RUN_COLS = [
 ]
 
 
-def _mapping_to_out(
+def _mapping_to_response(
     row: sqlalchemy.engine.RowMapping,
     phase_events: list[services.metrics_reader.PhaseEvent],
-) -> RunOut:
+) -> RunResponse:
     pid = row["pid"]
     started_at = row["started_at"]
     ended_at = row["ended_at"]
-    return RunOut(
+    return RunResponse(
         id=str(row["id"]),
         project_id=str(row["project_id"]),
         run_dir=str(row["run_dir"]),
@@ -84,7 +84,7 @@ def _find_free_port() -> int:
 
 
 @router.post("", status_code=201)
-async def start_run(project_id: str, request: fastapi.Request) -> RunOut:
+async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
     db = ctx.db.get()
     settings = ctx.settings.get()
 
@@ -140,7 +140,7 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunOut:
     services.runner.register_run(run_id, proc)
     asyncio.create_task(services.runner.monitor_run(run_id, run_dir, request.app.state.engine))
 
-    return RunOut(
+    return RunResponse(
         id=run_id,
         project_id=project_id,
         run_dir=str(run_dir),
@@ -152,7 +152,7 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunOut:
 
 
 @router.get("")
-def list_runs(project_id: str) -> list[RunOut]:
+def list_runs(project_id: str) -> list[RunResponse]:
     rows = (
         ctx.db.get()
         .execute(
@@ -163,20 +163,20 @@ def list_runs(project_id: str) -> list[RunOut]:
         .mappings()
         .fetchall()
     )
-    result: list[RunOut] = []
+    result: list[RunResponse] = []
     for row in rows:
         run_dir = pathlib.Path(str(row["run_dir"]))
         events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
-        result.append(_mapping_to_out(row, events))
+        result.append(_mapping_to_response(row, events))
     return result
 
 
 @router.get("/{run_id}")
-def get_run(project_id: str, run_id: str) -> RunOut:
+def get_run(project_id: str, run_id: str) -> RunResponse:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
     events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
-    return _mapping_to_out(row, events)
+    return _mapping_to_response(row, events)
 
 
 @router.post("/{run_id}/stop", status_code=204)
@@ -222,12 +222,12 @@ def get_logs(
     return {"content": "\n".join(lines[-tail:])}
 
 
-class ServeOut(pydantic.BaseModel):
+class ServeResponse(pydantic.BaseModel):
     port: int
 
 
 @router.post("/{run_id}/serve", status_code=201)
-def start_serve(project_id: str, run_id: str) -> ServeOut:
+def start_serve(project_id: str, run_id: str) -> ServeResponse:
     db = ctx.db.get()
     settings = ctx.settings.get()
     row = _get_run(db, project_id, run_id)
@@ -257,7 +257,7 @@ def start_serve(project_id: str, run_id: str) -> ServeOut:
         )
     )
     services.runner.register_serve(run_id, proc)
-    return ServeOut(port=port)
+    return ServeResponse(port=port)
 
 
 @router.delete("/{run_id}/serve", status_code=204)

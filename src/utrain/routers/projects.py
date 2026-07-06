@@ -12,13 +12,13 @@ from .. import ctx, models
 router = fastapi.APIRouter(prefix="/api/projects", tags=["projects"])
 
 
-class ProjectIn(pydantic.BaseModel):
+class ProjectCreateRequest(pydantic.BaseModel):
     name: str
     preset_name: str
     config: dict[str, object] = {}
 
 
-class ProjectOut(pydantic.BaseModel):
+class ProjectResponse(pydantic.BaseModel):
     id: str
     name: str
     preset_name: str
@@ -26,8 +26,8 @@ class ProjectOut(pydantic.BaseModel):
     created_at: float
 
 
-def _mapping_to_out(row: sqlalchemy.engine.RowMapping) -> ProjectOut:
-    return ProjectOut(
+def _mapping_to_response(row: sqlalchemy.engine.RowMapping) -> ProjectResponse:
+    return ProjectResponse(
         id=str(row["id"]),
         name=str(row["name"]),
         preset_name=str(row["preset_name"]),
@@ -46,18 +46,18 @@ _PROJECT_COLS = [
 
 
 @router.get("")
-def list_projects() -> list[ProjectOut]:
+def list_projects() -> list[ProjectResponse]:
     rows = (
         ctx.db.get()
         .execute(sqlalchemy.select(*_PROJECT_COLS).order_by(models.projects.c.created_at.desc()))
         .mappings()
         .fetchall()
     )
-    return [_mapping_to_out(r) for r in rows]
+    return [_mapping_to_response(r) for r in rows]
 
 
 @router.post("", status_code=201)
-def create_project(body: ProjectIn) -> ProjectOut:
+def create_project(body: ProjectCreateRequest) -> ProjectResponse:
     project_id = str(uuid.uuid4())
     now = time.time()
     ctx.db.get().execute(
@@ -69,7 +69,7 @@ def create_project(body: ProjectIn) -> ProjectOut:
             created_at=now,
         )
     )
-    return ProjectOut(
+    return ProjectResponse(
         id=project_id,
         name=body.name,
         preset_name=body.preset_name,
@@ -79,7 +79,7 @@ def create_project(body: ProjectIn) -> ProjectOut:
 
 
 @router.get("/{project_id}")
-def get_project(project_id: str) -> ProjectOut:
+def get_project(project_id: str) -> ProjectResponse:
     row = (
         ctx.db.get()
         .execute(sqlalchemy.select(*_PROJECT_COLS).where(models.projects.c.id == project_id))
@@ -88,7 +88,7 @@ def get_project(project_id: str) -> ProjectOut:
     )
     if row is None:
         raise fastapi.HTTPException(status_code=404, detail="Project not found")
-    return _mapping_to_out(row)
+    return _mapping_to_response(row)
 
 
 @router.delete("/{project_id}", status_code=204)

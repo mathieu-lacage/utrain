@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { api, type Project, type Run, type Metric, type DescribeOutput } from '../api'
 import PhaseStatus from '../components/PhaseStatus.vue'
 import MetricsChart from '../components/MetricsChart.vue'
 
 const route = useRoute()
-const router = useRouter()
 const projectId = route.params.projectId as string
 
 const project = ref<Project | null>(null)
 const runs = ref<Run[]>([])
-const activeRun = ref<Run | null>(null)
 const metrics = ref<Metric[]>([])
 const logs = ref('')
 const describe = ref<DescribeOutput | null>(null)
