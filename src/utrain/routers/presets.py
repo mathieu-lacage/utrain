@@ -1,6 +1,6 @@
 import fastapi
 
-from .. import container, ctx, services
+from .. import container, ctx
 
 router = fastapi.APIRouter(prefix="/api/presets", tags=["presets"])
 
@@ -16,7 +16,7 @@ def get_describe(name: str) -> container.schema.DescribeOutput:
     image = settings.presets.get(name)
     if image is None:
         raise fastapi.HTTPException(status_code=404, detail=f"Preset '{name}' not found")
-    return services.enroot.describe(image)
+    return container.enroot.describe(image)
 
 
 @router.post("/{name}/check-compat")
@@ -25,4 +25,4 @@ def post_check_compat(name: str) -> container.schema.CompatResult:
     image = settings.presets.get(name)
     if image is None:
         raise fastapi.HTTPException(status_code=404, detail=f"Preset '{name}' not found")
-    return services.enroot.check_compat(image)
+    return container.enroot.check_compat(image)

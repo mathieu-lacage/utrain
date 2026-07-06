@@ -12,7 +12,7 @@ import sqlalchemy.engine
 import sqlalchemy.orm
 import yaml
 
-from .. import ctx, models, services
+from .. import container, ctx, models
 
 router = fastapi.APIRouter(prefix="/api/projects/{project_id}/runs", tags=["runs"])
 
@@ -25,7 +25,7 @@ class RunResponse(pydantic.BaseModel):
     pid: int | None
     started_at: float | None
     ended_at: float | None
-    phase_events: list[services.metrics_reader.PhaseEvent] = []
+    phase_events: list[container.run_data.PhaseEvent] = []
 
 
 _RUN_COLS = [
@@ -41,7 +41,7 @@ _RUN_COLS = [
 
 def _mapping_to_response(
     row: sqlalchemy.engine.RowMapping,
-    phase_events: list[services.metrics_reader.PhaseEvent],
+    phase_events: list[container.run_data.PhaseEvent],
 ) -> RunResponse:
     pid = row["pid"]
     started_at = row["started_at"]
@@ -83,6 +83,47 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _infer_status(events: list[container.run_data.PhaseEvent], returncode: int | None) -> str:
+    if returncode is None:
+        return "running"
+    last_event = events[-1] if events else None
+    if returncode == 0:
+        return "done"
+    if last_event and last_event.event == "failed":
+        return "failed"
+    return "failed"
+
+
+async def _monitor_run(
+    run_id: str,
+    run_dir: pathlib.Path,
+    engine: sqlalchemy.Engine,
+) -> None:
+    metrics_db = run_dir / "metrics.db"
+    proc = container.runner.poll_run(run_id)
+    if proc is None:
+        return
+    try:
+        while True:
+            await asyncio.sleep(2)
+            returncode = proc.poll()
+            events = container.run_data.read_phase_events(metrics_db)
+            status = _infer_status(events, returncode)
+            ended_at: float | None = time.time() if returncode is not None else None
+            with sqlalchemy.orm.Session(engine) as session:
+                session.execute(
+                    sqlalchemy.update(models.runs)
+                    .where(models.runs.c.id == run_id)
+                    .values(status=status, ended_at=ended_at)
+                )
+                session.commit()
+            if returncode is not None:
+                container.runner.finish_run(run_id)
+                break
+    except asyncio.CancelledError:
+        pass
+
+
 @router.post("", status_code=201)
 async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
     db = ctx.db.get()
@@ -122,7 +163,7 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
     (run_dir / "control.json").write_text(json.dumps({"action": "continue"}))
     (run_dir / "logs").mkdir(exist_ok=True)
 
-    proc = services.enroot.start_run(image, run_dir)
+    proc = container.enroot.start_run(image, run_dir)
     now = time.time()
 
     db.execute(
@@ -137,8 +178,8 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
         )
     )
 
-    services.runner.register_run(run_id, proc)
-    asyncio.create_task(services.runner.monitor_run(run_id, run_dir, request.app.state.engine))
+    container.runner.register_run(run_id, proc)
+    asyncio.create_task(_monitor_run(run_id, run_dir, request.app.state.engine))
 
     return RunResponse(
         id=run_id,
@@ -166,7 +207,7 @@ def list_runs(project_id: str) -> list[RunResponse]:
     result: list[RunResponse] = []
     for row in rows:
         run_dir = pathlib.Path(str(row["run_dir"]))
-        events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
+        events = container.run_data.read_phase_events(run_dir / "metrics.db")
         result.append(_mapping_to_response(row, events))
     return result
 
@@ -175,7 +216,7 @@ def list_runs(project_id: str) -> list[RunResponse]:
 def get_run(project_id: str, run_id: str) -> RunResponse:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
-    events = services.metrics_reader.read_phase_events(run_dir / "metrics.db")
+    events = container.run_data.read_phase_events(run_dir / "metrics.db")
     return _mapping_to_response(row, events)
 
 
@@ -183,7 +224,7 @@ def get_run(project_id: str, run_id: str) -> RunResponse:
 def stop_run(project_id: str, run_id: str) -> None:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
-    services.runner.stop_run(run_id, run_dir)
+    container.runner.stop_run(run_id, run_dir)
     ctx.db.get().execute(
         sqlalchemy.update(models.runs)
         .where(models.runs.c.id == run_id)
@@ -198,10 +239,10 @@ def get_metrics(
     phase: str | None = None,
     name: str | None = None,
     since_step: int = 0,
-) -> list[services.metrics_reader.Metric]:
+) -> list[container.run_data.Metric]:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
-    return services.metrics_reader.read_metrics(
+    return container.run_data.read_metrics(
         run_dir / "metrics.db", phase=phase, name=name, since_step=since_step
     )
 
@@ -250,20 +291,20 @@ def start_serve(project_id: str, run_id: str) -> ServeResponse:
         raise fastapi.HTTPException(status_code=422, detail="Preset image not configured")
 
     port = _find_free_port()
-    proc = services.enroot.start_serve(image, run_dir, port)
+    proc = container.enroot.start_serve(image, run_dir, port)
     db.execute(
         sqlalchemy.insert(models.serve_processes).values(
             run_id=run_id, port=port, pid=proc.pid, started_at=time.time()
         )
     )
-    services.runner.register_serve(run_id, proc)
+    container.runner.register_serve(run_id, proc)
     return ServeResponse(port=port)
 
 
 @router.delete("/{run_id}/serve", status_code=204)
 def stop_serve_endpoint(project_id: str, run_id: str) -> None:
     _get_run(ctx.db.get(), project_id, run_id)
-    services.runner.stop_serve(run_id)
+    container.runner.stop_serve(run_id)
     ctx.db.get().execute(
         sqlalchemy.delete(models.serve_processes).where(models.serve_processes.c.run_id == run_id)
     )

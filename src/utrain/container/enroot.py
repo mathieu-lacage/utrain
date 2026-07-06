@@ -2,7 +2,7 @@ import json
 import pathlib
 import subprocess
 
-from .. import container
+from . import schema
 
 
 def _run_cmd(image: str, args: list[str], timeout: int = 60) -> str:
@@ -19,14 +19,14 @@ def _run_cmd(image: str, args: list[str], timeout: int = 60) -> str:
     return result.stdout.strip()
 
 
-def describe(image: str) -> container.schema.DescribeOutput:
+def describe(image: str) -> schema.DescribeOutput:
     out = _run_cmd(image, ["describe"])
-    return container.schema.DescribeOutput.model_validate(json.loads(out))
+    return schema.DescribeOutput.model_validate(json.loads(out))
 
 
-def check_compat(image: str) -> container.schema.CompatResult:
+def check_compat(image: str) -> schema.CompatResult:
     out = _run_cmd(image, ["check-compat"], timeout=120)
-    return container.schema.CompatResult.model_validate(json.loads(out))
+    return schema.CompatResult.model_validate(json.loads(out))
 
 
 def start_run(image: str, run_dir: pathlib.Path) -> subprocess.Popen[bytes]:
