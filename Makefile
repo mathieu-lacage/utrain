@@ -5,13 +5,13 @@ all: presets
 frontend:
 	cd frontend &&  npm install && npm run build
 
-presets: containers/shakespeare-char
+presets: containers/shakespeare-char containers/fake
 
 containers/fake:
-	podman build -t utrain-fake containers/fake
+	podman build -t utrain-fake:utrain containers/fake
 
 containers/shakespeare-char:
-	podman build -t utrain-shakespeare-char containers/shakespeare-char
+	podman build -t utrain-shakespeare-char:utrain containers/shakespeare-char
 
 check:
 	uv run pre-commit run --all-files
