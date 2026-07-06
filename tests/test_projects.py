@@ -4,7 +4,7 @@ import fastapi.testclient
 import pytest
 
 import utrain.config
-import utrain.container.podman
+import utrain.container.enroot
 import utrain.main
 
 
@@ -19,7 +19,7 @@ def client(settings: utrain.config.Settings) -> fastapi.testclient.TestClient:
     with (
         fastapi.testclient.TestClient(app) as c,
         unittest.mock.patch.object(
-            utrain.container.podman,
+            utrain.container.enroot,
             "list_presets",
             return_value={"fake": "localhost/fake:utrain"},
         ),

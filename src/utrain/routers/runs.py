@@ -176,7 +176,7 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
 
     preset_name = str(project_row["preset_name"])
     project_config: dict[str, object] = json.loads(str(project_row["config"]))
-    image = container.podman.list_presets().get(preset_name)
+    image = container.enroot.list_presets().get(preset_name)
     if image is None:
         raise fastapi.HTTPException(
             status_code=422, detail=f"Preset image '{preset_name}' not found in podman"
@@ -317,7 +317,7 @@ def start_serve(project_id: str, run_id: str) -> ServeResponse:
     if project_row is None:
         raise fastapi.HTTPException(status_code=404, detail="Project not found")
 
-    image = container.podman.list_presets().get(str(project_row["preset_name"]))
+    image = container.enroot.list_presets().get(str(project_row["preset_name"]))
     if image is None:
         raise fastapi.HTTPException(status_code=422, detail="Preset image not found in podman")
 

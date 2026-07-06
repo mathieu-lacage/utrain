@@ -5,9 +5,21 @@ import subprocess
 from . import schema
 
 
+def list_presets() -> dict[str, str]:
+    result = subprocess.run(["enroot", "list"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"enroot list failed: {result.stderr.strip()}")
+    presets: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if name.endswith("+utrain"):
+            presets[name.removesuffix("+utrain")] = name
+    return presets
+
+
 def _run_cmd(image: str, args: list[str], timeout: int = 60) -> str:
     result = subprocess.run(
-        ["enroot", "start", image, "--"] + args,
+        ["enroot", "start", image] + args,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -35,7 +47,7 @@ def start_run(image: str, run_dir: pathlib.Path) -> subprocess.Popen[bytes]:
     stdout = open(log_dir / "stdout.log", "wb")
     stderr = open(log_dir / "stderr.log", "wb")
     return subprocess.Popen(
-        ["enroot", "start", "--mount", f"{run_dir}:/run", image, "--", "run", "/run"],
+        ["enroot", "start", "--mount", f"{run_dir}:/run", image, "run", "/run"],
         stdout=stdout,
         stderr=stderr,
     )
@@ -53,7 +65,6 @@ def start_serve(image: str, run_dir: pathlib.Path, port: int) -> subprocess.Pope
             "--mount",
             f"{run_dir}:/run",
             image,
-            "--",
             "serve",
             "/run",
             "--port",
