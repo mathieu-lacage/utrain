@@ -1,20 +1,34 @@
 import json
+import os
 import pathlib
+import signal
 import subprocess
 
-_active: dict[str, subprocess.Popen[bytes]] = {}
-_serve_active: dict[str, subprocess.Popen[bytes]] = {}
+_active: dict[str, int] = {}
+_serve_active: dict[str, int] = {}
+
+
+def is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
 
 def register_run(run_id: str, proc: subprocess.Popen[bytes]) -> None:
-    _active[run_id] = proc
+    _active[run_id] = proc.pid
+
+
+def register_run_pid(run_id: str, pid: int) -> None:
+    _active[run_id] = pid
 
 
 def register_serve(run_id: str, proc: subprocess.Popen[bytes]) -> None:
-    _serve_active[run_id] = proc
+    _serve_active[run_id] = proc.pid
 
 
-def poll_run(run_id: str) -> subprocess.Popen[bytes] | None:
+def get_pid(run_id: str) -> int | None:
     return _active.get(run_id)
 
 
@@ -29,19 +43,19 @@ def write_control(run_dir: pathlib.Path, action: str) -> None:
 
 def stop_run(run_id: str, run_dir: pathlib.Path) -> None:
     write_control(run_dir, "stop")
-    proc = _active.get(run_id)
-    if proc is not None:
+    pid = _active.get(run_id)
+    if pid is not None:
         try:
-            proc.terminate()
+            os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
 
 
 def stop_serve(run_id: str) -> None:
-    proc = _serve_active.get(run_id)
-    if proc is not None:
+    pid = _serve_active.get(run_id)
+    if pid is not None:
         try:
-            proc.terminate()
+            os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
         del _serve_active[run_id]

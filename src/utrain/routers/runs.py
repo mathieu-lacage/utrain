@@ -83,14 +83,12 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _infer_status(events: list[container.run_data.PhaseEvent], returncode: int | None) -> str:
-    if returncode is None:
+def _infer_status(events: list[container.run_data.PhaseEvent], is_alive: bool) -> str:
+    if is_alive:
         return "running"
     last_event = events[-1] if events else None
-    if returncode == 0:
+    if last_event and last_event.event == "completed":
         return "done"
-    if last_event and last_event.event == "failed":
-        return "failed"
     return "failed"
 
 
@@ -100,16 +98,16 @@ async def _monitor_run(
     engine: sqlalchemy.Engine,
 ) -> None:
     metrics_db = run_dir / "metrics.db"
-    proc = container.runner.poll_run(run_id)
-    if proc is None:
+    pid = container.runner.get_pid(run_id)
+    if pid is None:
         return
     try:
         while True:
             await asyncio.sleep(2)
-            returncode = proc.poll()
+            is_alive = container.runner.is_pid_alive(pid)
             events = container.run_data.read_phase_events(metrics_db)
-            status = _infer_status(events, returncode)
-            ended_at: float | None = time.time() if returncode is not None else None
+            status = _infer_status(events, is_alive)
+            ended_at: float | None = None if is_alive else time.time()
             with sqlalchemy.orm.Session(engine) as session:
                 session.execute(
                     sqlalchemy.update(models.runs)
@@ -117,11 +115,45 @@ async def _monitor_run(
                     .values(status=status, ended_at=ended_at)
                 )
                 session.commit()
-            if returncode is not None:
+            if not is_alive:
                 container.runner.finish_run(run_id)
                 break
     except asyncio.CancelledError:
         pass
+
+
+def reconcile_running_runs(engine: sqlalchemy.Engine) -> None:
+    with sqlalchemy.orm.Session(engine) as session:
+        rows = (
+            session.execute(
+                sqlalchemy.select(
+                    models.runs.c.id,
+                    models.runs.c.pid,
+                    models.runs.c.run_dir,
+                ).where(models.runs.c.status == "running")
+            )
+            .mappings()
+            .fetchall()
+        )
+
+    for row in rows:
+        run_id = str(row["id"])
+        run_dir = pathlib.Path(str(row["run_dir"]))
+        pid = row["pid"]
+
+        if pid is not None and container.runner.is_pid_alive(int(pid)):
+            container.runner.register_run_pid(run_id, int(pid))
+            asyncio.get_event_loop().create_task(_monitor_run(run_id, run_dir, engine))
+        else:
+            events = container.run_data.read_phase_events(run_dir / "metrics.db")
+            final_status = _infer_status(events, is_alive=False)
+            with sqlalchemy.orm.Session(engine) as session:
+                session.execute(
+                    sqlalchemy.update(models.runs)
+                    .where(models.runs.c.id == run_id)
+                    .values(status=final_status)
+                )
+                session.commit()
 
 
 @router.post("", status_code=201)

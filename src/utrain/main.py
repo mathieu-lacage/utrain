@@ -62,6 +62,7 @@ def create_app(settings: config.Settings) -> fastapi.FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app: fastapi.FastAPI) -> collections.abc.AsyncGenerator[None, None]:
         _app.state.engine = engine
+        routers.runs.reconcile_running_runs(engine)
         yield
 
     app = fastapi.FastAPI(title="utrain", lifespan=lifespan)
