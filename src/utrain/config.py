@@ -9,8 +9,6 @@ class Settings(pydantic_settings.BaseSettings):
     host: str = "127.0.0.1"
     port: int = 7612
     data_dir: pathlib.Path = pathlib.Path(".")
-    presets: dict[str, str] = {}
-
     model_config = pydantic_settings.SettingsConfigDict(
         env_prefix="UTRAIN_",
         env_nested_delimiter="__",

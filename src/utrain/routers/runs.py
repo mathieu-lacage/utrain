@@ -176,10 +176,10 @@ async def start_run(project_id: str, request: fastapi.Request) -> RunResponse:
 
     preset_name = str(project_row["preset_name"])
     project_config: dict[str, object] = json.loads(str(project_row["config"]))
-    image = settings.presets.get(preset_name)
+    image = container.podman.list_presets().get(preset_name)
     if image is None:
         raise fastapi.HTTPException(
-            status_code=422, detail=f"Preset image '{preset_name}' not configured"
+            status_code=422, detail=f"Preset image '{preset_name}' not found in podman"
         )
 
     run_id = str(uuid.uuid4())
@@ -302,7 +302,6 @@ class ServeResponse(pydantic.BaseModel):
 @router.post("/{run_id}/serve", status_code=201)
 def start_serve(project_id: str, run_id: str) -> ServeResponse:
     db = ctx.db.get()
-    settings = ctx.settings.get()
     row = _get_run(db, project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
 
@@ -318,9 +317,9 @@ def start_serve(project_id: str, run_id: str) -> ServeResponse:
     if project_row is None:
         raise fastapi.HTTPException(status_code=404, detail="Project not found")
 
-    image = settings.presets.get(str(project_row["preset_name"]))
+    image = container.podman.list_presets().get(str(project_row["preset_name"]))
     if image is None:
-        raise fastapi.HTTPException(status_code=422, detail="Preset image not configured")
+        raise fastapi.HTTPException(status_code=422, detail="Preset image not found in podman")
 
     port = _find_free_port()
     proc = container.enroot.start_serve(image, run_dir, port)

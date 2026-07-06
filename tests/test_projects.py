@@ -1,23 +1,30 @@
+import unittest.mock
+
 import fastapi.testclient
 import pytest
 
 import utrain.config
+import utrain.container.podman
 import utrain.main
 
 
 @pytest.fixture()
 def settings(tmp_path: pytest.TempPathFactory) -> utrain.config.Settings:
-    return utrain.config.Settings(
-        data_dir=tmp_path,
-        presets={"fake": "utrain-fake"},
-    )
+    return utrain.config.Settings(data_dir=tmp_path)
 
 
 @pytest.fixture()
 def client(settings: utrain.config.Settings) -> fastapi.testclient.TestClient:
     app = utrain.main.create_app(settings)
-    with fastapi.testclient.TestClient(app) as c:
-        return c
+    with (
+        fastapi.testclient.TestClient(app) as c,
+        unittest.mock.patch.object(
+            utrain.container.podman,
+            "list_presets",
+            return_value={"fake": "localhost/fake:utrain"},
+        ),
+    ):
+        yield c
 
 
 def test_list_presets(client: fastapi.testclient.TestClient) -> None:
