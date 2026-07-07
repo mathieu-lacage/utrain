@@ -11,6 +11,7 @@ const projectId = route.params.projectId as string
 const project = ref<Project | null>(null)
 const runs = ref<Run[]>([])
 const metrics = ref<Metric[]>([])
+const lastRowId = ref(0)
 const logs = ref('')
 const describe = ref<DescribeOutput | null>(null)
 const error = ref('')
@@ -43,9 +44,11 @@ async function load() {
 async function loadMetrics() {
   const run = latestRun.value
   if (!run) return
-  const sinceStep = metrics.value.length ? metrics.value[metrics.value.length - 1].step + 1 : 0
-  const newMetrics = await api.runs.metrics(projectId, run.id, { since_step: sinceStep })
-  metrics.value = [...metrics.value, ...newMetrics]
+  const newMetrics = await api.runs.metrics(projectId, run.id, { since_rowid: lastRowId.value })
+  if (newMetrics.length) {
+    lastRowId.value = Math.max(...newMetrics.map((m) => m.rowid))
+    metrics.value = [...metrics.value, ...newMetrics]
+  }
   const logResp = await api.runs.logs(projectId, run.id)
   logs.value = logResp.content
 }
@@ -55,6 +58,7 @@ async function startRun() {
     const run = await api.runs.start(projectId)
     runs.value = [run, ...runs.value]
     metrics.value = []
+    lastRowId.value = 0
     startPolling()
   } catch (e) {
     error.value = String(e)

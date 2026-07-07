@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { Chart, LineElement, PointElement, LinearScale, CategoryScale, Legend, Tooltip } from 'chart.js'
-import type { Metric } from '../api'
+import { Chart, LineController, LineElement, PointElement, LinearScale, CategoryScale, Legend, Tooltip } from 'chart.js'
 
-Chart.register(LineElement, PointElement, LinearScale, CategoryScale, Legend, Tooltip)
+Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Legend, Tooltip)
+import type { Metric } from '../api'
 
 const props = defineProps<{
   metrics: Metric[]
@@ -24,7 +24,7 @@ function buildData() {
       data: points.map((m) => m.value),
       borderColor: COLORS[i % COLORS.length],
       backgroundColor: 'transparent',
-      pointRadius: 0,
+      pointRadius: points.length === 1 ? 4 : 0,
       tension: 0.2,
     }
   })

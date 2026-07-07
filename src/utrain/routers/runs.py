@@ -270,12 +270,12 @@ def get_metrics(
     run_id: str,
     phase: str | None = None,
     name: str | None = None,
-    since_step: int = 0,
+    since_rowid: int = 0,
 ) -> list[container.run_data.Metric]:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
     return container.run_data.read_metrics(
-        run_dir / "metrics.db", phase=phase, name=name, since_step=since_step
+        run_dir / "metrics.db", phase=phase, name=name, since_rowid=since_rowid
     )
 
 

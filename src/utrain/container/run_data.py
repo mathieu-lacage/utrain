@@ -11,6 +11,7 @@ class PhaseEvent(pydantic.BaseModel):
 
 
 class Metric(pydantic.BaseModel):
+    rowid: int
     step: int
     timestamp: float
     phase: str
@@ -43,24 +44,25 @@ def read_metrics(
     metrics_db: pathlib.Path,
     phase: str | None = None,
     name: str | None = None,
-    since_step: int = 0,
+    since_rowid: int = 0,
 ) -> list[Metric]:
     if not metrics_db.exists():
         return []
     try:
         with _connect(metrics_db) as conn:
-            query = "SELECT step, timestamp, phase, name, value FROM metrics WHERE step >= ?"
-            params: list[object] = [since_step]
+            query = "SELECT rowid, step, timestamp, phase, name, value FROM metrics WHERE rowid > ?"
+            params: list[object] = [since_rowid]
             if phase is not None:
                 query += " AND phase = ?"
                 params.append(phase)
             if name is not None:
                 query += " AND name = ?"
                 params.append(name)
-            query += " ORDER BY step"
+            query += " ORDER BY rowid"
             rows = conn.execute(query, params).fetchall()
         return [
             Metric(
+                rowid=r["rowid"],
                 step=r["step"],
                 timestamp=r["timestamp"],
                 phase=r["phase"],

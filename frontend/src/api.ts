@@ -24,6 +24,7 @@ export interface Run {
 }
 
 export interface Metric {
+  rowid: number
   step: number
   timestamp: number
   phase: string
@@ -109,11 +110,11 @@ export const api = {
       request<Run>(`/api/projects/${projectId}/runs/${runId}`),
     stop: (projectId: string, runId: string) =>
       request<void>(`/api/projects/${projectId}/runs/${runId}/stop`, { method: 'POST' }),
-    metrics: (projectId: string, runId: string, params?: { phase?: string; name?: string; since_step?: number }) => {
+    metrics: (projectId: string, runId: string, params?: { phase?: string; name?: string; since_rowid?: number }) => {
       const qs = new URLSearchParams()
       if (params?.phase) qs.set('phase', params.phase)
       if (params?.name) qs.set('name', params.name)
-      if (params?.since_step !== undefined) qs.set('since_step', String(params.since_step))
+      if (params?.since_rowid !== undefined) qs.set('since_rowid', String(params.since_rowid))
       return request<Metric[]>(`/api/projects/${projectId}/runs/${runId}/metrics?${qs}`)
     },
     logs: (projectId: string, runId: string, stderr = false, tail = 200) =>
