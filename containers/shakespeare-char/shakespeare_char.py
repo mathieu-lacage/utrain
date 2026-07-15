@@ -370,8 +370,9 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
             total = 0.0
             for _ in range(20):
                 xb, yb = get_batch(split)
-                _, loss = model(xb, yb)
-                total += loss.item()  # type: ignore[union-attr]
+                _, eval_loss = model(xb, yb)
+                assert eval_loss is not None
+                total += eval_loss.item()
             losses[split] = total / 20
         model.train()
         return losses["train"], losses["val"]
@@ -379,6 +380,7 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
     model.train()
     step_times: list[float] = []
     t0 = time.time()
+    last_metric_time = time.time()
 
     for step in range(max_iters):
         if _read_control(run_dir / "control.json") == "stop":
@@ -389,9 +391,11 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
             return False
 
         xb, yb = get_batch("train")
-        _, loss = model(xb, yb)
+        _, loss_or_none = model(xb, yb)
+        assert loss_or_none is not None
+        loss = loss_or_none
         optimizer.zero_grad()
-        loss.backward()  # type: ignore[union-attr]
+        loss.backward()
         optimizer.step()
 
         t1 = time.time()
@@ -416,6 +420,7 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
                     (step, now, "pretrain", name, value),
                 )
             conn.commit()
+            last_metric_time = now
             print(
                 f"step {step:5d}/{max_iters}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
                 f"bpb={bpb:.4f} mfu={mfu:.4f} tok/s={tokens_per_sec:.0f}",
@@ -433,6 +438,14 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
                 },
                 str(run_dir / "model.pt"),
             )
+        elif time.time() - last_metric_time >= 10.0:
+            now = time.time()
+            conn.execute(
+                "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
+                (step, now, "pretrain", "loss", loss.item()),
+            )
+            conn.commit()
+            last_metric_time = now
 
     conn.execute(
         "INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "completed", time.time())
