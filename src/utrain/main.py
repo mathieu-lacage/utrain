@@ -3,7 +3,6 @@ import contextlib
 import pathlib
 
 import fastapi
-import fastapi.staticfiles
 import sqlalchemy
 import sqlalchemy.orm
 import starlette.middleware.base
@@ -75,23 +74,15 @@ def create_app(settings: config.Settings) -> fastapi.FastAPI:
 
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.exists():
-        static = fastapi.staticfiles.StaticFiles(directory=frontend_dist, html=True)
+        _frontend_dist = frontend_dist.resolve()
 
-        # StaticFiles asserts scope["type"] == "http" and crashes on WebSocket connections.
-        # Vue DevTools browser extension probes ws:// on the page host, so we need to
-        # reject those cleanly instead of letting them bubble up as an unhandled exception.
-        async def static_http_only(
-            scope: starlette.types.Scope,
-            receive: starlette.types.Receive,
-            send: starlette.types.Send,
-        ) -> None:
-            if scope["type"] == "websocket":
-                await receive()  # consume the connect event
-                await send({"type": "websocket.close", "code": 1008})
-                return
-            await static(scope, receive, send)
+        async def _spa_fallback(full_path: str) -> starlette.responses.Response:
+            candidate = (_frontend_dist / full_path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(_frontend_dist):
+                return starlette.responses.FileResponse(candidate)
+            return starlette.responses.FileResponse(_frontend_dist / "index.html")
 
-        app.mount("/", static_http_only, name="static")
+        app.add_api_route("/{full_path:path}", _spa_fallback, include_in_schema=False)
 
     return app
 
