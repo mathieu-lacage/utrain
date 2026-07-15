@@ -7,7 +7,7 @@ import yaml
 
 class Settings(pydantic_settings.BaseSettings):
     host: str = "127.0.0.1"
-    port: int = 7612
+    port: int = 7613
     data_dir: pathlib.Path = pathlib.Path(".")
     model_config = pydantic_settings.SettingsConfigDict(
         env_prefix="UTRAIN_",
