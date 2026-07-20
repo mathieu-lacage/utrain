@@ -16,7 +16,11 @@ dependencies = [
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
     "anyio>=4.0",
+    "baw",
 ]
+
+[tool.uv.sources]
+baw = { path = "packages/baw" }
 
 [project.scripts]
 utrain = "utrain.main:cli"
@@ -35,9 +39,11 @@ venv = ".venv"
 typeCheckingMode = "strict"
 reportUnknownArgumentType = "none"
 reportUnknownVariableType = "none"
+reportMissingTypeStubs = "none"
 
 [tool.ruff]
 line-length = 100
+exclude = ["packages/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

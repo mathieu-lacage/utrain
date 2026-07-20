@@ -97,7 +97,6 @@ async def _monitor_run(
     run_dir: pathlib.Path,
     engine: sqlalchemy.Engine,
 ) -> None:
-    metrics_db = run_dir / "metrics.db"
     pid = container.runner.get_pid(run_id)
     if pid is None:
         return
@@ -105,7 +104,7 @@ async def _monitor_run(
         while True:
             await asyncio.sleep(2)
             is_alive = container.runner.is_pid_alive(pid)
-            events = container.run_data.read_phase_events(metrics_db)
+            events = container.run_data.read_phase_events(run_dir)
             status = _infer_status(events, is_alive)
             ended_at: float | None = None if is_alive else time.time()
             with sqlalchemy.orm.Session(engine) as session:
@@ -145,7 +144,7 @@ def reconcile_running_runs(engine: sqlalchemy.Engine) -> None:
             container.runner.register_run_pid(run_id, int(pid))
             asyncio.get_event_loop().create_task(_monitor_run(run_id, run_dir, engine))
         else:
-            events = container.run_data.read_phase_events(run_dir / "metrics.db")
+            events = container.run_data.read_phase_events(run_dir)
             final_status = _infer_status(events, is_alive=False)
             with sqlalchemy.orm.Session(engine) as session:
                 session.execute(
@@ -239,7 +238,7 @@ def list_runs(project_id: str) -> list[RunResponse]:
     result: list[RunResponse] = []
     for row in rows:
         run_dir = pathlib.Path(str(row["run_dir"]))
-        events = container.run_data.read_phase_events(run_dir / "metrics.db")
+        events = container.run_data.read_phase_events(run_dir)
         result.append(_mapping_to_response(row, events))
     return result
 
@@ -274,9 +273,7 @@ def get_metrics(
 ) -> list[container.run_data.Metric]:
     row = _get_run(ctx.db.get(), project_id, run_id)
     run_dir = pathlib.Path(str(row["run_dir"]))
-    return container.run_data.read_metrics(
-        run_dir / "metrics.db", phase=phase, name=name, since_rowid=since_rowid
-    )
+    return container.run_data.read_metrics(run_dir, phase=phase, name=name, since_rowid=since_rowid)
 
 
 @router.get("/{run_id}/logs")

@@ -6,11 +6,11 @@ import http.server
 import json
 import math
 import pathlib
-import sqlite3
 import sys
 import time
 import urllib.request
 
+import baw.wandb
 import torch
 import torch.nn as nn
 import yaml
@@ -223,17 +223,6 @@ class CharLM(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _init_db(db_path: pathlib.Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE IF NOT EXISTS phase_events (phase TEXT, event TEXT, timestamp REAL)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS metrics "
-        "(step INTEGER, timestamp REAL, phase TEXT, name TEXT, value REAL)"
-    )
-    conn.commit()
-    return conn
-
-
 def _read_control(control_path: pathlib.Path) -> str:
     try:
         data = json.loads(control_path.read_text())
@@ -259,6 +248,11 @@ def _get_float(cfg: dict[str, object], key: str, default: float) -> float:
     return float(val)  # type: ignore[arg-type]
 
 
+def _get_str(cfg: dict[str, object], key: str, default: str) -> str:
+    val = cfg.get(key, default)
+    return str(val)
+
+
 def _count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
@@ -279,9 +273,8 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
 # ---------------------------------------------------------------------------
 
 
-def _run_tokenizer(conn: sqlite3.Connection, run_dir: pathlib.Path) -> bool:
-    conn.execute("INSERT INTO phase_events VALUES (?, ?, ?)", ("tokenizer", "started", time.time()))
-    conn.commit()
+def _run_tokenizer(run: baw.wandb.Run, run_dir: pathlib.Path) -> bool:
+    run.log({"_phase_event": "tokenizer/started"})
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     input_path = data_dir / "input.txt"
@@ -291,10 +284,7 @@ def _run_tokenizer(conn: sqlite3.Connection, run_dir: pathlib.Path) -> bool:
         urllib.request.urlretrieve(SHAKESPEARE_URL, str(input_path))
     except Exception as e:
         print(f"Download failed: {e}", flush=True)
-        conn.execute(
-            "INSERT INTO phase_events VALUES (?, ?, ?)", ("tokenizer", "failed", time.time())
-        )
-        conn.commit()
+        run.log({"_phase_event": "tokenizer/failed"})
         return False
 
     text = input_path.read_text(encoding="utf-8")
@@ -307,24 +297,18 @@ def _run_tokenizer(conn: sqlite3.Connection, run_dir: pathlib.Path) -> bool:
 
     vocab_size = len(chars)
     print(f"Vocab size: {vocab_size}, corpus length: {len(text):,} chars", flush=True)
-    conn.execute(
-        "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-        (0, time.time(), "tokenizer", "vocab_size", float(vocab_size)),
+    run.log(
+        {
+            "tokenizer/vocab_size": float(vocab_size),
+            "tokenizer/corpus_chars": float(len(text)),
+        }
     )
-    conn.execute(
-        "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-        (0, time.time(), "tokenizer", "corpus_chars", float(len(text))),
-    )
-    conn.execute(
-        "INSERT INTO phase_events VALUES (?, ?, ?)", ("tokenizer", "completed", time.time())
-    )
-    conn.commit()
+    run.log({"_phase_event": "tokenizer/completed"})
     return True
 
 
-def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str, object]) -> bool:
-    conn.execute("INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "started", time.time()))
-    conn.commit()
+def _run_pretrain(run: baw.wandb.Run, run_dir: pathlib.Path, cfg: dict[str, object]) -> bool:
+    run.log({"_phase_event": "pretrain/started"})
 
     # Config
     n_layer = _get_int(cfg, "n_layer", 4)
@@ -384,10 +368,7 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
 
     for step in range(max_iters):
         if _read_control(run_dir / "control.json") == "stop":
-            conn.execute(
-                "INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "failed", time.time())
-            )
-            conn.commit()
+            run.log({"_phase_event": "pretrain/failed"})
             return False
 
         xb, yb = get_batch("train")
@@ -409,18 +390,16 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
             bpb = val_loss / math.log(2)
             tokens_per_sec = (batch_size * block_size) / (sum(step_times) / len(step_times))
             mfu = _estimate_mfu(n_params, tokens_per_sec, device)
-            now = time.time()
-            for name, value in [
-                ("loss", val_loss),
-                ("bpb", bpb),
-                ("mfu", mfu),
-            ]:
-                conn.execute(
-                    "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-                    (step, now, "pretrain", name, value),
-                )
-            conn.commit()
-            last_metric_time = now
+            run.log(
+                {
+                    "pretrain/loss": val_loss,
+                    "pretrain/bpb": bpb,
+                    "pretrain/mfu": mfu,
+                },
+                step=step,
+                commit=True,
+            )
+            last_metric_time = time.time()
             print(
                 f"step {step:5d}/{max_iters}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
                 f"bpb={bpb:.4f} mfu={mfu:.4f} tok/s={tokens_per_sec:.0f}",
@@ -439,18 +418,10 @@ def _run_pretrain(conn: sqlite3.Connection, run_dir: pathlib.Path, cfg: dict[str
                 str(run_dir / "model.pt"),
             )
         elif time.time() - last_metric_time >= 10.0:
-            now = time.time()
-            conn.execute(
-                "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-                (step, now, "pretrain", "loss", loss.item()),
-            )
-            conn.commit()
-            last_metric_time = now
+            run.log({"pretrain/loss": loss.item()}, step=step, commit=True)
+            last_metric_time = time.time()
 
-    conn.execute(
-        "INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "completed", time.time())
-    )
-    conn.commit()
+    run.log({"_phase_event": "pretrain/completed"})
     return True
 
 
@@ -523,12 +494,17 @@ def cmd_check_compat() -> None:
 
 def cmd_run(run_dir: pathlib.Path) -> None:
     cfg = _load_config(run_dir)
-    db_path = run_dir / "metrics.db"
-    conn = _init_db(db_path)
-    ok = _run_tokenizer(conn, run_dir)
+    run_id = _get_str(cfg, "run_id", "")
+    run = baw.wandb.init(
+        project="shakespeare-char",
+        id=run_id if run_id else None,
+        config=cfg,
+        dir=str(run_dir),
+    )
+    ok = _run_tokenizer(run, run_dir)
     if ok:
-        ok = _run_pretrain(conn, run_dir, cfg)
-    conn.close()
+        ok = _run_pretrain(run, run_dir, cfg)
+    run.finish(exit_code=0 if ok else 1)
     sys.exit(0 if ok else 1)
 
 

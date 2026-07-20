@@ -2,5 +2,7 @@ FROM docker.io/python:3.11-slim
 WORKDIR /app
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir pyyaml
-COPY shakespeare_char.py /app/shakespeare_char.py
+COPY packages/baw /app/packages/baw
+RUN pip install --no-cache-dir /app/packages/baw
+COPY containers/shakespeare-char/shakespeare_char.py /app/shakespeare_char.py
 ENTRYPOINT ["python", "/app/shakespeare_char.py"]
