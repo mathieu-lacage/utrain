@@ -24,6 +24,19 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("ended_at", sqlalchemy.Float, nullable=True),
 )
 
+run_phases = sqlalchemy.Table(
+    "run_phases",
+    metadata,
+    sqlalchemy.Column("run_id", sqlalchemy.Text, nullable=False),
+    sqlalchemy.Column("phase", sqlalchemy.Text, nullable=False),
+    sqlalchemy.Column("phase_order", sqlalchemy.Integer, nullable=False),
+    sqlalchemy.Column("status", sqlalchemy.Text, nullable=False),
+    sqlalchemy.Column("pid", sqlalchemy.Integer, nullable=True),
+    sqlalchemy.Column("started_at", sqlalchemy.Float, nullable=True),
+    sqlalchemy.Column("ended_at", sqlalchemy.Float, nullable=True),
+    sqlalchemy.PrimaryKeyConstraint("run_id", "phase"),
+)
+
 serve_processes = sqlalchemy.Table(
     "serve_processes",
     metadata,

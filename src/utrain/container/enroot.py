@@ -41,13 +41,25 @@ def check_compat(image: str) -> schema.CompatResult:
     return schema.CompatResult.model_validate(json.loads(out))
 
 
-def start_run(image: str, run_dir: pathlib.Path) -> subprocess.Popen[bytes]:
+def start_phase(image: str, run_dir: pathlib.Path, phase: str) -> subprocess.Popen[bytes]:
     log_dir = run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    stdout = open(log_dir / "stdout.log", "wb")
-    stderr = open(log_dir / "stderr.log", "wb")
+    stdout = open(log_dir / f"{phase}_stdout.log", "wb")
+    stderr = open(log_dir / f"{phase}_stderr.log", "wb")
     return subprocess.Popen(
-        ["enroot", "start", "--mount", f"{run_dir}:/run", image, "run", "/run"],
+        ["enroot", "start", "--mount", f"{run_dir}:/run", image, "run", "/run", "--phase", phase],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def start_run_all(image: str, run_dir: pathlib.Path) -> subprocess.Popen[bytes]:
+    log_dir = run_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout = open(log_dir / "run_all_stdout.log", "wb")
+    stderr = open(log_dir / "run_all_stderr.log", "wb")
+    return subprocess.Popen(
+        ["enroot", "start", "--mount", f"{run_dir}:/run", image, "run-all", "/run"],
         stdout=stdout,
         stderr=stderr,
     )

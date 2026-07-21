@@ -21,7 +21,16 @@ def _create_engine(settings: config.Settings) -> sqlalchemy.Engine:
         connect_args={"check_same_thread": False},
     )
     models.metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+def _migrate(engine: sqlalchemy.Engine) -> None:
+    inspector = sqlalchemy.inspect(engine)
+    run_columns = {c["name"] for c in inspector.get_columns("runs")}
+    if "pid" not in run_columns:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN pid INTEGER")
 
 
 class SettingsMiddleware(starlette.middleware.base.BaseHTTPMiddleware):

@@ -19,16 +19,16 @@ class Metric(pydantic.BaseModel):
     value: float
 
 
-def _find_rtsdb(run_dir: pathlib.Path) -> pathlib.Path | None:
-    wandb_dir = run_dir / "wandb"
-    if not wandb_dir.exists():
+def _find_rtsdb(run_dir: pathlib.Path, phase: str) -> pathlib.Path | None:
+    phase_dir = run_dir / "wandb" / phase
+    if not phase_dir.exists():
         return None
-    files = list(wandb_dir.rglob("*.rtsdb"))
+    files = list(phase_dir.glob("*.rtsdb"))
     return files[0] if files else None
 
 
-def read_phase_events(run_dir: pathlib.Path) -> list[PhaseEvent]:
-    path = _find_rtsdb(run_dir)
+def read_phase_events(run_dir: pathlib.Path, phase: str) -> list[PhaseEvent]:
+    path = _find_rtsdb(run_dir, phase)
     if path is None or not path.exists():
         return []
     try:
@@ -43,10 +43,10 @@ def read_phase_events(run_dir: pathlib.Path) -> list[PhaseEvent]:
                 ts_raw = row.values[col_names.index("_timestamp")]
                 if not isinstance(event_raw, str) or not isinstance(ts_raw, (int, float)):
                     continue
-                phase, _, event = event_raw.partition("/")
+                phase_part, _, event = event_raw.partition("/")
                 if not event:
                     continue
-                events.append(PhaseEvent(phase=phase, event=event, timestamp=float(ts_raw)))
+                events.append(PhaseEvent(phase=phase_part, event=event, timestamp=float(ts_raw)))
             return events
         finally:
             reader.close()
@@ -56,11 +56,11 @@ def read_phase_events(run_dir: pathlib.Path) -> list[PhaseEvent]:
 
 def read_metrics(
     run_dir: pathlib.Path,
-    phase: str | None = None,
+    phase: str,
     name: str | None = None,
     since_rowid: int = 0,
 ) -> list[Metric]:
-    path = _find_rtsdb(run_dir)
+    path = _find_rtsdb(run_dir, phase)
     if path is None or not path.exists():
         return []
     try:
@@ -84,11 +84,7 @@ def read_metrics(
                 for col in row.schema.columns:
                     if col.name.startswith("_"):
                         continue
-                    col_phase, _, col_name = col.name.partition("/")
-                    if not col_name:
-                        continue
-                    if phase is not None and col_phase != phase:
-                        continue
+                    col_name = col.name
                     if name is not None and col_name != name:
                         continue
                     val_raw = row.values[col_names.index(col.name)]
@@ -99,7 +95,7 @@ def read_metrics(
                             rowid=row.end_offset,
                             step=step,
                             timestamp=ts,
-                            phase=col_phase,
+                            phase=phase,
                             name=col_name,
                             value=float(val_raw),
                         )

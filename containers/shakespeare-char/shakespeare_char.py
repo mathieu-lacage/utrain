@@ -273,7 +273,8 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
 # ---------------------------------------------------------------------------
 
 
-def _run_tokenizer(run: baw.wandb.Run, run_dir: pathlib.Path) -> bool:
+def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
+    run = baw.wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "tokenizer/started"})
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -285,6 +286,7 @@ def _run_tokenizer(run: baw.wandb.Run, run_dir: pathlib.Path) -> bool:
     except Exception as e:
         print(f"Download failed: {e}", flush=True)
         run.log({"_phase_event": "tokenizer/failed"})
+        run.finish(exit_code=1)
         return False
 
     text = input_path.read_text(encoding="utf-8")
@@ -297,17 +299,14 @@ def _run_tokenizer(run: baw.wandb.Run, run_dir: pathlib.Path) -> bool:
 
     vocab_size = len(chars)
     print(f"Vocab size: {vocab_size}, corpus length: {len(text):,} chars", flush=True)
-    run.log(
-        {
-            "tokenizer/vocab_size": float(vocab_size),
-            "tokenizer/corpus_chars": float(len(text)),
-        }
-    )
+    run.log({"vocab_size": float(vocab_size), "corpus_chars": float(len(text))})
     run.log({"_phase_event": "tokenizer/completed"})
+    run.finish(exit_code=0)
     return True
 
 
-def _run_pretrain(run: baw.wandb.Run, run_dir: pathlib.Path, cfg: dict[str, object]) -> bool:
+def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) -> bool:
+    run = baw.wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(run_dir))
     run.log({"_phase_event": "pretrain/started"})
 
     # Config
@@ -369,6 +368,7 @@ def _run_pretrain(run: baw.wandb.Run, run_dir: pathlib.Path, cfg: dict[str, obje
     for step in range(max_iters):
         if _read_control(run_dir / "control.json") == "stop":
             run.log({"_phase_event": "pretrain/failed"})
+            run.finish(exit_code=1)
             return False
 
         xb, yb = get_batch("train")
@@ -392,9 +392,9 @@ def _run_pretrain(run: baw.wandb.Run, run_dir: pathlib.Path, cfg: dict[str, obje
             mfu = _estimate_mfu(n_params, tokens_per_sec, device)
             run.log(
                 {
-                    "pretrain/loss": val_loss,
-                    "pretrain/bpb": bpb,
-                    "pretrain/mfu": mfu,
+                    "loss": val_loss,
+                    "bpb": bpb,
+                    "mfu": mfu,
                 },
                 step=step,
                 commit=True,
@@ -418,10 +418,11 @@ def _run_pretrain(run: baw.wandb.Run, run_dir: pathlib.Path, cfg: dict[str, obje
                 str(run_dir / "model.pt"),
             )
         elif time.time() - last_metric_time >= 10.0:
-            run.log({"pretrain/loss": loss.item()}, step=step, commit=True)
+            run.log({"loss": loss.item()}, step=step, commit=True)
             last_metric_time = time.time()
 
     run.log({"_phase_event": "pretrain/completed"})
+    run.finish(exit_code=0)
     return True
 
 
@@ -492,20 +493,35 @@ def cmd_check_compat() -> None:
     print(json.dumps({"compatible": True, "details": details}))
 
 
-def cmd_run(run_dir: pathlib.Path) -> None:
+def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
     cfg = _load_config(run_dir)
     run_id = _get_str(cfg, "run_id", "")
-    run = baw.wandb.init(
-        project="shakespeare-char",
-        id=run_id if run_id else None,
-        config=cfg,
-        dir=str(run_dir),
-    )
-    ok = _run_tokenizer(run, run_dir)
-    if ok:
-        ok = _run_pretrain(run, run_dir, cfg)
-    run.finish(exit_code=0 if ok else 1)
+    if phase == "tokenizer":
+        ok = _run_tokenizer(run_dir, run_id)
+    elif phase == "pretrain":
+        ok = _run_pretrain(run_dir, run_id, cfg)
+    else:
+        print(f"unknown phase: {phase}", file=sys.stderr)
+        sys.exit(1)
     sys.exit(0 if ok else 1)
+
+
+def cmd_run_all(run_dir: pathlib.Path) -> None:
+    cfg = _load_config(run_dir)
+    run_id = _get_str(cfg, "run_id", "")
+    for phase in DESCRIBE["phase_order"]:
+        if _read_control(run_dir / "control.json") == "stop":
+            sys.exit(1)
+        if phase == "tokenizer":
+            ok = _run_tokenizer(run_dir, run_id)
+        elif phase == "pretrain":
+            ok = _run_pretrain(run_dir, run_id, cfg)
+        else:
+            print(f"unknown phase: {phase}", file=sys.stderr)
+            sys.exit(1)
+        if not ok:
+            sys.exit(1)
+    sys.exit(0)
 
 
 def cmd_serve(run_dir: pathlib.Path, port: int) -> None:
@@ -530,6 +546,9 @@ def main() -> None:
     sub.add_parser("check-compat")
     run_p = sub.add_parser("run")
     run_p.add_argument("run_dir", type=pathlib.Path)
+    run_p.add_argument("--phase", required=True)
+    run_all_p = sub.add_parser("run-all")
+    run_all_p.add_argument("run_dir", type=pathlib.Path)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("run_dir", type=pathlib.Path)
     serve_p.add_argument("--port", type=int, default=8080)
@@ -540,7 +559,9 @@ def main() -> None:
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "run":
-        cmd_run(args.run_dir)
+        cmd_run(args.run_dir, args.phase)
+    elif args.cmd == "run-all":
+        cmd_run_all(args.run_dir)
     elif args.cmd == "serve":
         cmd_serve(args.run_dir, args.port)
 

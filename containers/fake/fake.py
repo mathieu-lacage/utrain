@@ -7,9 +7,11 @@ import json
 import math
 import pathlib
 import random
-import sqlite3
 import sys
 import time
+
+import baw.wandb
+import yaml
 
 DESCRIBE = {
     "name": "nanochat-d12-english",
@@ -76,17 +78,6 @@ def cmd_check_compat() -> None:
     print(json.dumps({"compatible": True, "details": "fake GPU ok (always compatible)"}))
 
 
-def _init_db(db_path: pathlib.Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE IF NOT EXISTS phase_events (phase TEXT, event TEXT, timestamp REAL)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS metrics "
-        "(step INTEGER, timestamp REAL, phase TEXT, name TEXT, value REAL)"
-    )
-    conn.commit()
-    return conn
-
-
 def _read_control(control_path: pathlib.Path) -> str:
     try:
         data = json.loads(control_path.read_text())
@@ -95,78 +86,79 @@ def _read_control(control_path: pathlib.Path) -> str:
         return "continue"
 
 
-def _run_tokenizer(
-    conn: sqlite3.Connection,
-    run_dir: pathlib.Path,
-    total_steps: int = 50,
-) -> bool:
-    conn.execute("INSERT INTO phase_events VALUES (?, ?, ?)", ("tokenizer", "started", time.time()))
-    conn.commit()
+def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) -> bool:
+    run = baw.wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
+    run.log({"_phase_event": "tokenizer/started"})
+    ok = True
     for step in range(total_steps):
         if _read_control(run_dir / "control.json") == "stop":
-            conn.execute(
-                "INSERT INTO phase_events VALUES (?, ?, ?)",
-                ("tokenizer", "failed", time.time()),
-            )
-            conn.commit()
-            return False
+            run.log({"_phase_event": "tokenizer/failed"})
+            ok = False
+            break
         vocab_coverage = 0.5 + 0.5 * (1 - math.exp(-step / 20))
-        conn.execute(
-            "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-            (step, time.time(), "tokenizer", "vocab_coverage", vocab_coverage),
-        )
-        conn.commit()
+        run.log({"vocab_coverage": vocab_coverage}, step=step, commit=True)
         time.sleep(0.1)
-    conn.execute(
-        "INSERT INTO phase_events VALUES (?, ?, ?)", ("tokenizer", "completed", time.time())
-    )
-    conn.commit()
-    return True
+    if ok:
+        run.log({"_phase_event": "tokenizer/completed"})
+    run.finish(exit_code=0 if ok else 1)
+    return ok
 
 
-def _run_pretrain(
-    conn: sqlite3.Connection,
-    run_dir: pathlib.Path,
-    total_steps: int = 200,
-) -> bool:
-    conn.execute("INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "started", time.time()))
-    conn.commit()
+def _run_pretrain(run_dir: pathlib.Path, run_id: str, total_steps: int = 200) -> bool:
+    run = baw.wandb.init(project="pretrain", id=run_id, dir=str(run_dir))
+    run.log({"_phase_event": "pretrain/started"})
+    ok = True
     for step in range(total_steps):
         if _read_control(run_dir / "control.json") == "stop":
-            conn.execute(
-                "INSERT INTO phase_events VALUES (?, ?, ?)",
-                ("pretrain", "failed", time.time()),
-            )
-            conn.commit()
-            return False
-        # Fake metrics: loss decays, bpb decays, mfu ramps, gpu power steady
+            run.log({"_phase_event": "pretrain/failed"})
+            ok = False
+            break
         t = step / total_steps
         loss = 3.5 * math.exp(-2.5 * t) + 1.2 + random.gauss(0, 0.05)
         bpb = loss / math.log(2)
         mfu = 0.35 * (1 - math.exp(-5 * t)) + random.gauss(0, 0.005)
         gpu_power = 280 + random.gauss(0, 5)
-        for name, value in [("loss", loss), ("bpb", bpb), ("mfu", mfu), ("gpu_power_w", gpu_power)]:
-            conn.execute(
-                "INSERT INTO metrics VALUES (?, ?, ?, ?, ?)",
-                (step, time.time(), "pretrain", name, value),
-            )
-        conn.commit()
+        run.log(
+            {"loss": loss, "bpb": bpb, "mfu": mfu, "gpu_power_w": gpu_power},
+            step=step,
+            commit=True,
+        )
         time.sleep(0.1)
-    conn.execute(
-        "INSERT INTO phase_events VALUES (?, ?, ?)", ("pretrain", "completed", time.time())
-    )
-    conn.commit()
-    return True
-
-
-def cmd_run(run_dir: pathlib.Path) -> None:
-    db_path = run_dir / "metrics.db"
-    conn = _init_db(db_path)
-    ok = _run_tokenizer(conn, run_dir)
     if ok:
-        ok = _run_pretrain(conn, run_dir)
-    conn.close()
+        run.log({"_phase_event": "pretrain/completed"})
+    run.finish(exit_code=0 if ok else 1)
+    return ok
+
+
+def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
+    cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+    run_id = str(cfg.get("run_id", ""))
+    if phase == "tokenizer":
+        ok = _run_tokenizer(run_dir, run_id)
+    elif phase == "pretrain":
+        ok = _run_pretrain(run_dir, run_id)
+    else:
+        print(f"unknown phase: {phase}", file=sys.stderr)
+        sys.exit(1)
     sys.exit(0 if ok else 1)
+
+
+def cmd_run_all(run_dir: pathlib.Path) -> None:
+    cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+    run_id = str(cfg.get("run_id", ""))
+    for phase in DESCRIBE["phase_order"]:
+        if _read_control(run_dir / "control.json") == "stop":
+            sys.exit(1)
+        if phase == "tokenizer":
+            ok = _run_tokenizer(run_dir, run_id)
+        elif phase == "pretrain":
+            ok = _run_pretrain(run_dir, run_id)
+        else:
+            print(f"unknown phase: {phase}", file=sys.stderr)
+            sys.exit(1)
+        if not ok:
+            sys.exit(1)
+    sys.exit(0)
 
 
 class _ChatHandler(http.server.BaseHTTPRequestHandler):
@@ -204,6 +196,9 @@ def main() -> None:
     sub.add_parser("check-compat")
     run_p = sub.add_parser("run")
     run_p.add_argument("run_dir", type=pathlib.Path)
+    run_p.add_argument("--phase", required=True)
+    run_all_p = sub.add_parser("run-all")
+    run_all_p.add_argument("run_dir", type=pathlib.Path)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("run_dir", type=pathlib.Path)
     serve_p.add_argument("--port", type=int, default=8080)
@@ -214,7 +209,9 @@ def main() -> None:
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "run":
-        cmd_run(args.run_dir)
+        cmd_run(args.run_dir, args.phase)
+    elif args.cmd == "run-all":
+        cmd_run_all(args.run_dir)
     elif args.cmd == "serve":
         cmd_serve(args.run_dir, args.port)
 
