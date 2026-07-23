@@ -305,6 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("attempt", type=int)
     orch.add_argument("--from-phase", dest="from_phase", default=None)
 
+    sub.metavar = "{serve,compute,image,run,attempt,phase,store}"
+
     return parser
 
 
