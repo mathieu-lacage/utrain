@@ -1,0 +1,9 @@
+{
+  "cpu": {
+    "name": "AMD Ryzen 9 7940HS",
+    "cores": 16,
+    "mem_total_gb": 31.0,
+    "mem_available_gb": 22.6
+  },
+  "gpus": []
+}

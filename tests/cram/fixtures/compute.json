@@ -1,0 +1,18 @@
+{
+  "cpu": {
+    "name": "AMD Ryzen 9 7940HS",
+    "cores": 16,
+    "mem_total_gb": 31.0,
+    "mem_available_gb": 22.6
+  },
+  "gpus": [
+    {
+      "name": "NVIDIA RTX 2000 Ada",
+      "power_draw": 9.5,
+      "power_limit": 140.0,
+      "util": 8,
+      "mem_used_mb": 100.0,
+      "mem_total_mb": 8192.0
+    }
+  ]
+}

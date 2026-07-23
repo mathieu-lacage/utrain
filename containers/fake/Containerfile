@@ -1,4 +1,5 @@
 FROM python:3.11-slim
+RUN mkdir -p /run/wandb /data /attempt && touch /run/config.yaml /attempt/control.json
 WORKDIR /app
 RUN pip install --no-cache-dir pyyaml
 COPY packages/baw /app/packages/baw
