@@ -51,6 +51,7 @@ select = ["E", "F", "I", "UP"]
 
 [tool.coverage.run]
 source = ["utrain"]
+parallel = true
 
 [dependency-groups]
 dev = [

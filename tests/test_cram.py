@@ -14,6 +14,7 @@ def _run_cram(path: pathlib.Path) -> None:
         env["COVERAGE_PROCESS_START"] = str(
             (_PROJECT_ROOT / env["COVERAGE_PROCESS_START"]).resolve()
         )
+        env["COVERAGE_FILE"] = str(_PROJECT_ROOT / ".coverage")
     result = subprocess.run(
         ["uv", "run", "cram", str(path)], capture_output=True, text=True, env=env
     )
