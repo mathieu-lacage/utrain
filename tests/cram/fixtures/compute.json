@@ -7,6 +7,7 @@
   },
   "gpus": [
     {
+      "index": 0,
       "name": "NVIDIA RTX 2000 Ada",
       "power_draw": 9.5,
       "power_limit": 140.0,

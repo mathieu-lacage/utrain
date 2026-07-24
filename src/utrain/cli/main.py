@@ -1,18 +1,22 @@
 import argparse
 import sys
+import typing
 
 import sqlalchemy.orm
 
 from .. import config
-from . import attempts, compute, images, output, phases, runs, store, debug, exceptions
+from . import attempts, compute, debug, exceptions, images, output, phases, runs, store
 from . import db as dbmod
 
 
-def db_command(f):
-    def inner(args: argparse.Namespace):
+def db_command(
+    f: typing.Callable[[sqlalchemy.orm.Session, argparse.Namespace], None],
+) -> typing.Callable[[argparse.Namespace], None]:
+    def inner(args: argparse.Namespace) -> None:
         settings = config.Settings()
         with dbmod.with_db(settings) as session:
             return f(session, args)
+
     return inner
 
 
@@ -22,6 +26,7 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
     mem_used = cpu.mem_total_gb - cpu.mem_available_gb
 
     headers = [
+        "ID",
         "KIND",
         "NAME",
         "CORES",
@@ -33,6 +38,7 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
     ]
     rows: list[list[str]] = [
         [
+            "cpu",
             "cpu",
             cpu.name,
             str(cpu.cores),
@@ -49,6 +55,7 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
         mem_pct = 100 * mem_used_gb / mem_total_gb if mem_total_gb else 0
         rows.append(
             [
+                f"gpu{gpu.index}",
                 "gpu",
                 gpu.name,
                 "--",
@@ -124,7 +131,7 @@ def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
     runs.create_run(
         name=args.name,
         image=args.image,
-        gpu_spec=args.gpu,
+        compute_spec=args.compute,
         settings=settings,
         session=session,
         print_id=args.print_id,
@@ -235,7 +242,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="utrain")
-    parser.add_argument('-d', '--debug', action='count', default=0)
+    parser.add_argument("-d", "--debug", action="count", default=0)
     parser.add_argument("--log-filename", help="Filename where logs will be written", default=None)
     sub = parser.add_subparsers(dest="command")
 
@@ -286,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_create = run_sub.add_parser("create", help="Create a run")
     run_create.add_argument("--name", required=True)
     run_create.add_argument("--image", required=True)
-    run_create.add_argument("--gpu", default="auto")
+    run_create.add_argument("--compute", required=True)
     run_create.add_argument("--print-id", action="store_true", dest="print_id")
     run_create.set_defaults(func=_cmd_run_create)
 

@@ -1,5 +1,5 @@
   $ . "$TESTDIR/setup.sh"
-  $ RID=$(utrain run create --name hello --image utrain-fake --gpu none --print-id)
+  $ RID=$(utrain run create --name hello --image utrain-fake --compute cpu --print-id)
   $ utrain run start "$RID" >/dev/null
   $ utrain run show "$RID" --wait >/dev/null
   $ utrain phase read "$RID/pretrain" | head -8

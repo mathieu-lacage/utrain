@@ -4,7 +4,7 @@ import sqlalchemy
 import sqlalchemy.orm
 
 from . import db as dbmod
-from . import output, reconcile, exceptions
+from . import exceptions, output, reconcile
 
 
 def list_attempts(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:

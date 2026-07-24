@@ -24,6 +24,7 @@ class CpuInfo:
 
 
 class GpuInfo:
+    index: int
     name: str
     power_draw: float
     power_limit: float
@@ -33,6 +34,7 @@ class GpuInfo:
 
     def __init__(
         self,
+        index: int,
         name: str,
         power_draw: float,
         power_limit: float,
@@ -40,6 +42,7 @@ class GpuInfo:
         mem_used_mb: float,
         mem_total_mb: float,
     ) -> None:
+        self.index = index
         self.name = name
         self.power_draw = power_draw
         self.power_limit = power_limit
@@ -88,7 +91,7 @@ def _read_gpus() -> list[GpuInfo]:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,power.draw,enforced.power.limit,memory.used,memory.total,utilization.gpu",
+                "--query-gpu=index,name,power.draw,enforced.power.limit,memory.used,memory.total,utilization.gpu",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -100,7 +103,7 @@ def _read_gpus() -> list[GpuInfo]:
         gpus: list[GpuInfo] = []
         for line in result.stdout.strip().splitlines():
             parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 6:
+            if len(parts) < 7:
                 continue
 
             def _float(s: str) -> float:
@@ -117,12 +120,13 @@ def _read_gpus() -> list[GpuInfo]:
 
             gpus.append(
                 GpuInfo(
-                    name=parts[0],
-                    power_draw=_float(parts[1]),
-                    power_limit=_float(parts[2]),
-                    mem_used_mb=_float(parts[3]),
-                    mem_total_mb=_float(parts[4]),
-                    util=_int(parts[5]),
+                    index=_int(parts[0]),
+                    name=parts[1],
+                    power_draw=_float(parts[2]),
+                    power_limit=_float(parts[3]),
+                    mem_used_mb=_float(parts[4]),
+                    mem_total_mb=_float(parts[5]),
+                    util=_int(parts[6]),
                 )
             )
         return gpus
@@ -143,10 +147,11 @@ def collect_compute() -> ComputeInfo:
             mem_available_gb=float(cpu_data["mem_available_gb"]),  # type: ignore[arg-type]
         )
         gpus: list[GpuInfo] = []
-        for g in data.get("gpus", []):  # type: ignore[union-attr]
+        for i, g in enumerate(data.get("gpus", [])):  # type: ignore[union-attr]
             assert isinstance(g, dict)
             gpus.append(
                 GpuInfo(
+                    index=int(g.get("index", i)),  # type: ignore[arg-type]
                     name=str(g["name"]),
                     power_draw=float(g["power_draw"]),  # type: ignore[arg-type]
                     power_limit=float(g["power_limit"]),  # type: ignore[arg-type]

@@ -5,7 +5,7 @@ import sqlalchemy.orm
 
 from .. import container
 from . import db as dbmod
-from . import output, reconcile, exceptions
+from . import exceptions, output, reconcile
 
 
 def _parse_phase_addr(

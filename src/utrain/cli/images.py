@@ -5,8 +5,8 @@ import sqlalchemy
 import sqlalchemy.orm
 
 from .. import container
-from . import exceptions
 from . import db as dbmod
+from . import exceptions
 
 
 class ImageInfo:

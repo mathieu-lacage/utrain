@@ -14,44 +14,43 @@ import sqlalchemy.orm
 import yaml
 
 from .. import config, container
+from . import compute, exceptions, output, reconcile
 from . import db as dbmod
-from . import output, reconcile, exceptions
 
 
 def _config_hash(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _resolve_gpu(gpu_spec: str) -> str:
-    if gpu_spec != "auto":
-        return gpu_spec
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            indices = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
-            if indices:
-                return indices[0]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return "none"
+def _resolve_compute(compute_spec: str) -> str:
+    if compute_spec == "cpu":
+        return "cpu"
+    if compute_spec.startswith("gpu"):
+        try:
+            gpu_index = int(compute_spec[3:])
+            info = compute.collect_compute()
+            for gpu in info.gpus:
+                if gpu.index == gpu_index:
+                    return compute_spec
+        except (ValueError, IndexError):
+            pass
+    raise exceptions.UI(
+        f"abort: unknown --compute value '{compute_spec}'; "
+        "run 'utrain compute list' to see valid values"
+    )
 
 
 def _write_config(
     run_dir: pathlib.Path,
     run_id: str,
-    gpu: str,
+    compute: str,
     describe: container.schema.DescribeOutput,
 ) -> None:
     schema = describe.config_schema
     cfg: dict[str, object] = {
         "run_id": run_id,
         "output_dir": "/run",
-        "gpu": gpu,
+        "compute": compute,
     }
     # globals section
     globals_dict: dict[str, object] = {}
@@ -116,7 +115,7 @@ def _format_run_row(
         run_id[:prefix_len],
         str(row["name"]),
         str(row["image"]),
-        str(row["gpu"]),
+        str(row["compute"]),
         str(row["status"]),
         attempt_str,
         phase_str,
@@ -138,7 +137,7 @@ def list_runs(session: sqlalchemy.orm.Session, short: bool = False) -> None:
     run_ids = [str(r["id"]) for r in rows]
     prefix_len = _find_min_prefix_len(run_ids)
 
-    headers = ["ID", "NAME", "IMAGE", "GPU", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
+    headers = ["ID", "NAME", "IMAGE", "COMPUTE", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
     table_rows = [_format_run_row(r, session, prefix_len) for r in rows]
     print(output.format_table(headers, table_rows))
 
@@ -171,7 +170,7 @@ def list_runs_json(session: sqlalchemy.orm.Session) -> None:
                 "id": run_id,
                 "name": str(row["name"]),
                 "image": str(row["image"]),
-                "gpu": str(row["gpu"]),
+                "compute": str(row["compute"]),
                 "status": str(row["status"]),
                 "created_at": datetime.datetime.fromtimestamp(row["created_at"]).isoformat(),
             }
@@ -249,7 +248,7 @@ def _print_run_detail(
     print(f"id:       {run_id}")
     print(f"name:     {row['name']}")
     print(f"image:    {row['image']}")
-    print(f"gpu:      {row['gpu']}")
+    print(f"compute:  {row['compute']}")
     print(f"status:   {row['status']}")
     print(f"attempts: {attempts_str}")
     print(f"created:  {output.format_time(row['created_at'])}")
@@ -290,14 +289,14 @@ def print_run_row(run_id: str, session: sqlalchemy.orm.Session) -> None:
     row = dbmod.get_run(run_id, session)
     all_run_ids = list_run_ids(session)
     prefix_len = _find_min_prefix_len(all_run_ids)
-    headers = ["ID", "NAME", "IMAGE", "GPU", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
+    headers = ["ID", "NAME", "IMAGE", "COMPUTE", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
     print(output.format_table(headers, [_format_run_row(row, session, prefix_len)]))
 
 
 def create_run(
     name: str,
     image: str,
-    gpu_spec: str,
+    compute_spec: str,
     settings: config.Settings,
     session: sqlalchemy.orm.Session,
     print_id: bool = False,
@@ -310,12 +309,12 @@ def create_run(
     if not describe.phase_order:
         raise exceptions.UI(f"abort: image '{image}' has no phases")
 
-    gpu = _resolve_gpu(gpu_spec)
+    compute_value = _resolve_compute(compute_spec)
     run_id = uuid.uuid4().hex
     run_dir = settings.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_config(run_dir, run_id, gpu, describe)
+    _write_config(run_dir, run_id, compute_value, describe)
 
     now = time.time()
     session.execute(
@@ -323,7 +322,7 @@ def create_run(
             id=run_id,
             name=name,
             image=image,
-            gpu=gpu,
+            compute=compute_value,
             run_dir=str(run_dir),
             status="configuring",
             config_hash=None,

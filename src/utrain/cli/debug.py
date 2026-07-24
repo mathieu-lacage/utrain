@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 import sys
 
 FORMAT = "%(asctime)s:%(levelname)s:%(module)s.%(funcName)s:%(message)s"

@@ -15,7 +15,7 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("id", sqlalchemy.Text, primary_key=True),
     sqlalchemy.Column("name", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("image", sqlalchemy.Text, nullable=False),
-    sqlalchemy.Column("gpu", sqlalchemy.Text, nullable=False),
+    sqlalchemy.Column("compute", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("run_dir", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("status", sqlalchemy.Text, nullable=False, default="configuring"),
     sqlalchemy.Column("config_hash", sqlalchemy.Text, nullable=True),
@@ -67,12 +67,19 @@ def _migrate(engine: sqlalchemy.Engine) -> None:
             t: {c["name"] for c in inspector.get_columns(t)} for t in inspector.get_table_names()
         }
 
+        # Rename gpu column to compute if it exists and compute doesn't
+        if "runs" in existing and "gpu" in existing["runs"] and "compute" not in existing["runs"]:
+            conn.execute(sqlalchemy.text("ALTER TABLE runs RENAME COLUMN gpu TO compute"))
+            # Refresh existing set after the rename
+            existing["runs"].discard("gpu")
+            existing["runs"].add("compute")
+
         # Add new columns to legacy 'runs' table if it came from the old schema
         if "runs" in existing:
             for col, ddl in [
                 ("name", "TEXT NOT NULL DEFAULT ''"),
                 ("image", "TEXT NOT NULL DEFAULT ''"),
-                ("gpu", "TEXT NOT NULL DEFAULT 'none'"),
+                ("compute", "TEXT NOT NULL DEFAULT 'cpu'"),
                 ("config_hash", "TEXT"),
                 ("created_at", "REAL NOT NULL DEFAULT 0"),
             ]:
