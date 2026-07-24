@@ -7,6 +7,11 @@
   PHASE      ORDER  STATUS   STARTED           ENDED
   tokenizer  0      running  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  -- (re)
   pretrain   1      pending  --                --
+  $ utrain phase list "$RID" -q
+  [0-9a-f]{32}/1/tokenizer (re)
+  [0-9a-f]{32}/1/pretrain (re)
+  $ utrain attempt list "$RID" -q
+  [0-9a-f]{32}/1 (re)
   $ utrain run show "$RID" --wait
   id:       [0-9a-f]{32} (re)
   name:     hello
@@ -25,3 +30,5 @@
   $ utrain run list
   ID           NAME   IMAGE        GPU   STATUS  ATTEMPT  PHASE  CREATED
   [0-9a-f]{8}\.\.\.  hello  utrain-fake  none  done    1        --     [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  $ utrain run list -q
+  [0-9a-f]{32} (re)

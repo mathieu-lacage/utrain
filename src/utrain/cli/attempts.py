@@ -38,6 +38,21 @@ def list_attempts(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
     print(output.format_table(headers, table_rows))
 
 
+def list_attempt_ids(run_id_prefix: str, session: sqlalchemy.orm.Session) -> list[str]:
+    run_id = dbmod.resolve_run_id(run_id_prefix, session)
+
+    rows = (
+        session.execute(
+            sqlalchemy.select(dbmod.run_attempts.c.attempt)
+            .where(dbmod.run_attempts.c.run_id == run_id)
+            .order_by(dbmod.run_attempts.c.attempt.desc())
+        )
+        .scalars()
+        .fetchall()
+    )
+    return [f"{run_id}/{attempt}" for attempt in rows]
+
+
 def show_attempt(run_id_prefix: str, attempt_n: int, session: sqlalchemy.orm.Session) -> None:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     reconcile.reconcile_attempt(run_id, attempt_n, session)

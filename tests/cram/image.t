@@ -6,3 +6,5 @@
   $ utrain image remove utrain-fake && utrain image list
   NAME * SIZE  RUNS (glob)
   utrain-shakespeare-char .* (re)
+  $ utrain image list -q
+  utrain-shakespeare-char

@@ -11,7 +11,7 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
     cpu = info.cpu
     mem_used = cpu.mem_total_gb - cpu.mem_available_gb
 
-    headers = ["KIND", "NAME", "CORES", "POWER", "COMPUTE", "MEM_USED", "MEM_TOTAL", "MEM_PCT"]
+    headers = ["KIND", "NAME", "CORES", "POWER (W)", "COMPUTE", "MEM_USED (GB)", "MEM_TOTAL (GB)", "MEM_USED (%)"]
     rows: list[list[str]] = [
         [
             "cpu",
@@ -33,7 +33,7 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
                 "gpu",
                 gpu.name,
                 "--",
-                f"{gpu.power_draw:.1f}/{gpu.power_limit:.1f} W",
+                f"{gpu.power_draw:.1f}/{gpu.power_limit:.1f}",
                 f"{gpu.util}%",
                 f"{mem_used_gb:.1f}",
                 f"{mem_total_gb:.1f}",
@@ -47,6 +47,10 @@ def _cmd_image_list(args: argparse.Namespace) -> None:
     settings = config.Settings()
     with dbmod.with_db(settings) as session:
         imgs = images.list_images(session)
+    if args.quiet:
+        for i in imgs:
+            print(i.name)
+        return
     headers = ["NAME", "SIZE", "RUNS"]
     rows = [[i.name, i.size_str, str(i.run_count)] for i in imgs]
     print(output.format_table(headers, rows))
@@ -79,7 +83,10 @@ def _cmd_image_remove(args: argparse.Namespace) -> None:
 def _cmd_run_list(args: argparse.Namespace) -> None:
     settings = config.Settings()
     with dbmod.with_db(settings) as session:
-        if args.json:
+        if args.quiet:
+            for run_id in runs.list_run_ids(session):
+                print(run_id)
+        elif args.json:
             runs.list_runs_json(session)
         else:
             runs.list_runs(session, short=getattr(args, "short", False))
@@ -131,7 +138,7 @@ def _cmd_run_restart(args: argparse.Namespace) -> None:
 def _cmd_run_delete(args: argparse.Namespace) -> None:
     settings = config.Settings()
     with dbmod.with_db(settings) as session:
-        runs.delete_run(args.id, force=args.force, session=session)
+        runs.delete_runs(args.ids, force=args.force, session=session)
 
 
 def _cmd_run_logs(args: argparse.Namespace) -> None:
@@ -150,7 +157,11 @@ def _cmd_run_logs(args: argparse.Namespace) -> None:
 def _cmd_attempt_list(args: argparse.Namespace) -> None:
     settings = config.Settings()
     with dbmod.with_db(settings) as session:
-        attempts.list_attempts(args.run_id, session)
+        if args.quiet:
+            for addr in attempts.list_attempt_ids(args.run_id, session):
+                print(addr)
+        else:
+            attempts.list_attempts(args.run_id, session)
 
 
 def _cmd_attempt_show(args: argparse.Namespace) -> None:
@@ -166,7 +177,11 @@ def _cmd_attempt_show(args: argparse.Namespace) -> None:
 def _cmd_phase_list(args: argparse.Namespace) -> None:
     settings = config.Settings()
     with dbmod.with_db(settings) as session:
-        phases.list_phases(args.addr, session)
+        if args.quiet:
+            for addr in phases.list_phase_ids(args.addr, session):
+                print(addr)
+        else:
+            phases.list_phases(args.addr, session)
 
 
 def _cmd_phase_read(args: argparse.Namespace) -> None:
@@ -220,33 +235,36 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.set_defaults(func=_cmd_serve)
 
     # compute
-    compute_p = sub.add_parser("compute")
+    compute_p = sub.add_parser("compute", help="CPU/GPU on host")
     compute_sub = compute_p.add_subparsers(dest="compute_command")
-    compute_sub.add_parser("list").set_defaults(func=_cmd_compute_list)
+    compute_sub.add_parser("list", help="List compute resources on host").set_defaults(func=_cmd_compute_list)
 
     # image
-    image_p = sub.add_parser("image")
+    image_p = sub.add_parser("image", help="Container images")
     image_sub = image_p.add_subparsers(dest="image_command")
-    image_sub.add_parser("list").set_defaults(func=_cmd_image_list)
-    img_add = image_sub.add_parser("add")
+    img_list = image_sub.add_parser("list", help="List images from local store")
+    img_list.add_argument("-q", "--quiet", action="store_true")
+    img_list.set_defaults(func=_cmd_image_list)
+    img_add = image_sub.add_parser("add", help="Add image to local store")
     img_add.add_argument("url")
     img_add.add_argument("--print-id", action="store_true", dest="print_id")
     img_add.set_defaults(func=_cmd_image_add)
-    img_rm = image_sub.add_parser("remove")
+    img_rm = image_sub.add_parser("remove", help="Remove image from local store")
     img_rm.add_argument("name")
     img_rm.add_argument("--force", action="store_true")
     img_rm.set_defaults(func=_cmd_image_remove)
 
     # run
-    run_p = sub.add_parser("run")
+    run_p = sub.add_parser("run", help="Experiment runs")
     run_sub = run_p.add_subparsers(dest="run_command")
 
-    run_list = run_sub.add_parser("list")
+    run_list = run_sub.add_parser("list", help="List runs")
     run_list.add_argument("--json", action="store_true")
     run_list.add_argument("--short", action="store_true")
+    run_list.add_argument("-q", "--quiet", action="store_true")
     run_list.set_defaults(func=_cmd_run_list)
 
-    run_show = run_sub.add_parser("show")
+    run_show = run_sub.add_parser("show", help="Show details about a run")
     run_show.add_argument("id")
     run_show.add_argument("--wait", action="store_true")
     run_show.add_argument("--timeout", type=int, default=600)
@@ -254,32 +272,32 @@ def build_parser() -> argparse.ArgumentParser:
     run_show.add_argument("--json", action="store_true")
     run_show.set_defaults(func=_cmd_run_show)
 
-    run_create = run_sub.add_parser("create")
+    run_create = run_sub.add_parser("create", help="Create a run")
     run_create.add_argument("--name", required=True)
     run_create.add_argument("--image", required=True)
     run_create.add_argument("--gpu", default="auto")
     run_create.add_argument("--print-id", action="store_true", dest="print_id")
     run_create.set_defaults(func=_cmd_run_create)
 
-    run_start = run_sub.add_parser("start")
+    run_start = run_sub.add_parser("start", help="Start a run")
     run_start.add_argument("id")
     run_start.set_defaults(func=_cmd_run_start)
 
-    run_stop = run_sub.add_parser("stop")
+    run_stop = run_sub.add_parser("stop", help="Stop a running run")
     run_stop.add_argument("id")
     run_stop.set_defaults(func=_cmd_run_stop)
 
-    run_restart = run_sub.add_parser("restart")
+    run_restart = run_sub.add_parser("restart", help="Restart a run from a phase (create a new attempt)")
     run_restart.add_argument("id")
     run_restart.add_argument("--from-phase", dest="from_phase", default=None)
     run_restart.set_defaults(func=_cmd_run_restart)
 
-    run_delete = run_sub.add_parser("delete")
-    run_delete.add_argument("id")
+    run_delete = run_sub.add_parser("delete", help="Delete one or more runs")
+    run_delete.add_argument("ids", nargs="+", metavar="ID")
     run_delete.add_argument("--force", action="store_true")
     run_delete.set_defaults(func=_cmd_run_delete)
 
-    run_logs = run_sub.add_parser("logs")
+    run_logs = run_sub.add_parser("logs", help="Show logs for a run")
     run_logs.add_argument("id")
     run_logs.add_argument("--attempt", type=int, default=None)
     run_logs.add_argument("--phase", default=None)
@@ -292,27 +310,30 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_sub = attempt_p.add_subparsers(dest="attempt_command")
     att_list = attempt_sub.add_parser("list")
     att_list.add_argument("run_id")
+    att_list.add_argument("-q", "--quiet", action="store_true")
     att_list.set_defaults(func=_cmd_attempt_list)
     att_show = attempt_sub.add_parser("show")
     att_show.add_argument("addr")
     att_show.set_defaults(func=_cmd_attempt_show)
 
     # phase
-    phase_p = sub.add_parser("phase")
+    phase_p = sub.add_parser("phase", help="Individual phases of a run")
     phase_sub = phase_p.add_subparsers(dest="phase_command")
-    ph_list = phase_sub.add_parser("list")
-    ph_list.add_argument("addr")
+    ph_list = phase_sub.add_parser("list", help="List all phases of a run")
+    ph_list.add_argument("addr", help="Run id")
+    ph_list.add_argument("-q", "--quiet", action="store_true")
     ph_list.set_defaults(func=_cmd_phase_list)
-    ph_read = phase_sub.add_parser("read")
+    ph_read = phase_sub.add_parser("read", help="Read a single phase")
     ph_read.add_argument("addr")
     ph_read.add_argument("--metric", default=None)
     ph_read.add_argument("--since-step", type=int, default=0, dest="since_step")
     ph_read.set_defaults(func=_cmd_phase_read)
 
     # store
-    store_p = sub.add_parser("store")
+    store_p = sub.add_parser("store", help="Data store")
     store_sub = store_p.add_subparsers(dest="store_command")
-    store_sub.add_parser("gc").set_defaults(func=_cmd_store_gc)
+    store_gc = store_sub.add_parser("gc")
+    store_gc.set_defaults(func=_cmd_store_gc)
 
     # hidden _orchestrate subcommand
     orch = sub.add_parser("_orchestrate")

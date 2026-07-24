@@ -124,6 +124,22 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> None:
     print(output.format_table(headers, table_rows))
 
 
+def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
+    run_id, attempt_n, _ = _parse_phase_addr(addr, session)
+
+    if attempt_n is None:
+        attempt_n = dbmod.latest_attempt(run_id, session)
+    if attempt_n is None:
+        raise SystemExit("abort: run has no attempts yet")
+
+    run_row = dbmod.get_run(run_id, session)
+    image_key = str(run_row["image"])
+    presets = container.enroot.list_presets()
+    describe = container.enroot.describe(presets[image_key])
+
+    return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
+
+
 def read_phase(
     addr: str,
     session: sqlalchemy.orm.Session,

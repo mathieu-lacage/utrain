@@ -88,7 +88,7 @@ def _read_gpus() -> list[GpuInfo]:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,power.draw,power.limit,memory.used,memory.total,utilization.gpu",
+                "--query-gpu=name,power.draw,enforced.power.limit,memory.used,memory.total,utilization.gpu",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,

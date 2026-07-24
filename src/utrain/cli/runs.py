@@ -128,6 +128,15 @@ def list_runs(session: sqlalchemy.orm.Session, short: bool = False) -> None:
     print(output.format_table(headers, table_rows))
 
 
+def list_run_ids(session: sqlalchemy.orm.Session) -> list[str]:
+    rows = (
+        session.execute(sqlalchemy.select(dbmod.runs.c.id).order_by(dbmod.runs.c.created_at.desc()))
+        .scalars()
+        .fetchall()
+    )
+    return [str(r) for r in rows]
+
+
 def list_runs_json(session: sqlalchemy.orm.Session) -> None:
     import datetime
 
@@ -641,6 +650,18 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
     session.execute(sqlalchemy.delete(dbmod.runs).where(dbmod.runs.c.id == run_id))
 
     print(f"removed run {run_id}")
+
+
+def delete_runs(run_id_prefixes: list[str], force: bool, session: sqlalchemy.orm.Session) -> None:
+    failed = False
+    for run_id_prefix in run_id_prefixes:
+        try:
+            delete_run(run_id_prefix, force=force, session=session)
+        except SystemExit as e:
+            print(e.code, file=sys.stderr)
+            failed = True
+    if failed:
+        raise SystemExit(1)
 
 
 def logs_run(
