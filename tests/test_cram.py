@@ -32,6 +32,10 @@ def test_id_prefix(fake_image: None) -> None:
     _run_cram(_CRAM_DIR / "id-prefix.t")
 
 
+def test_gpu(gpu_passthrough: None, fake_gpu_image: None) -> None:
+    _run_cram(_CRAM_DIR / "gpu.t")
+
+
 def test_image(fake_image: None) -> None:
     _run_cram(_CRAM_DIR / "image.t")
 

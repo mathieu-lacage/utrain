@@ -12,11 +12,21 @@ from .. import config, container
 from . import db as dbmod
 
 
+def _gpu_env(compute: str) -> dict[str, str]:
+    """Env that makes enroot's nvidia hook expose the selected GPU inside the container."""
+    env = dict(os.environ)
+    if compute.startswith("gpu"):
+        env["NVIDIA_VISIBLE_DEVICES"] = compute.removeprefix("gpu")
+        env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
+    return env
+
+
 def _start_phase(
     image_key: str,
     attempt_dir: pathlib.Path,
     phase: str,
     run_dir: pathlib.Path,
+    compute: str,
 ) -> subprocess.Popen[bytes]:
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +53,7 @@ def _start_phase(
         ],
         stdout=stdout,
         stderr=stderr,
+        env=_gpu_env(compute),
     )
 
 
@@ -81,6 +92,7 @@ def run_orchestrator(
 
         run_dir = pathlib.Path(str(run_row["run_dir"]))
         image_key = str(run_row["image"])
+        compute = str(run_row["compute"])
         presets = container.enroot.list_presets()
         if image_key not in presets:
             print(f"orchestrator: image '{image_key}' not found", file=sys.stderr)
@@ -121,7 +133,7 @@ def run_orchestrator(
             )
             session.commit()
 
-        current_proc = _start_phase(image_key, attempt_dir, phase, run_dir)
+        current_proc = _start_phase(image_key, attempt_dir, phase, run_dir, compute)
         exit_code = current_proc.wait()
         current_proc = None
 
