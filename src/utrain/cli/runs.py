@@ -75,8 +75,20 @@ def _write_config(
     config_path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
 
 
+def _find_min_prefix_len(run_ids: list[str]) -> int:
+    if not run_ids:
+        return 1
+    for prefix_len in range(1, 33):
+        prefixes = {rid[:prefix_len] for rid in run_ids}
+        if len(prefixes) == len(run_ids):
+            return prefix_len
+    return 32
+
+
 def _format_run_row(
-    row: sqlalchemy.engine.RowMapping, session: sqlalchemy.orm.Session
+    row: sqlalchemy.engine.RowMapping,
+    session: sqlalchemy.orm.Session,
+    prefix_len: int = 8,
 ) -> list[str]:
     run_id = str(row["id"])
     attempt_n = dbmod.latest_attempt(run_id, session)
@@ -101,7 +113,7 @@ def _format_run_row(
             phase_str = str(phase_rows[0]["phase"])
 
     return [
-        run_id[:8] + "...",
+        run_id[:prefix_len],
         str(row["name"]),
         str(row["image"]),
         str(row["gpu"]),
@@ -123,8 +135,11 @@ def list_runs(session: sqlalchemy.orm.Session, short: bool = False) -> None:
         if attempt_n is not None:
             reconcile.reconcile_attempt(str(row["id"]), attempt_n, session)
 
+    run_ids = [str(r["id"]) for r in rows]
+    prefix_len = _find_min_prefix_len(run_ids)
+
     headers = ["ID", "NAME", "IMAGE", "GPU", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
-    table_rows = [_format_run_row(r, session) for r in rows]
+    table_rows = [_format_run_row(r, session, prefix_len) for r in rows]
     print(output.format_table(headers, table_rows))
 
 
@@ -273,8 +288,10 @@ def _print_run_detail(
 
 def print_run_row(run_id: str, session: sqlalchemy.orm.Session) -> None:
     row = dbmod.get_run(run_id, session)
+    all_run_ids = list_run_ids(session)
+    prefix_len = _find_min_prefix_len(all_run_ids)
     headers = ["ID", "NAME", "IMAGE", "GPU", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
-    print(output.format_table(headers, [_format_run_row(row, session)]))
+    print(output.format_table(headers, [_format_run_row(row, session, prefix_len)]))
 
 
 def create_run(

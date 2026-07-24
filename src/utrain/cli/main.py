@@ -1,9 +1,19 @@
 import argparse
 import sys
 
+import sqlalchemy.orm
+
 from .. import config
 from . import attempts, compute, images, output, phases, runs, store
 from . import db as dbmod
+
+
+def db_command(f):
+    def inner(args: argparse.Namespace):
+        settings = config.Settings()
+        with dbmod.with_db(settings) as session:
+            return f(session, args)
+    return inner
 
 
 def _cmd_compute_list(args: argparse.Namespace) -> None:
@@ -11,7 +21,16 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
     cpu = info.cpu
     mem_used = cpu.mem_total_gb - cpu.mem_available_gb
 
-    headers = ["KIND", "NAME", "CORES", "POWER (W)", "COMPUTE", "MEM_USED (GB)", "MEM_TOTAL (GB)", "MEM_USED (%)"]
+    headers = [
+        "KIND",
+        "NAME",
+        "CORES",
+        "POWER (W)",
+        "COMPUTE",
+        "MEM_USED (GB)",
+        "MEM_TOTAL (GB)",
+        "MEM_USED (%)",
+    ]
     rows: list[list[str]] = [
         [
             "cpu",
@@ -43,10 +62,9 @@ def _cmd_compute_list(args: argparse.Namespace) -> None:
     print(output.format_table(headers, rows))
 
 
-def _cmd_image_list(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        imgs = images.list_images(session)
+@db_command
+def _cmd_image_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    imgs = images.list_images(session)
     if args.quiet:
         for i in imgs:
             print(i.name)
@@ -56,14 +74,13 @@ def _cmd_image_list(args: argparse.Namespace) -> None:
     print(output.format_table(headers, rows))
 
 
-def _cmd_image_add(args: argparse.Namespace) -> None:
+@db_command
+def _cmd_image_add(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     name = images.add_image(args.url)
     if args.print_id:
         print(name, end="")
     else:
-        settings = config.Settings()
-        with dbmod.with_db(settings) as session:
-            imgs = images.list_images(session)
+        imgs = images.list_images(session)
         matching = [i for i in imgs if i.name == name]
         if matching:
             headers = ["NAME", "SIZE", "RUNS"]
@@ -74,125 +91,112 @@ def _cmd_image_add(args: argparse.Namespace) -> None:
             )
 
 
-def _cmd_image_remove(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        images.remove_image(args.name, session, force=args.force)
+@db_command
+def _cmd_image_remove(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    images.remove_image(args.name, session, force=args.force)
 
 
-def _cmd_run_list(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        if args.quiet:
-            for run_id in runs.list_run_ids(session):
-                print(run_id)
-        elif args.json:
-            runs.list_runs_json(session)
-        else:
-            runs.list_runs(session, short=getattr(args, "short", False))
+@db_command
+def _cmd_run_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    if args.quiet:
+        for run_id in runs.list_run_ids(session):
+            print(run_id)
+    elif args.json:
+        runs.list_runs_json(session)
+    else:
+        runs.list_runs(session, short=getattr(args, "short", False))
 
 
-def _cmd_run_show(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.show_run(
-            args.id,
-            session,
-            wait=args.wait,
-            timeout=args.timeout,
-            edit=args.edit,
-        )
+@db_command
+def _cmd_run_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.show_run(
+        args.id,
+        session,
+        wait=args.wait,
+        timeout=args.timeout,
+        edit=args.edit,
+    )
 
 
-def _cmd_run_create(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.create_run(
-            name=args.name,
-            image=args.image,
-            gpu_spec=args.gpu,
-            settings=settings,
-            session=session,
-            print_id=args.print_id,
-        )
+@db_command
+def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.create_run(
+        name=args.name,
+        image=args.image,
+        gpu_spec=args.gpu,
+        settings=settings,
+        session=session,
+        print_id=args.print_id,
+    )
 
 
-def _cmd_run_start(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.start_run(args.id, session)
+@db_command
+def _cmd_run_start(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.start_run(args.id, session)
 
 
-def _cmd_run_stop(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.stop_run(args.id, session)
+@db_command
+def _cmd_run_stop(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.stop_run(args.id, session)
 
 
-def _cmd_run_restart(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.restart_run(args.id, getattr(args, "from_phase", None), session)
+@db_command
+def _cmd_run_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.restart_run(args.id, getattr(args, "from_phase", None), session)
 
 
-def _cmd_run_delete(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.delete_runs(args.ids, force=args.force, session=session)
+@db_command
+def _cmd_run_delete(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.delete_runs(args.ids, force=args.force, session=session)
 
 
-def _cmd_run_logs(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        runs.logs_run(
-            args.id,
-            session,
-            attempt=getattr(args, "attempt", None),
-            phase=getattr(args, "phase", None),
-            stderr=getattr(args, "stderr", False),
-            tail=getattr(args, "tail", 200),
-        )
+@db_command
+def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    runs.logs_run(
+        args.id,
+        session,
+        attempt=getattr(args, "attempt", None),
+        phase=getattr(args, "phase", None),
+        stderr=getattr(args, "stderr", False),
+        tail=getattr(args, "tail", 200),
+    )
 
 
-def _cmd_attempt_list(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        if args.quiet:
-            for addr in attempts.list_attempt_ids(args.run_id, session):
-                print(addr)
-        else:
-            attempts.list_attempts(args.run_id, session)
+@db_command
+def _cmd_attempt_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    if args.quiet:
+        for addr in attempts.list_attempt_ids(args.run_id, session):
+            print(addr)
+    else:
+        attempts.list_attempts(args.run_id, session)
 
 
-def _cmd_attempt_show(args: argparse.Namespace) -> None:
-    settings = config.Settings()
+@db_command
+def _cmd_attempt_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     parts = args.addr.split("/")
     if len(parts) != 2 or not parts[1].isdigit():
         print(f"abort: expected <RUN_ID>/<N>, got '{args.addr}'", file=sys.stderr)
         sys.exit(2)
-    with dbmod.with_db(settings) as session:
-        attempts.show_attempt(parts[0], int(parts[1]), session)
+    attempts.show_attempt(parts[0], int(parts[1]), session)
 
 
-def _cmd_phase_list(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        if args.quiet:
-            for addr in phases.list_phase_ids(args.addr, session):
-                print(addr)
-        else:
-            phases.list_phases(args.addr, session)
+@db_command
+def _cmd_phase_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    if args.quiet:
+        for addr in phases.list_phase_ids(args.addr, session):
+            print(addr)
+    else:
+        phases.list_phases(args.addr, session)
 
 
-def _cmd_phase_read(args: argparse.Namespace) -> None:
-    settings = config.Settings()
-    with dbmod.with_db(settings) as session:
-        phases.read_phase(
-            args.addr,
-            session,
-            metric=getattr(args, "metric", None),
-            since_step=getattr(args, "since_step", 0),
-        )
+@db_command
+def _cmd_phase_read(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    phases.read_phase(
+        args.addr,
+        session,
+        metric=getattr(args, "metric", None),
+        since_step=getattr(args, "since_step", 0),
+    )
 
 
 def _cmd_store_gc(args: argparse.Namespace) -> None:
@@ -237,7 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
     # compute
     compute_p = sub.add_parser("compute", help="CPU/GPU on host")
     compute_sub = compute_p.add_subparsers(dest="compute_command")
-    compute_sub.add_parser("list", help="List compute resources on host").set_defaults(func=_cmd_compute_list)
+    compute_sub.add_parser("list", help="List compute resources on host").set_defaults(
+        func=_cmd_compute_list
+    )
 
     # image
     image_p = sub.add_parser("image", help="Container images")
@@ -287,7 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_stop.add_argument("id")
     run_stop.set_defaults(func=_cmd_run_stop)
 
-    run_restart = run_sub.add_parser("restart", help="Restart a run from a phase (create a new attempt)")
+    run_restart = run_sub.add_parser(
+        "restart", help="Restart a run from a phase (create a new attempt)"
+    )
     run_restart.add_argument("id")
     run_restart.add_argument("--from-phase", dest="from_phase", default=None)
     run_restart.set_defaults(func=_cmd_run_restart)
@@ -351,13 +359,8 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    func = getattr(args, "func", None)
-    if func is None:
-        parser.print_help()
-        sys.exit(2)
-
     try:
-        func(args)
+        args.func(args)
     except SystemExit as e:
         if isinstance(e.code, str):
             print(e.code, file=sys.stderr, end="")
