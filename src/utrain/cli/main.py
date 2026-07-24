@@ -226,29 +226,11 @@ def _cmd_orchestrate(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_serve(args: argparse.Namespace) -> None:
-    import uvicorn
-
-    from .. import main as web_main
-
-    settings = config.Settings()
-    app = web_main.create_app(settings)
-    uvicorn.run(
-        app,
-        host=settings.host,
-        port=settings.port,
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="utrain")
     parser.add_argument("-d", "--debug", action="count", default=0)
     parser.add_argument("--log-filename", help="Filename where logs will be written", default=None)
     sub = parser.add_subparsers(dest="command")
-
-    # serve
-    serve_p = sub.add_parser("serve", help="Start the web server")
-    serve_p.set_defaults(func=_cmd_serve)
 
     # compute
     compute_p = sub.add_parser("compute", help="CPU/GPU on host")
