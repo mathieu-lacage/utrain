@@ -4,7 +4,7 @@ import sqlalchemy
 import sqlalchemy.orm
 
 from . import db as dbmod
-from . import output, reconcile
+from . import output, reconcile, exceptions
 
 
 def list_attempts(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
@@ -71,7 +71,7 @@ def show_attempt(run_id_prefix: str, attempt_n: int, session: sqlalchemy.orm.Ses
         .fetchone()
     )
     if attempt_row is None:
-        raise SystemExit(f"abort: attempt {attempt_n} not found for run '{run_id}'")
+        raise exceptions.UI(f"abort: attempt {attempt_n} not found for run '{run_id}'")
 
     phase_rows = (
         session.execute(

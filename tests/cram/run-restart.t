@@ -3,8 +3,8 @@
   $ utrain run start "$RID" >/dev/null
   $ utrain run show "$RID" --wait >/dev/null
   $ utrain run restart "$RID" --from-phase pretrain
-  ID           NAME   IMAGE        GPU   STATUS   ATTEMPT  PHASE     CREATED
-  [0-9a-f]{8}\.\.\.  hello  utrain-fake  none  running  2        pretrain  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  ID\s+NAME\s+IMAGE\s+GPU\s+STATUS\s+ATTEMPT\s+PHASE\s+CREATED (re)
+  [0-9a-f]+\s+hello  utrain-fake  none  running  2        pretrain  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   $ utrain attempt list "$RID"
   ATTEMPT  FROM_PHASE  STATUS   STARTED           ENDED
   2        pretrain    running  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  -- (re)

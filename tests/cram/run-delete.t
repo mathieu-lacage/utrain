@@ -5,7 +5,7 @@
   $ test -d "$UTRAIN_DATA_DIR/runs/$RID" && echo "dir still exists" || echo "dir gone"
   dir gone
   $ utrain run show "$RID"
-  abort: run '*' not found (no-eol) (glob)
+  abort: run '*' not found (glob)
   [1]
 
 Deleting multiple runs at once
@@ -15,10 +15,10 @@ Deleting multiple runs at once
   removed run [0-9a-f]{32} (re)
   removed run [0-9a-f]{32} (re)
   $ utrain run show "$A"
-  abort: run '*' not found (no-eol) (glob)
+  abort: run '*' not found (glob)
   [1]
   $ utrain run show "$B"
-  abort: run '*' not found (no-eol) (glob)
+  abort: run '*' not found (glob)
   [1]
 
 Deleting multiple runs where one id does not exist reports the failure but still deletes the rest
@@ -28,5 +28,5 @@ Deleting multiple runs where one id does not exist reports the failure but still
   abort: run 'doesnotexist' not found
   [1]
   $ utrain run show "$C"
-  abort: run '*' not found (no-eol) (glob)
+  abort: run '*' not found (glob)
   [1]

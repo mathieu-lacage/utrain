@@ -5,7 +5,7 @@ import sqlalchemy.orm
 
 from .. import container
 from . import db as dbmod
-from . import output, reconcile
+from . import output, reconcile, exceptions
 
 
 def _parse_phase_addr(
@@ -31,11 +31,11 @@ def _parse_phase_addr(
     elif len(parts) == 3:
         token1 = parts[1]
         if not token1.isdigit():
-            raise SystemExit(f"abort: expected attempt number, got '{token1}'")
+            raise exceptions.UI(f"abort: expected attempt number, got '{token1}'")
         attempt = int(token1)
         phase = parts[2]
     else:
-        raise SystemExit(f"abort: invalid phase address '{addr}'")
+        raise exceptions.UI(f"abort: invalid phase address '{addr}'")
 
     return run_id, attempt, phase
 
@@ -46,7 +46,7 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> None:
     if attempt_n is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is None:
-        raise SystemExit("abort: run has no attempts yet")
+        raise exceptions.UI("abort: run has no attempts yet")
 
     reconcile.reconcile_attempt(run_id, attempt_n, session)
 
@@ -130,7 +130,7 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
     if attempt_n is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is None:
-        raise SystemExit("abort: run has no attempts yet")
+        raise exceptions.UI("abort: run has no attempts yet")
 
     run_row = dbmod.get_run(run_id, session)
     image_key = str(run_row["image"])
@@ -149,12 +149,12 @@ def read_phase(
     run_id, attempt_n, phase = _parse_phase_addr(addr, session)
 
     if phase is None:
-        raise SystemExit("abort: phase address must include a phase name")
+        raise exceptions.UI("abort: phase address must include a phase name")
 
     if attempt_n is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is None:
-        raise SystemExit("abort: run has no attempts yet")
+        raise exceptions.UI("abort: run has no attempts yet")
 
     reconcile.reconcile_attempt(run_id, attempt_n, session)
 
@@ -174,7 +174,7 @@ def read_phase(
         .fetchone()
     )
     if phase_row is None:
-        raise SystemExit(f"abort: phase '{phase}' not found in attempt {attempt_n}")
+        raise exceptions.UI(f"abort: phase '{phase}' not found in attempt {attempt_n}")
 
     # Resolve phase label from image describe
     image_key = str(run_row["image"])

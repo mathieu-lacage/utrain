@@ -4,7 +4,7 @@ import sys
 import sqlalchemy.orm
 
 from .. import config
-from . import attempts, compute, images, output, phases, runs, store
+from . import attempts, compute, images, output, phases, runs, store, debug, exceptions
 from . import db as dbmod
 
 
@@ -120,6 +120,7 @@ def _cmd_run_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 
 @db_command
 def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    settings = config.Settings()
     runs.create_run(
         name=args.name,
         image=args.image,
@@ -145,9 +146,11 @@ def _cmd_run_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) 
     runs.restart_run(args.id, getattr(args, "from_phase", None), session)
 
 
-@db_command
-def _cmd_run_delete(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.delete_runs(args.ids, force=args.force, session=session)
+def _cmd_run_delete(args: argparse.Namespace) -> None:
+    for run_id_prefix in args.ids:
+        settings = config.Settings()
+        with dbmod.with_db(settings) as session:
+            runs.delete_run(run_id_prefix, force=args.force, session=session)
 
 
 @db_command
@@ -232,6 +235,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="utrain")
+    parser.add_argument('-d', '--debug', action='count', default=0)
+    parser.add_argument("--log-filename", help="Filename where logs will be written", default=None)
     sub = parser.add_subparsers(dest="command")
 
     # serve
@@ -359,15 +364,12 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    debug.setup(args.debug, args.log_filename)
+
     try:
         args.func(args)
-    except SystemExit as e:
-        if isinstance(e.code, str):
-            print(e.code, file=sys.stderr, end="")
-            sys.exit(1)
-        raise
-    except Exception as e:
-        print(e, file=sys.stderr)
+    except exceptions.UI as e:
+        print(e)
         sys.exit(1)
 
 

@@ -5,6 +5,7 @@ import sqlalchemy
 import sqlalchemy.orm
 
 from .. import container
+from . import exceptions
 from . import db as dbmod
 
 
@@ -57,11 +58,11 @@ def add_image(url: str) -> str:
     sqsh = f"/tmp/utrain-{name}+utrain.sqsh"
     result = subprocess.run(["enroot", "import", "-o", sqsh, url])
     if result.returncode != 0:
-        raise SystemExit(f"abort: enroot import failed (exit {result.returncode})")
+        raise exceptions.UI(f"abort: enroot import failed (exit {result.returncode})")
 
     result = subprocess.run(["enroot", "create", sqsh])
     if result.returncode != 0:
-        raise SystemExit(f"abort: enroot create failed (exit {result.returncode})")
+        raise exceptions.UI(f"abort: enroot create failed (exit {result.returncode})")
 
     pathlib.Path(sqsh).unlink(missing_ok=True)
     return name
@@ -75,10 +76,10 @@ def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False
     ).scalar_one()
 
     if int(run_count) > 0 and not force:
-        raise SystemExit(
+        raise exceptions.UI(
             f"abort: image '{name}' is used by {run_count} run(s); use --force to remove anyway"
         )
 
     result = subprocess.run(["enroot", "remove", f"{name}+utrain"], input="y\n", text=True)
     if result.returncode != 0:
-        raise SystemExit(f"abort: enroot remove failed (exit {result.returncode})")
+        raise exceptions.UI(f"abort: enroot remove failed (exit {result.returncode})")

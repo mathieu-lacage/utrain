@@ -5,6 +5,7 @@ import sqlalchemy
 import sqlalchemy.orm
 
 from .. import config
+from . import exceptions
 
 metadata = sqlalchemy.MetaData()
 
@@ -104,10 +105,10 @@ def resolve_run_id(prefix: str, session: sqlalchemy.orm.Session) -> str:
         .fetchall()
     )
     if not rows:
-        raise SystemExit(f"abort: run '{prefix}' not found")
+        raise exceptions.UI(f"abort: run '{prefix}' not found")
     if len(rows) > 1:
         matches = ", ".join(str(r) for r in rows[:4])
-        raise SystemExit(f"abort: id prefix '{prefix}' is ambiguous (matches: {matches})")
+        raise exceptions.UI(f"abort: id prefix '{prefix}' is ambiguous (matches: {matches})")
     return str(rows[0])
 
 
@@ -123,5 +124,5 @@ def latest_attempt(run_id: str, session: sqlalchemy.orm.Session) -> int | None:
 def get_run(run_id: str, session: sqlalchemy.orm.Session) -> sqlalchemy.engine.RowMapping:
     row = session.execute(sqlalchemy.select(runs).where(runs.c.id == run_id)).mappings().fetchone()
     if row is None:
-        raise SystemExit(f"abort: run '{run_id}' not found")
+        raise exceptions.UI(f"abort: run '{run_id}' not found")
     return row

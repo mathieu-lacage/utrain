@@ -15,7 +15,7 @@ import yaml
 
 from .. import config, container
 from . import db as dbmod
-from . import output, reconcile
+from . import output, reconcile, exceptions
 
 
 def _config_hash(path: pathlib.Path) -> str:
@@ -222,7 +222,7 @@ def _wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) ->
         if str(row["status"]) in ("done", "failed", "stopped"):
             return
         if deadline is not None and time.time() > deadline:
-            raise SystemExit(f"abort: run '{run_id}' did not finish within {timeout}s")
+            raise exceptions.UI(f"abort: run '{run_id}' did not finish within {timeout}s")
         time.sleep(1)
 
 
@@ -304,11 +304,11 @@ def create_run(
 ) -> str:
     presets = container.enroot.list_presets()
     if image not in presets:
-        raise SystemExit(f"abort: image '{image}' not found")
+        raise exceptions.UI(f"abort: image '{image}' not found")
 
     describe = container.enroot.describe(presets[image])
     if not describe.phase_order:
-        raise SystemExit(f"abort: image '{image}' has no phases")
+        raise exceptions.UI(f"abort: image '{image}' has no phases")
 
     gpu = _resolve_gpu(gpu_spec)
     run_id = uuid.uuid4().hex
@@ -345,11 +345,11 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
 
     status = str(row["status"])
     if status == "running":
-        raise SystemExit("abort: run is already running")
+        raise exceptions.UI("abort: run is already running")
     if status in ("done", "failed", "stopped"):
-        raise SystemExit("abort: run is terminal; use 'run restart' to re-run")
+        raise exceptions.UI("abort: run is terminal; use 'run restart' to re-run")
     if status != "configuring":
-        raise SystemExit(f"abort: unexpected run status '{status}'")
+        raise exceptions.UI(f"abort: unexpected run status '{status}'")
 
     # Reconcile (no-op if status is configuring)
     attempt_n = dbmod.latest_attempt(run_id, session)
@@ -453,7 +453,7 @@ def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
         if status == "stopped":
             print_run_row(run_id, session)
             return
-        raise SystemExit(f"abort: run is not running (status: {status})")
+        raise exceptions.UI(f"abort: run is not running (status: {status})")
 
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
@@ -522,7 +522,7 @@ def restart_run(
 
     status = str(row["status"])
     if status == "configuring":
-        raise SystemExit("abort: run has not started yet; use 'run start'")
+        raise exceptions.UI("abort: run has not started yet; use 'run start'")
 
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
@@ -543,7 +543,7 @@ def restart_run(
 
     if from_phase is not None:
         if from_phase not in describe.phase_order:
-            raise SystemExit(f"abort: phase '{from_phase}' not found in image")
+            raise exceptions.UI(f"abort: phase '{from_phase}' not found in image")
         from_phase_order = describe.phase_order.index(from_phase)
 
     new_attempt = (attempt_n or 0) + 1
@@ -653,7 +653,7 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
 
     if str(row["status"]) == "running":
         if not force:
-            raise SystemExit("abort: run is running; use --force or stop it first")
+            raise exceptions.UI("abort: run is running; use --force or stop it first")
         if attempt_n is not None:
             _stop_attempt(run_id, attempt_n, session)
 
@@ -667,18 +667,6 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
     session.execute(sqlalchemy.delete(dbmod.runs).where(dbmod.runs.c.id == run_id))
 
     print(f"removed run {run_id}")
-
-
-def delete_runs(run_id_prefixes: list[str], force: bool, session: sqlalchemy.orm.Session) -> None:
-    failed = False
-    for run_id_prefix in run_id_prefixes:
-        try:
-            delete_run(run_id_prefix, force=force, session=session)
-        except SystemExit as e:
-            print(e.code, file=sys.stderr)
-            failed = True
-    if failed:
-        raise SystemExit(1)
 
 
 def logs_run(
@@ -696,7 +684,7 @@ def logs_run(
     if attempt is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
         if attempt_n is None:
-            raise SystemExit("abort: run has no attempts yet")
+            raise exceptions.UI("abort: run has no attempts yet")
         attempt = attempt_n
 
     attempt_dir = run_dir / "attempt" / str(attempt)
@@ -708,7 +696,7 @@ def logs_run(
         log_file = attempt_dir / "orchestrator.log"
 
     if not log_file.exists():
-        raise SystemExit(f"abort: log file not found: {log_file}")
+        raise exceptions.UI(f"abort: log file not found: {log_file}")
 
     lines = log_file.read_text(errors="replace").splitlines()
     for line in lines[-tail:]:
