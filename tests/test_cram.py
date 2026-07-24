@@ -64,5 +64,9 @@ def test_run_restart(fake_image: None) -> None:
     _run_cram(_CRAM_DIR / "run-restart.t")
 
 
+def test_attempt_show(fake_image: None) -> None:
+    _run_cram(_CRAM_DIR / "attempt-show.t")
+
+
 def test_run_stop(fake_image: None) -> None:
     _run_cram(_CRAM_DIR / "run-stop.t")
