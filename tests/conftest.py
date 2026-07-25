@@ -7,24 +7,24 @@ import pytest
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 
 
-@pytest.fixture()
-def fake_image() -> None:
+def _image(name: str) -> None:
     result = subprocess.run(["enroot", "list"], capture_output=True, text=True)
     existing = set(result.stdout.strip().splitlines())
-    if "utrain-fake+utrain" not in existing:
-        result = subprocess.run(["make", "containers/fake"], cwd=_PROJECT_ROOT)
+    target = name.rstrip("")
+    image_name = f"utrain-{name}+utrain"
+    if image_name not in existing:
+        result = subprocess.run(["make", f"containers/{name}"], cwd=_PROJECT_ROOT)
         if result.returncode != 0:
-            pytest.skip("could not build utrain-fake+utrain; run: make containers/fake")
+            pytest.skip(f"could not build {image_name} run: make containers/{name}")
+
+@pytest.fixture()
+def fake_image() -> None:
+    return _image("fake")
 
 
 @pytest.fixture()
 def fake_gpu_image() -> None:
-    result = subprocess.run(["enroot", "list"], capture_output=True, text=True)
-    existing = set(result.stdout.strip().splitlines())
-    if "utrain-fake-gpu+utrain" not in existing:
-        result = subprocess.run(["make", "containers/fake-gpu"], cwd=_PROJECT_ROOT)
-        if result.returncode != 0:
-            pytest.skip("could not build utrain-fake-gpu+utrain; run: make containers/fake-gpu")
+    return _image("fake-gpu")
 
 
 @pytest.fixture()
