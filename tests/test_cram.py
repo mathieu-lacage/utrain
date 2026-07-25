@@ -37,8 +37,13 @@ def test_gpu(gpu_passthrough: None, fake_gpu_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "gpu.t", fake_gpu_image)
 
 
-def test_image(fake_image: dict[str, str]) -> None:
-    _run_cram(_CRAM_DIR / "image.t", fake_image)
+def test_image(fake_image_url: str, fake_gpu_image_url: str) -> None:
+    # Two distinct image URLs so image.t can exercise removing several images
+    # at once (`utrain image remove a b`).
+    _run_cram(
+        _CRAM_DIR / "image.t",
+        {"UTRAIN_TEST_IMAGE_URL": fake_image_url, "UTRAIN_TEST_IMAGE_URL2": fake_gpu_image_url},
+    )
 
 
 def test_phase_read(fake_image: dict[str, str]) -> None:

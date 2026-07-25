@@ -81,6 +81,9 @@ def add_image(url: str) -> str:
 
 
 def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False) -> None:
+    if name not in container.enroot.list_presets():
+        raise exceptions.UI(f"abort: image '{name}' not found")
+
     run_count = session.execute(
         sqlalchemy.select(sqlalchemy.func.count()).where(
             (dbmod.runs.c.image == name) & (dbmod.runs.c.status != "deleted")

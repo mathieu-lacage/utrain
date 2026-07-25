@@ -100,7 +100,8 @@ def _cmd_image_add(session: sqlalchemy.orm.Session, args: argparse.Namespace) ->
 
 @db_command
 def _cmd_image_remove(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    images.remove_image(args.name, session, force=args.force)
+    for name in args.names:
+        images.remove_image(name, session, force=args.force)
 
 
 @db_command
@@ -249,8 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     img_add.add_argument("url")
     img_add.add_argument("--print-id", action="store_true", dest="print_id")
     img_add.set_defaults(func=_cmd_image_add)
-    img_rm = image_sub.add_parser("remove", help="Remove image from local store")
-    img_rm.add_argument("name")
+    img_rm = image_sub.add_parser("remove", help="Remove one or more images from local store")
+    img_rm.add_argument("names", nargs="+", metavar="NAME")
     img_rm.add_argument("--force", action="store_true")
     img_rm.set_defaults(func=_cmd_image_remove)
 
