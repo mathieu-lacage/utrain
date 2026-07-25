@@ -1,7 +1,9 @@
 import collections.abc
 import contextlib
+import sqlite3
 
 import sqlalchemy
+import sqlalchemy.event
 import sqlalchemy.orm
 
 from .. import config
@@ -49,9 +51,19 @@ run_phases = sqlalchemy.Table(
 )
 
 
+def _set_sqlite_pragmas(dbapi_conn: sqlite3.Connection, _record: object) -> None:
+    # A detached orchestrator writes the DB concurrently with foreground read
+    # commands (notably `run show --wait`). Wait up to 5s for a held lock instead
+    # of failing immediately with "database is locked".
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
+
 def create_engine(settings: config.Settings) -> sqlalchemy.Engine:
     url = f"sqlite:///{settings.db_path}"
     engine = sqlalchemy.create_engine(url, connect_args={"check_same_thread": False})
+    sqlalchemy.event.listen(engine, "connect", _set_sqlite_pragmas)
     return engine
 
 

@@ -21,6 +21,46 @@ def _gpu_env(compute: str) -> dict[str, str]:
     return env
 
 
+def _init_phase_data(
+    run_id: str,
+    attempt: int,
+    phase: str,
+    phase_order: int,
+    run_dir: pathlib.Path,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """Initialize a phase's data dir as a hardlinked copy of the previous phase's.
+
+    The previous phase is the one with `phase_order - 1`, taken from the highest
+    attempt <= this one (same attempt for a full run; an earlier attempt for a
+    `--from-phase` restart). The first phase (order 0) is left empty.
+    """
+    target = run_dir / "attempt" / str(attempt) / "data" / phase
+    target.mkdir(parents=True, exist_ok=True)
+    if phase_order == 0:
+        return
+    pred = (
+        session.execute(
+            sqlalchemy.select(dbmod.run_phases.c.phase, dbmod.run_phases.c.attempt)
+            .where(
+                (dbmod.run_phases.c.run_id == run_id)
+                & (dbmod.run_phases.c.phase_order == phase_order - 1)
+                & (dbmod.run_phases.c.attempt <= attempt)
+            )
+            .order_by(dbmod.run_phases.c.attempt.desc())
+            .limit(1)
+        )
+        .mappings()
+        .fetchone()
+    )
+    if pred is None:
+        return
+    source = run_dir / "attempt" / str(pred["attempt"]) / "data" / str(pred["phase"])
+    if not source.exists() or not any(source.iterdir()):
+        return
+    subprocess.run(["cp", "-rl", f"{source}/.", str(target)], check=True)
+
+
 def _start_phase(
     image_key: str,
     attempt_dir: pathlib.Path,
@@ -112,6 +152,7 @@ def run_orchestrator(
 
     attempt_dir = run_dir / "attempt" / str(attempt)
     phases_to_run = [str(r["phase"]) for r in phase_rows]
+    phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 
     for phase in phases_to_run:
         if shutting_down:
@@ -122,6 +163,7 @@ def run_orchestrator(
 
         now = time.time()
         with sqlalchemy.orm.Session(engine) as session:
+            _init_phase_data(run_id, attempt, phase, phase_orders[phase], run_dir, session)
             session.execute(
                 sqlalchemy.update(dbmod.run_phases)
                 .where(
@@ -194,8 +236,12 @@ def run_orchestrator(
         print(f"orchestrator: phase '{phase}' done")
         sys.stdout.flush()
 
-    # All phases complete
+    # All phases complete. Deduplicate into the store *before* marking the run
+    # done: reconcile keeps the run non-terminal while this orchestrator is alive,
+    # so `run show --wait` only returns once the store is fully populated.
     if not shutting_down:
+        _deduplicate_data(attempt_dir, phases_to_run, settings)
+
         now = time.time()
         with sqlalchemy.orm.Session(engine) as session:
             session.execute(
@@ -211,9 +257,6 @@ def run_orchestrator(
             )
             session.commit()
         print("orchestrator: all phases done")
-
-        # Deduplicate data store
-        _deduplicate_data(attempt_dir, phases_to_run, settings)
 
 
 def _deduplicate_data(

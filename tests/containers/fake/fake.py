@@ -78,6 +78,15 @@ def cmd_check_compat() -> None:
     print(json.dumps({"compatible": True, "details": "fake GPU ok (always compatible)"}))
 
 
+def _write_phase_data(files: dict[str, str]) -> None:
+    """Write phase output files into the /data mount (if mounted)."""
+    data = pathlib.Path("/data")
+    if not data.exists():
+        return
+    for name, content in files.items():
+        (data / name).write_text(content)
+
+
 def _read_control(control_path: pathlib.Path) -> str:
     try:
         data = json.loads(control_path.read_text())
@@ -99,6 +108,7 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) ->
         run.log({"vocab_coverage": vocab_coverage}, step=step, commit=True)
         time.sleep(0.1)
     if ok:
+        _write_phase_data({"tokenizer.txt": "tokenizer output\n", "common.txt": "shared payload\n"})
         run.log({"_phase_event": "tokenizer/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
@@ -125,6 +135,7 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, total_steps: int = 200) ->
         )
         time.sleep(0.1)
     if ok:
+        _write_phase_data({"pretrain.txt": "pretrain output\n", "common2.txt": "shared payload\n"})
         run.log({"_phase_event": "pretrain/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok

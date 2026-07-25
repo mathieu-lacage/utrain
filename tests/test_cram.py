@@ -76,3 +76,7 @@ def test_attempt_show(fake_image: dict[str, str]) -> None:
 
 def test_run_stop(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "run-stop.t", fake_image)
+
+
+def test_data_store(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "data-store.t", fake_image)

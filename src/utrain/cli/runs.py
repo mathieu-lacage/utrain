@@ -222,6 +222,9 @@ def _wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) ->
             return
         if deadline is not None and time.time() > deadline:
             raise exceptions.UI(f"abort: run '{run_id}' did not finish within {timeout}s")
+        # Commit so this poll's reconcile writes don't hold the SQLite write lock
+        # across the sleep — the detached orchestrator needs to write concurrently.
+        session.commit()
         time.sleep(1)
 
 
