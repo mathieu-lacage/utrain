@@ -1,5 +1,5 @@
 FROM python:3.11-slim
 RUN mkdir -p /run
 WORKDIR /app
-COPY containers/fake-gpu/fake_gpu.py /app/fake_gpu.py
+COPY tests/containers/fake-gpu/fake_gpu.py /app/fake_gpu.py
 ENTRYPOINT ["python", "/app/fake_gpu.py"]

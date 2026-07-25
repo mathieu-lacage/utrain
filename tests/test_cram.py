@@ -8,8 +8,9 @@ _CRAM_DIR = pathlib.Path(__file__).parent / "cram"
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 
 
-def _run_cram(path: pathlib.Path) -> None:
+def _run_cram(path: pathlib.Path, image_env: dict[str, str]) -> None:
     env = dict(os.environ)
+    env.update(image_env)
     if "COVERAGE_PROCESS_START" in env:
         env["COVERAGE_PROCESS_START"] = str(
             (_PROJECT_ROOT / env["COVERAGE_PROCESS_START"]).resolve()
@@ -24,49 +25,49 @@ def _run_cram(path: pathlib.Path) -> None:
         pytest.fail(result.stdout + result.stderr)
 
 
-def test_compute(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "compute.t")
+def test_compute() -> None:
+    _run_cram(_CRAM_DIR / "compute.t", {})
 
 
-def test_id_prefix(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "id-prefix.t")
+def test_id_prefix(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "id-prefix.t", fake_image)
 
 
-def test_gpu(gpu_passthrough: None, fake_gpu_image: None) -> None:
-    _run_cram(_CRAM_DIR / "gpu.t")
+def test_gpu(gpu_passthrough: None, fake_gpu_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "gpu.t", fake_gpu_image)
 
 
-def test_image(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "image.t")
+def test_image(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "image.t", fake_image)
 
 
-def test_phase_read(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "phase-read.t")
+def test_phase_read(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "phase-read.t", fake_image)
 
 
-def test_run_config(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-config.t")
+def test_run_config(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-config.t", fake_image)
 
 
-def test_run_create(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-create.t")
+def test_run_create(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-create.t", fake_image)
 
 
-def test_run_delete(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-delete.t")
+def test_run_delete(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-delete.t", fake_image)
 
 
-def test_run_lifecycle(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-lifecycle.t")
+def test_run_lifecycle(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-lifecycle.t", fake_image)
 
 
-def test_run_restart(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-restart.t")
+def test_run_restart(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-restart.t", fake_image)
 
 
-def test_attempt_show(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "attempt-show.t")
+def test_attempt_show(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "attempt-show.t", fake_image)
 
 
-def test_run_stop(fake_image: None) -> None:
-    _run_cram(_CRAM_DIR / "run-stop.t")
+def test_run_stop(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-stop.t", fake_image)

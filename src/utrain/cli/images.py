@@ -1,3 +1,4 @@
+import os
 import pathlib
 import subprocess
 
@@ -20,8 +21,15 @@ class ImageInfo:
         self.run_count = run_count
 
 
+def _enroot_data_path() -> pathlib.Path:
+    data_path = os.environ.get("ENROOT_DATA_PATH")
+    if data_path:
+        return pathlib.Path(data_path)
+    return pathlib.Path.home() / ".local" / "share" / "enroot"
+
+
 def _image_size(name: str) -> str:
-    enroot_dir = pathlib.Path.home() / ".local" / "share" / "enroot" / f"{name}+utrain"
+    enroot_dir = _enroot_data_path() / f"{name}+utrain"
     try:
         result = subprocess.run(
             ["du", "-sh", str(enroot_dir)],
@@ -55,16 +63,20 @@ def add_image(url: str) -> str:
     base = path_part.split("/")[-1].split(":")[0]
     name = base
 
-    sqsh = f"/tmp/utrain-{name}+utrain.sqsh"
-    result = subprocess.run(["enroot", "import", "-o", sqsh, url])
-    if result.returncode != 0:
-        raise exceptions.UI(f"abort: enroot import failed (exit {result.returncode})")
+    sqsh = pathlib.Path(f"/tmp/utrain-{name}+utrain.sqsh")
+    # enroot import exits non-zero on some hosts (xattr warnings) even when it
+    # produces a valid image, so remove any stale file and trust the output file,
+    # not the exit code (mirrors the Makefile's `|| true` and tests/conftest.py).
+    sqsh.unlink(missing_ok=True)
+    subprocess.run(["enroot", "import", "-o", str(sqsh), url])
+    if not sqsh.exists() or sqsh.stat().st_size == 0:
+        raise exceptions.UI("abort: enroot import failed")
 
-    result = subprocess.run(["enroot", "create", sqsh])
+    result = subprocess.run(["enroot", "create", str(sqsh)])
     if result.returncode != 0:
         raise exceptions.UI(f"abort: enroot create failed (exit {result.returncode})")
 
-    pathlib.Path(sqsh).unlink(missing_ok=True)
+    sqsh.unlink(missing_ok=True)
     return name
 
 

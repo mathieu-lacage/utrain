@@ -1,4 +1,5 @@
   $ . "$TESTDIR/setup.sh"
+  $ utrain image add "$UTRAIN_TEST_IMAGE_URL" >/dev/null 2>&1
   $ RID=$(utrain run create --name gpu --image utrain-fake-gpu --compute gpu0 --print-id)
   $ utrain run start "$RID" >/dev/null
   $ utrain run show "$RID" --wait | grep '^status:'

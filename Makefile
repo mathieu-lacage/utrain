@@ -5,7 +5,7 @@ all: presets
 frontend:
 	cd frontend &&  npm install && npm run build
 
-presets: containers/shakespeare-char containers/fake containers/fake-gpu
+presets: containers/shakespeare-char
 
 containers/%: FORCE
 	podman build -t utrain-$*:utrain -f containers/$*/Containerfile .

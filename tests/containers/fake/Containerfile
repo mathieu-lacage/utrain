@@ -4,5 +4,5 @@ WORKDIR /app
 RUN pip install --no-cache-dir pyyaml
 COPY packages/baw /app/packages/baw
 RUN pip install --no-cache-dir /app/packages/baw
-COPY containers/fake/fake.py /app/fake.py
+COPY tests/containers/fake/fake.py /app/fake.py
 ENTRYPOINT ["python", "/app/fake.py"]

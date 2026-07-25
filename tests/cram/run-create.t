@@ -1,4 +1,5 @@
   $ . "$TESTDIR/setup.sh"
+  $ utrain image add "$UTRAIN_TEST_IMAGE_URL" >/dev/null 2>&1
   $ utrain run create --name hello --image utrain-fake --compute cpu --print-id
   [0-9a-f]{32} (re)
   $ utrain run list

@@ -1,4 +1,5 @@
   $ . "$TESTDIR/setup.sh"
+  $ utrain image add "$UTRAIN_TEST_IMAGE_URL" >/dev/null 2>&1
   $ RID=$(utrain run create --name hello --image utrain-fake --compute cpu --print-id)
   $ ls "$UTRAIN_DATA_DIR/runs/$RID"
   config.yaml
