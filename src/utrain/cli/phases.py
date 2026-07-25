@@ -100,6 +100,8 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> None:
         ).scalar_one_or_none()
         return int(result) if result is not None else None
 
+    rid = dbmod.short_run_id(run_id, session)
+
     headers = ["PHASE", "ORDER", "STATUS", "STARTED", "ENDED"]
     table_rows: list[list[str]] = []
 
@@ -107,13 +109,14 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> None:
         if i < from_phase_order:
             last_att = _last_attempt_for_phase(phase)
             att_label = f"-- (att.{last_att})" if last_att is not None else "--"
-            table_rows.append([phase, str(i), att_label, "--", "--"])
+            phase_id = f"{rid}/{last_att}/{phase}" if last_att is not None else phase
+            table_rows.append([phase_id, str(i), att_label, "--", "--"])
         else:
             if phase in phase_rows_in_db:
                 p = phase_rows_in_db[phase]
                 table_rows.append(
                     [
-                        phase,
+                        f"{rid}/{attempt_n}/{phase}",
                         str(p["phase_order"]),
                         str(p["status"]),
                         output.format_time(p["started_at"]),

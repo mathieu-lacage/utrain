@@ -4,9 +4,9 @@
   ID\s+NAME\s+IMAGE\s+COMPUTE\s+STATUS\s+ATTEMPT\s+PHASE\s+CREATED (re)
   [0-9a-f]+\s+hello  utrain-fake  cpu      running  1        tokenizer  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   $ utrain phase list "$RID"
-  PHASE      ORDER  STATUS   STARTED           ENDED
-  tokenizer  0      running  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  -- (re)
-  pretrain   1      pending  --                --
+  PHASE\s+ORDER\s+STATUS\s+STARTED\s+ENDED (re)
+  [0-9a-f]+/1/tokenizer\s+0\s+running\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+-- (re)
+  [0-9a-f]+/1/pretrain\s+1\s+pending\s+--\s+-- (re)
   $ utrain phase list "$RID" -q
   [0-9a-f]{32}/1/tokenizer (re)
   [0-9a-f]{32}/1/pretrain (re)

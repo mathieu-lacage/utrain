@@ -6,13 +6,13 @@
   ID\s+NAME\s+IMAGE\s+COMPUTE\s+STATUS\s+ATTEMPT\s+PHASE\s+CREATED (re)
   [0-9a-f]+\s+hello  utrain-fake  cpu      running  2        pretrain  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   $ utrain attempt list "$RID"
-  ATTEMPT  FROM_PHASE  STATUS   STARTED           ENDED
-  2        pretrain    running  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  -- (re)
-  1        --          done     [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  ATTEMPT\s+FROM_PHASE\s+STATUS\s+STARTED\s+ENDED (re)
+  [0-9a-f]+/2\s+pretrain\s+running\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+-- (re)
+  [0-9a-f]+/1\s+--\s+done\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   $ utrain phase list "$RID"
-  PHASE      ORDER  STATUS      STARTED           ENDED
-  tokenizer  0      -- (att.1)  --                --
-  pretrain   1      running     [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  -- (re)
+  PHASE\s+ORDER\s+STATUS\s+STARTED\s+ENDED (re)
+  [0-9a-f]+/1/tokenizer\s+0\s+-- \(att.1\)\s+--\s+-- (re)
+  [0-9a-f]+/2/pretrain\s+1\s+running\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+-- (re)
   $ utrain run show "$RID" --wait >/dev/null
   $ utrain phase read "$RID/2/pretrain" | head -3
   phase:   pretrain (Pre-Training)

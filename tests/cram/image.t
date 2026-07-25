@@ -1,10 +1,9 @@
   $ . "$TESTDIR/setup.sh"
-  $ utrain image list
+  $ utrain image list | grep -E 'NAME|fake' | grep -v gpu
   NAME * SIZE  RUNS (glob)
   utrain-fake .* (re)
-  utrain-shakespeare-char .* (re)
-  $ utrain image remove utrain-fake && utrain image list
+  $ utrain image remove utrain-fake
+  $ utrain image list | grep -E 'NAME|fake' | grep -v gpu
   NAME * SIZE  RUNS (glob)
-  utrain-shakespeare-char .* (re)
-  $ utrain image list -q
-  utrain-shakespeare-char
+  $ utrain image list -q | grep -E 'utrain-fake$'
+  [1]

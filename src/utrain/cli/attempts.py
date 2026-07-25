@@ -24,10 +24,12 @@ def list_attempts(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
         .fetchall()
     )
 
+    rid = dbmod.short_run_id(run_id, session)
+
     headers = ["ATTEMPT", "FROM_PHASE", "STATUS", "STARTED", "ENDED"]
     table_rows = [
         [
-            str(r["attempt"]),
+            f"{rid}/{r['attempt']}",
             str(r["from_phase"]) if r["from_phase"] else "--",
             str(r["status"]),
             output.format_time(r["started_at"]),

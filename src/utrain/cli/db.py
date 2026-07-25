@@ -119,6 +119,37 @@ def resolve_run_id(prefix: str, session: sqlalchemy.orm.Session) -> str:
     return str(rows[0])
 
 
+def short_run_id(run_id: str, session: sqlalchemy.orm.Session) -> str:
+    """Shortest prefix of run_id that is unique across the runs table.
+
+    Uses run_id's lexicographic neighbors (PK-indexed), so it avoids scanning the
+    whole table. The result may be one char shorter than the uniform width used by
+    'run list', but still resolves unambiguously through resolve_run_id.
+    """
+    pred = session.execute(
+        sqlalchemy.select(runs.c.id).where(runs.c.id < run_id).order_by(runs.c.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    succ = session.execute(
+        sqlalchemy.select(runs.c.id).where(runs.c.id > run_id).order_by(runs.c.id.asc()).limit(1)
+    ).scalar_one_or_none()
+
+    def _lcp(a: str, b: str | None) -> int:
+        if b is None:
+            return 0
+        n = 0
+        for ca, cb in zip(a, b):
+            if ca != cb:
+                break
+            n += 1
+        return n
+
+    plen = 1 + max(
+        _lcp(run_id, str(pred) if pred is not None else None),
+        _lcp(run_id, str(succ) if succ is not None else None),
+    )
+    return run_id[:plen]
+
+
 def latest_attempt(run_id: str, session: sqlalchemy.orm.Session) -> int | None:
     result = session.execute(
         sqlalchemy.select(sqlalchemy.func.max(run_attempts.c.attempt)).where(
