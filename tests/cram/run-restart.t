@@ -15,7 +15,7 @@
   [0-9a-f]+/1/tokenizer\s+0\s+-- \(att.1\)\s+--\s+-- (re)
   [0-9a-f]+/2/pretrain\s+1\s+running\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+-- (re)
   $ utrain run show "$RID" --wait >/dev/null
-  $ utrain phase read "$RID/2/pretrain" | head -3
+  $ utrain phase show "$RID/2/pretrain" | head -3
   phase:   pretrain (Pre-Training)
   attempt: 2
   status:  done

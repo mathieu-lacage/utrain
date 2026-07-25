@@ -143,7 +143,7 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
     return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
 
 
-def read_phase(
+def show_phase(
     addr: str,
     session: sqlalchemy.orm.Session,
     metric: str | None = None,

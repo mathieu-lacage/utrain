@@ -201,8 +201,8 @@ def _cmd_phase_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
 
 
 @db_command
-def _cmd_phase_read(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    phases.read_phase(
+def _cmd_phase_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    phases.show_phase(
         args.addr,
         session,
         metric=getattr(args, "metric", None),
@@ -326,11 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
     ph_list.add_argument("addr", help="Run id")
     ph_list.add_argument("-q", "--quiet", action="store_true")
     ph_list.set_defaults(func=_cmd_phase_list)
-    ph_read = phase_sub.add_parser("read", help="Read a single phase")
-    ph_read.add_argument("addr")
-    ph_read.add_argument("--metric", default=None)
-    ph_read.add_argument("--since-step", type=int, default=0, dest="since_step")
-    ph_read.set_defaults(func=_cmd_phase_read)
+    ph_show = phase_sub.add_parser("show", help="Show a single phase")
+    ph_show.add_argument("addr")
+    ph_show.add_argument("--metric", default=None)
+    ph_show.add_argument("--since-step", type=int, default=0, dest="since_step")
+    ph_show.set_defaults(func=_cmd_phase_show)
 
     # store
     store_p = sub.add_parser("store", help="Data store")
