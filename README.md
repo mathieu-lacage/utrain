@@ -11,7 +11,7 @@ UTrain is a python package that can be run on Linux hosts to manage local SLM tr
 ## Install
 
 First, make sure you install [enroot](https://github.com/NVIDIA/enroot/blob/main/doc/installation.md)
-and [container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) 
+and [container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 either from packages or from source.
 
 

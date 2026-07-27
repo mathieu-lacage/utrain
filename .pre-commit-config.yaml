@@ -37,7 +37,7 @@ repos:
         types: [python]
         pass_filenames: false
       - id: coverage
-        name: Test coverage (≥80%)
+        name: Test coverage (≥50%)
         entry: env COVERAGE_PROCESS_START=pyproject.toml uv run pytest --cov=utrain --cov-fail-under=50
         language: system
         pass_filenames: false
