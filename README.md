@@ -33,15 +33,12 @@ in a couple of minutes on a laptop GPU (e.g. an RTX Ada mobile card).
 Commands below assume utrain is on your `PATH`. Working from a checkout instead,
 prefix each with `uv run` (e.g. `uv run utrain ...`, `uv run baw ...`).
 
-### 1. Build the preset image
+### 1. Download an image
 
-`make presets` builds the container with podman and imports it into enroot:
+Tagged releases publish classic models to the project's GitLab container registry:
 
 ```console
-$ make presets
-$ utrain image list
-NAME                     SIZE      RUNS
-utrain-shakespeare-char  1.9 GB    0
+$ utrain image add docker://gitlab.inria.fr:5050/mlacage/utrain/shakespeare-char:latest
 ```
 
 ### 2. Create a run
@@ -107,4 +104,4 @@ want to save the curve instead of drawing it in the terminal.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/mathieu-lacage/utrain/blob/main/LICENSE).
+MIT — see [LICENSE](https://gitlab.inria.fr/mlacage/utrain/-/raw/main/LICENSE?ref_type=heads)

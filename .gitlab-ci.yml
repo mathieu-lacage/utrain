@@ -1,0 +1,65 @@
+# CI pipeline.
+#
+# check stage:   run the pre-commit hooks (`make check`) on every push to main.
+# release stage: on tag pipelines, build every container preset under
+#                containers/<name>/ and push it to this project's GitLab
+#                container registry. The pre-commit hooks also run on tags (the
+#                check stage runs first), so a release only publishes if they pass.
+#
+# Users pull a published preset with:
+#   utrain image add docker://$CI_REGISTRY_IMAGE/<name>:latest
+#
+# Prerequisites:
+#   - Container Registry enabled (Settings -> General -> Visibility).
+#   - The pre-commit job fetches the `packages/baw` submodule over HTTPS with the
+#     CI job token. That requires the `mlacage/baw` project to allow this
+#     project's job token (baw: Settings -> CI/CD -> Token Access -> add utrain),
+#     or switching .gitmodules to a relative URL (url = ../baw.git).
+
+stages: [check, release]
+
+pre-commit:
+  stage: check
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm
+  variables:
+    # packages/baw is a path dependency; uv needs the submodule checked out.
+    GIT_SUBMODULE_STRATEGY: recursive
+    GIT_SUBMODULE_FORCE_HTTPS: "true"
+    PRE_COMMIT_HOME: "$CI_PROJECT_DIR/.cache/pre-commit"
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+  cache:
+    key: pre-commit
+    paths:
+      - .cache/pre-commit
+      - .cache/uv
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - uv run --frozen pre-commit run --all-files --show-diff-on-failure
+
+build-images:
+  stage: release
+  image:
+    # The :debug tag ships /busybox/sh so the shell loop below can run.
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - mkdir -p /kaniko/.docker
+    - |
+      cat > /kaniko/.docker/config.json <<EOF
+      {"auths":{"$CI_REGISTRY":{"username":"$CI_REGISTRY_USER","password":"$CI_REGISTRY_PASSWORD"}}}
+      EOF
+    - |
+      for dir in containers/*/; do
+        name=$(basename "$dir")
+        [ -f "containers/$name/Containerfile" ] || continue
+        echo "Building and pushing $name"
+        /kaniko/executor \
+          --context "$CI_PROJECT_DIR" \
+          --dockerfile "containers/$name/Containerfile" \
+          --destination "$CI_REGISTRY_IMAGE/$name:$CI_COMMIT_TAG" \
+          --destination "$CI_REGISTRY_IMAGE/$name:latest"
+      done
