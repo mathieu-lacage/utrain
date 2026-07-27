@@ -58,10 +58,8 @@ repos:
         entry: uv run --frozen licensecheck
         language: system
         pass_filenames: false
-        stages: [pre-push]
       - id: uv-audit
         name: Vulnerability scan (uv audit)
         entry: uv audit
         language: system
         pass_filenames: false
-        stages: [pre-push]
