@@ -2,6 +2,7 @@
 **/__pycache__/
 **/node_modules/
 frontend/dist
-.coverage
+.coverage*
 **/*.swp
 **/*.t.err
+
