@@ -10,9 +10,9 @@ import sys
 import time
 import urllib.request
 
-import baw.wandb
 import torch
 import torch.nn as nn
+import wandb
 import yaml
 
 SHAKESPEARE_URL = (
@@ -274,7 +274,7 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
 
 
 def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
-    run = baw.wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "tokenizer/started"})
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -306,7 +306,7 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
 
 
 def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) -> bool:
-    run = baw.wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(run_dir))
+    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(run_dir))
     run.log({"_phase_event": "pretrain/started"})
 
     # Config

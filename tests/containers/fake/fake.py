@@ -10,7 +10,7 @@ import random
 import sys
 import time
 
-import baw.wandb
+import wandb
 import yaml
 
 DESCRIBE = {
@@ -96,7 +96,7 @@ def _read_control(control_path: pathlib.Path) -> str:
 
 
 def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) -> bool:
-    run = baw.wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "tokenizer/started"})
     ok = True
     for step in range(total_steps):
@@ -115,7 +115,7 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) ->
 
 
 def _run_pretrain(run_dir: pathlib.Path, run_id: str, total_steps: int = 200) -> bool:
-    run = baw.wandb.init(project="pretrain", id=run_id, dir=str(run_dir))
+    run = wandb.init(project="pretrain", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "pretrain/started"})
     ok = True
     for step in range(total_steps):
