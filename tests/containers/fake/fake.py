@@ -95,6 +95,35 @@ def _read_control(control_path: pathlib.Path) -> str:
         return "continue"
 
 
+def _flatten_config(cfg: dict[str, object], phase: str) -> dict[str, object]:
+    """Merge the utrain config into the flat namespace this phase reads.
+
+    utrain writes config.yaml with keys grouped under a ``globals`` section and
+    a per-phase ``phases.<phase>`` section. Within a section a value may be a
+    field group (a dict, e.g. ``globals.model``) whose members are the real
+    keys, or a bare field. A container must merge, for the phase it runs:
+    top-level scalars + ``globals`` + ``phases.<phase>``, expanding any group
+    dict one level (phase values win over globals on collision).
+    """
+    flat: dict[str, object] = {k: v for k, v in cfg.items() if k not in ("globals", "phases")}
+
+    def _merge(section: object) -> None:
+        if not isinstance(section, dict):
+            return
+        for key, value in section.items():
+            if isinstance(value, dict):
+                flat.update(value)
+            else:
+                flat[key] = value
+
+    _merge(cfg.get("globals"))
+    phases_section = cfg.get("phases")
+    if isinstance(phases_section, dict):
+        _merge(phases_section.get(phase))
+
+    return flat
+
+
 def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) -> bool:
     run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "tokenizer/started"})
@@ -114,9 +143,16 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) ->
     return ok
 
 
-def _run_pretrain(run_dir: pathlib.Path, run_id: str, total_steps: int = 200) -> bool:
+def _run_pretrain(
+    run_dir: pathlib.Path, run_id: str, cfg: dict[str, object], total_steps: int = 200
+) -> bool:
     run = wandb.init(project="pretrain", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "pretrain/started"})
+    # Echo the effective config so the e2e suite can verify the utrain config
+    # protocol: `num_layers` comes from `globals`, `batch_size` from this phase.
+    num_layers = int(cfg.get("num_layers", 12))
+    batch_size = int(cfg.get("batch_size", 32))
+    print(f"config: num_layers={num_layers} batch_size={batch_size}", flush=True)
     ok = True
     for step in range(total_steps):
         if _read_control(run_dir / "control.json") == "stop":
@@ -142,12 +178,13 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, total_steps: int = 200) ->
 
 
 def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
-    cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+    raw_cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+    cfg = _flatten_config(raw_cfg, phase)
     run_id = str(cfg.get("run_id", ""))
     if phase == "tokenizer":
         ok = _run_tokenizer(run_dir, run_id)
     elif phase == "pretrain":
-        ok = _run_pretrain(run_dir, run_id)
+        ok = _run_pretrain(run_dir, run_id, cfg)
     else:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
@@ -155,15 +192,16 @@ def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
 
 
 def cmd_run_all(run_dir: pathlib.Path) -> None:
-    cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
-    run_id = str(cfg.get("run_id", ""))
+    raw_cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
     for phase in DESCRIBE["phase_order"]:
         if _read_control(run_dir / "control.json") == "stop":
             sys.exit(1)
+        cfg = _flatten_config(raw_cfg, phase)
+        run_id = str(cfg.get("run_id", ""))
         if phase == "tokenizer":
             ok = _run_tokenizer(run_dir, run_id)
         elif phase == "pretrain":
-            ok = _run_pretrain(run_dir, run_id)
+            ok = _run_pretrain(run_dir, run_id, cfg)
         else:
             print(f"unknown phase: {phase}", file=sys.stderr)
             sys.exit(1)

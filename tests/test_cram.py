@@ -54,6 +54,10 @@ def test_run_config(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "run-config.t", fake_image)
 
 
+def test_run_config_protocol(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "run-config-protocol.t", fake_image)
+
+
 def test_run_create(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "run-create.t", fake_image)
 

@@ -14,17 +14,95 @@ First, make sure you install [enroot](https://github.com/NVIDIA/enroot/blob/main
 and [container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 either from packages or from source.
 
-
-Then, you can install utrain. We recommend the use of pipx:
+Then install utrain. We recommend the use of pipx:
 ```console
 $ pipx install utrain
-$ utrain start
-UTrain UI available on http://localhost:7612/
 ```
 
+`utrain` groups its commands as `compute`, `image`, `run`, `attempt`, `phase`
+and `store`. Run `utrain --help` for the full list.
 
 
-![UTrain Demo](https://raw.githubusercontent.com/mathieu-lacage/utrain/main/docs/demo.gif)
+## Quickstart: train a tiny Shakespeare model
+
+This walks through training a character-level Shakespeare transformer end to end
+and looking at the loss curve. It uses the `shakespeare-char` preset that ships
+with the repo, sized down so it builds a model and produces a usable loss curve
+in a couple of minutes on a laptop GPU (e.g. an RTX Ada mobile card).
+
+Commands below assume utrain is on your `PATH`. Working from a checkout instead,
+prefix each with `uv run` (e.g. `uv run utrain ...`, `uv run baw ...`).
+
+### 1. Build the preset image
+
+`make presets` builds the container with podman and imports it into enroot:
+
+```console
+$ make presets
+$ utrain image list
+NAME                     SIZE      RUNS
+utrain-shakespeare-char  1.9 GB    0
+```
+
+### 2. Create a run
+
+Create a run on the first GPU (`gpu0`; use `cpu` if you have no GPU). `--print-id`
+prints just the new run id so you can capture it:
+
+```console
+$ RID=$(utrain run create --name tiny-shakespeare \
+    --image utrain-shakespeare-char --compute gpu0 --print-id)
+```
+
+`run create` writes a default `runs/$RID/config.yaml` you can edit before starting.
+
+### 3. Shrink the model
+
+Edit `runs/$RID/config.yaml` down to the smallest useful size. The config keys are
+grouped by section; only the values matter:
+
+```yaml
+globals:
+  model:
+    n_layer: 1
+    n_head: 2
+    n_embd: 64
+    block_size: 128
+phases:
+  pretrain:
+    max_iters: 2000
+    batch_size: 32
+    learning_rate: 0.001
+    eval_interval: 100
+```
+
+That is a ~0.1M-parameter model — it trains in a couple of minutes on an Ada
+mobile GPU while still showing a clearly decreasing loss. You can go smaller: the
+schema minimums are `n_layer 1`, `n_head 1`, `n_embd 32`, `block_size 64`.
+
+### 4. Start and monitor
+
+```console
+$ utrain run start "$RID"
+$ utrain run show "$RID" --wait      # blocks until the run finishes
+```
+
+At any time, `utrain phase show "$RID/pretrain"` prints the latest `loss`, `bpb`
+and `mfu`, plus the tail of the training log.
+
+### 5. Look at the loss with `baw`
+
+Each phase logs its metrics as a `baw` time-series file under the run directory.
+Point `baw` at the pretrain metrics to plot the loss right in your terminal:
+
+```console
+$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb metrics          # list metrics
+$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb plot -y loss --lines
+$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb watch            # live tail while training
+```
+
+`baw ... plot` also supports `--output png`/`--output svg`/`--output csv` if you
+want to save the curve instead of drawing it in the terminal.
 
 
 ## License

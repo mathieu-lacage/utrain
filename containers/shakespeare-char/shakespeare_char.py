@@ -238,6 +238,35 @@ def _load_config(run_dir: pathlib.Path) -> dict[str, object]:
     return {}
 
 
+def _flatten_config(cfg: dict[str, object], phase: str) -> dict[str, object]:
+    """Merge the utrain config into the flat namespace this phase reads.
+
+    utrain writes config.yaml with keys grouped under a ``globals`` section and
+    a per-phase ``phases.<phase>`` section. Within a section a value may be a
+    field group (a dict, e.g. ``globals.model``) whose members are the real
+    keys, or a bare field. The container reads flat keys, so for the phase being
+    run we merge top-level scalars + ``globals`` + ``phases.<phase>``, expanding
+    any group dict one level. Phase values win over globals on collision.
+    """
+    flat: dict[str, object] = {k: v for k, v in cfg.items() if k not in ("globals", "phases")}
+
+    def _merge(section: object) -> None:
+        if not isinstance(section, dict):
+            return
+        for key, value in section.items():
+            if isinstance(value, dict):
+                flat.update(value)
+            else:
+                flat[key] = value
+
+    _merge(cfg.get("globals"))
+    phases_section = cfg.get("phases")
+    if isinstance(phases_section, dict):
+        _merge(phases_section.get(phase))
+
+    return flat
+
+
 def _get_int(cfg: dict[str, object], key: str, default: int) -> int:
     val = cfg.get(key, default)
     return int(val)  # type: ignore[arg-type]
@@ -494,7 +523,7 @@ def cmd_check_compat() -> None:
 
 
 def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
-    cfg = _load_config(run_dir)
+    cfg = _flatten_config(_load_config(run_dir), phase)
     run_id = _get_str(cfg, "run_id", "")
     if phase == "tokenizer":
         ok = _run_tokenizer(run_dir, run_id)
@@ -507,11 +536,12 @@ def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
 
 
 def cmd_run_all(run_dir: pathlib.Path) -> None:
-    cfg = _load_config(run_dir)
-    run_id = _get_str(cfg, "run_id", "")
+    raw_cfg = _load_config(run_dir)
     for phase in DESCRIBE["phase_order"]:
         if _read_control(run_dir / "control.json") == "stop":
             sys.exit(1)
+        cfg = _flatten_config(raw_cfg, phase)
+        run_id = _get_str(cfg, "run_id", "")
         if phase == "tokenizer":
             ok = _run_tokenizer(run_dir, run_id)
         elif phase == "pretrain":
@@ -525,7 +555,7 @@ def cmd_run_all(run_dir: pathlib.Path) -> None:
 
 
 def cmd_serve(run_dir: pathlib.Path, port: int) -> None:
-    cfg = _load_config(run_dir)
+    cfg = _flatten_config(_load_config(run_dir), "pretrain")
     generate_len = _get_int(cfg, "generate_len", 200)
     model, stoi, itos, _ = _load_model(run_dir)
 
