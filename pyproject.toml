@@ -76,4 +76,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6",
     "ruff>=0.15.18",
+    "licensecheck>=2025.1.0",
+    "uv-audit>=0.1.9",
 ]
