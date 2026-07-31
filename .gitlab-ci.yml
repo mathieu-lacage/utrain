@@ -1,6 +1,7 @@
 # CI pipeline.
 #
-# check stage:   run the pre-commit hooks (`make check`) on every push to main.
+# check stage:   run the pre-commit hooks (`make check`) and the pytest suite on
+#                every push to main.
 # release stage: on tag pipelines, build every container preset under
 #                containers/<name>/ and push it to this project's GitLab
 #                container registry. The pre-commit hooks also run on tags (the
@@ -30,6 +31,30 @@ pre-commit:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - uv run --frozen pre-commit run --all-files --show-diff-on-failure
+
+test:
+  stage: check
+  # The suite drives podman (every cram test builds and runs a container), so it
+  # needs a runner that can nest containers: podman/stable ships podman and runs
+  # rootless inside the job, which requires a privileged runner. vfs is the only
+  # storage driver that works without a host overlay mount.
+  image: quay.io/podman/stable
+  variables:
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+    STORAGE_DRIVER: vfs
+  cache:
+    key: test
+    paths:
+      - .cache/uv
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - dnf install -y python3.11
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - uv run --frozen pytest
 
 build-images:
   stage: release
