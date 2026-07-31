@@ -31,7 +31,7 @@ with the repo, sized down so it builds a model and produces a usable loss curve
 in a couple of minutes on a laptop GPU (e.g. an RTX Ada mobile card).
 
 Commands below assume utrain is on your `PATH`. Working from a checkout instead,
-prefix each with `uv run` (e.g. `uv run utrain ...`, `uv run baw ...`).
+prefix each with `uv run` (e.g. `uv run utrain ...`, `uv run naw ...`).
 
 ### 1. Download an image
 
@@ -87,18 +87,18 @@ $ utrain run show "$RID" --wait      # blocks until the run finishes
 At any time, `utrain phase show "$RID/pretrain"` prints the latest `loss`, `bpb`
 and `mfu`, plus the tail of the training log.
 
-### 5. Look at the loss with `baw`
+### 5. Look at the loss with `naw`
 
-Each phase logs its metrics as a `baw` time-series file under the run directory.
-Point `baw` at the pretrain metrics to plot the loss right in your terminal:
+Each phase logs its metrics as a `naw` time-series file under the run directory.
+Point `naw` at the pretrain metrics to plot the loss right in your terminal:
 
 ```console
-$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb metrics          # list metrics
-$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb plot -y loss --lines
-$ baw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb watch            # live tail while training
+$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb metrics          # list metrics
+$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb plot -y loss --lines
+$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb watch            # live tail while training
 ```
 
-`baw ... plot` also supports `--output png`/`--output svg`/`--output csv` if you
+`naw ... plot` also supports `--output png`/`--output svg`/`--output csv` if you
 want to save the curve instead of drawing it in the terminal.
 
 

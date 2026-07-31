@@ -1,6 +1,6 @@
 import pathlib
 
-import baw.rtsdb
+import naw.rtsdb
 import pydantic
 
 
@@ -32,7 +32,7 @@ def read_phase_events(run_dir: pathlib.Path, phase: str) -> list[PhaseEvent]:
     if path is None or not path.exists():
         return []
     try:
-        reader = baw.rtsdb.Reader(str(path))
+        reader = naw.rtsdb.Reader(str(path))
         try:
             events: list[PhaseEvent] = []
             for row in reader.read_rows(0):
@@ -64,7 +64,7 @@ def read_metrics(
     if path is None or not path.exists():
         return []
     try:
-        reader = baw.rtsdb.Reader(str(path))
+        reader = naw.rtsdb.Reader(str(path))
         try:
             metrics: list[Metric] = []
             for row in reader.read_rows(0):

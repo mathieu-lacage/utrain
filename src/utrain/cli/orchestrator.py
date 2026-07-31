@@ -5,14 +5,14 @@ import subprocess
 import sys
 import time
 
-import baw
+import naw
 import sqlalchemy
 import sqlalchemy.orm
 
 from .. import config, container
 from . import db as dbmod
 
-# Single dir placed first on the container's PYTHONPATH; holds the mounted baw
+# Single dir placed first on the container's PYTHONPATH; holds the mounted naw
 # package and the wandb shim (see _wandb_mount_args).
 _WANDB_PYPATH = "/opt/utrain-py"
 
@@ -27,19 +27,19 @@ def _gpu_env(compute: str) -> dict[str, str]:
 
 
 def _wandb_mount_args() -> list[str]:
-    """enroot args that shadow the image's real wandb with baw's rtsdb backend.
+    """enroot args that shadow the image's real wandb with naw's rtsdb backend.
 
-    Mounts the baw package plus a tiny ``wandb`` shim read-only under a single
+    Mounts the naw package plus a tiny ``wandb`` shim read-only under a single
     dir put first on PYTHONPATH, so ``import wandb`` inside the container
-    resolves to the shim -> ``baw.wandb`` and metrics are written as rtsdb
+    resolves to the shim -> ``naw.wandb`` and metrics are written as rtsdb
     files, regardless of what wandb the image itself ships. ``x-create=dir``
     makes enroot create the mountpoints, which don't exist in the image.
     """
-    baw_dir = pathlib.Path(baw.__file__).parent
+    naw_dir = pathlib.Path(naw.__file__).parent
     shim_dir = pathlib.Path(container.__file__).parent / "wandb_shim" / "wandb"
     return [
         "--mount",
-        f"{baw_dir}:{_WANDB_PYPATH}/baw:none:x-create=dir,bind,ro",
+        f"{naw_dir}:{_WANDB_PYPATH}/naw:none:x-create=dir,bind,ro",
         "--mount",
         f"{shim_dir}:{_WANDB_PYPATH}/wandb:none:x-create=dir,bind,ro",
         "--env",

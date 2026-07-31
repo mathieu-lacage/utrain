@@ -16,11 +16,11 @@ dependencies = [
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
     "anyio>=4.0",
-    "baw",
+    "naw",
 ]
 
 [tool.uv.sources]
-baw = { path = "packages/baw" }
+naw = { path = "packages/naw" }
 
 [project.scripts]
 utrain = "utrain.cli.main:main"

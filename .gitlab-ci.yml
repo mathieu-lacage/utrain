@@ -11,10 +11,10 @@
 #
 # Prerequisites:
 #   - Container Registry enabled (Settings -> General -> Visibility).
-#   - The pre-commit job fetches the `packages/baw` submodule over HTTPS with the
-#     CI job token. That requires the `mlacage/baw` project to allow this
-#     project's job token (baw: Settings -> CI/CD -> Token Access -> add utrain),
-#     or switching .gitmodules to a relative URL (url = ../baw.git).
+#   - The pre-commit job fetches the `packages/naw` submodule over HTTPS with the
+#     CI job token. That requires the `mlacage/naw` project to allow this
+#     project's job token (naw: Settings -> CI/CD -> Token Access -> add utrain),
+#     or switching .gitmodules to a relative URL (url = ../naw.git).
 
 stages: [check, release]
 
@@ -22,7 +22,7 @@ pre-commit:
   stage: check
   image: ghcr.io/astral-sh/uv:python3.11-bookworm
   variables:
-    # packages/baw is a path dependency; uv needs the submodule checked out.
+    # packages/naw is a path dependency; uv needs the submodule checked out.
     GIT_SUBMODULE_STRATEGY: recursive
     GIT_SUBMODULE_FORCE_HTTPS: "true"
     PRE_COMMIT_HOME: "$CI_PROJECT_DIR/.cache/pre-commit"
