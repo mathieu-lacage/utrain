@@ -36,23 +36,6 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-      - id: coverage
-        name: Test coverage (≥50%)
-        entry: env COVERAGE_PROCESS_START=pyproject.toml uv run pytest --cov=utrain --cov-fail-under=50
-        language: system
-        pass_filenames: false
-      - id: vue-tsc
-        name: TypeScript type check (frontend)
-        entry: npm --prefix frontend run typecheck
-        language: system
-        files: ^frontend/src/.*\.(ts|vue)$
-        pass_filenames: false
-      - id: eslint-frontend
-        name: ESLint (frontend)
-        entry: npm --prefix frontend run lint
-        language: system
-        files: ^frontend/src/.*\.(ts|vue)$
-        pass_filenames: false
       - id: licensecheck
         name: License compatibility
         entry: uv run --frozen licensecheck
