@@ -1,3 +1,3 @@
 [submodule "packages/baw"]
-	path = packages/baw
+	path = packages/naw
 	url = ../baw.git
