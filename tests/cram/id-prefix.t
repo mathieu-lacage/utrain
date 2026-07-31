@@ -1,7 +1,5 @@
   $ . "$TESTDIR/setup.sh"
   $ utrain image add "$UTRAIN_TEST_IMAGE_URL" >/dev/null 2>&1
-  $ utrain run create --name c --image utrain-fake --compute cpu --print-id >/dev/null
-  $ utrain run create --name d --image utrain-fake --compute cpu --print-id >/dev/null
   $ A=$(utrain run create --name a --image utrain-fake --compute cpu --print-id)
   $ B=$(utrain run create --name b --image utrain-fake --compute cpu --print-id)
   $ utrain run show "${A:0:8}"
