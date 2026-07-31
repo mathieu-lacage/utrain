@@ -27,7 +27,19 @@ packages = ["src/utrain"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short"
+# Every test shells out to cram, which shells out to podman, so the suite is
+# almost entirely subprocess wait time and parallelizes well. Override with
+# `-n0` to debug.
+#
+# `-n auto` is one worker per *physical* core, ignoring hyperthreading: xdist
+# resolves auto via psutil.cpu_count(logical=False), which is why psutil is a
+# dev dependency even though nothing imports it. Drop psutil and auto silently
+# degrades to sched_getaffinity, i.e. the logical count.
+#
+# `worksteal` because durations are very uneven -- compute.t is instant,
+# run-config-protocol.t is a minute, and that one test is the critical path that
+# sets the floor on wall time.
+addopts = "--tb=short -n auto --dist worksteal"
 
 [tool.pyright]
 include = ["src"]
@@ -57,6 +69,11 @@ dev = [
     "pre-commit>=4.6.0",
     "pyright>=1.1.411",
     "pytest>=8.0",
+    # psutil is not used directly: pytest-xdist needs it for `-n auto` to mean
+    # physical cores. Without it xdist falls back to sched_getaffinity, i.e. the
+    # hyperthreaded logical count. See the addopts comment above.
+    "psutil>=5.9",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.6",
     "ruff>=0.15.18",
 ]

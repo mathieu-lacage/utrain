@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import typing
 
@@ -9,7 +10,13 @@ from . import schema
 # what marks an image as a utrain preset; the prefix keeps unrelated images
 # tagged `:utrain` (e.g. the bare `fake:utrain` the test suite builds before
 # `image add` namespaces it) out of `utrain image list`.
-_TAG = "utrain"
+#
+# UTRAIN_IMAGE_TAG overrides the tag so a caller can claim a private preset
+# namespace inside a shared podman store -- the image-store counterpart to
+# UTRAIN_DATA_DIR isolating run state. The test suite gives every test its own,
+# so parallel tests cannot untag each other's images. `podman tag` is zero-copy,
+# so the namespaces all share one set of layers.
+_TAG = os.environ.get("UTRAIN_IMAGE_TAG", "utrain")
 _PREFIX = "utrain-"
 
 
