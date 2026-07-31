@@ -54,11 +54,18 @@ test:
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == "main"'
   before_script:
-    - dnf install -y python3.11
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
+    # Fail loudly here rather than let the suite skip its way to a green run:
+    # conftest turns an unbuildable image into pytest.skip, so a podman that
+    # cannot nest looks exactly like a passing pipeline. Print the diagnosis
+    # (`podman info`) before proving podman can actually build and run.
+    - podman info
+    - podman run --rm docker.io/library/busybox:latest true
   script:
-    - uv run --frozen pytest
+    # -rs prints the reason for every skip, so a suite that goes quiet in CI
+    # says why in the job log instead of just shrinking.
+    - uv run --frozen pytest -rs
 
 build-images:
   stage: release
