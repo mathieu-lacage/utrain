@@ -1,5 +1,3 @@
-import os
-import pathlib
 import subprocess
 
 import sqlalchemy
@@ -21,31 +19,44 @@ class ImageInfo:
         self.run_count = run_count
 
 
-def _enroot_data_path() -> pathlib.Path:
-    data_path = os.environ.get("ENROOT_DATA_PATH")
-    if data_path:
-        return pathlib.Path(data_path)
-    return pathlib.Path.home() / ".local" / "share" / "enroot"
+def _image_exists(ref: str) -> bool:
+    result = subprocess.run(["podman", "image", "exists", ref])
+    return result.returncode == 0
+
+
+def _format_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "K", "M", "G"):
+        if size < 1024 or unit == "G":
+            return f"{size:.0f}{unit}"
+        size /= 1024
+    return "?"
 
 
 def _image_size(name: str) -> str:
-    enroot_dir = _enroot_data_path() / f"{name}+utrain"
     try:
         result = subprocess.run(
-            ["du", "-sh", str(enroot_dir)],
+            [
+                "podman",
+                "image",
+                "inspect",
+                container.podman.image_ref(name),
+                "--format",
+                "{{.Size}}",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode == 0:
-            return result.stdout.split()[0]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+            return _format_size(int(result.stdout.strip()))
+    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
         pass
     return "?"
 
 
 def list_images(session: sqlalchemy.orm.Session) -> list[ImageInfo]:
-    presets = container.enroot.list_presets()
+    presets = container.podman.list_presets()
     images: list[ImageInfo] = []
     for name in sorted(presets):
         run_count = session.execute(
@@ -58,30 +69,34 @@ def list_images(session: sqlalchemy.orm.Session) -> list[ImageInfo]:
 
 
 def add_image(url: str) -> str:
-    # Derive <name> from last path component of the URL (strip scheme and tag)
+    # Derive <name> from the last path component of the URL (strip scheme and tag).
     path_part = url.split("://", 1)[-1]
     base = path_part.split("/")[-1].split(":")[0]
-    name = base
+    name = container.podman.preset_key(base)
 
-    sqsh = pathlib.Path(f"/tmp/utrain-{name}+utrain.sqsh")
-    # enroot import exits non-zero on some hosts (xattr warnings) even when it
-    # produces a valid image, so remove any stale file and trust the output file,
-    # not the exit code (mirrors the Makefile's `|| true` and tests/conftest.py).
-    sqsh.unlink(missing_ok=True)
-    subprocess.run(["enroot", "import", "-o", str(sqsh), url])
-    if not sqsh.exists() or sqsh.stat().st_size == 0:
-        raise exceptions.UI("abort: enroot import failed")
+    # `podman://` is an enroot transport, not a podman one; it means "already in
+    # the local store", so there is nothing to pull. Everything else goes to
+    # `podman pull` with its scheme intact (docker://, or a bare registry ref).
+    if not url.startswith("podman://") and not _image_exists(path_part):
+        result = subprocess.run(["podman", "pull", url])
+        if result.returncode != 0:
+            raise exceptions.UI(f"abort: podman pull failed (exit {result.returncode})")
 
-    result = subprocess.run(["enroot", "create", str(sqsh)])
+    # Tag from the scheme-stripped ref: that is the name a pull stores locally,
+    # and `podman tag` rejects a transport prefix.
+    result = subprocess.run(
+        ["podman", "tag", path_part, container.podman.image_ref(name)],
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
-        raise exceptions.UI(f"abort: enroot create failed (exit {result.returncode})")
+        raise exceptions.UI(f"abort: podman tag failed: {result.stderr.strip()}")
 
-    sqsh.unlink(missing_ok=True)
     return name
 
 
 def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False) -> None:
-    if name not in container.enroot.list_presets():
+    if name not in container.podman.list_presets():
         raise exceptions.UI(f"abort: image '{name}' not found")
 
     run_count = session.execute(
@@ -95,6 +110,12 @@ def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False
             f"abort: image '{name}' is used by {run_count} run(s); use --force to remove anyway"
         )
 
-    result = subprocess.run(["enroot", "remove", f"{name}+utrain"], input="y\n", text=True)
+    # Quiet: `podman rmi` reports every tag it drops ("Untagged: ..."), which is
+    # podman's bookkeeping, not utrain's output. Removal is silent on success.
+    result = subprocess.run(
+        ["podman", "rmi", container.podman.image_ref(name)],
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
-        raise exceptions.UI(f"abort: enroot remove failed (exit {result.returncode})")
+        raise exceptions.UI(f"abort: podman rmi failed: {result.stderr.strip()}")

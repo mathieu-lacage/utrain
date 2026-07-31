@@ -10,9 +10,14 @@ UTrain is a python package that can be run on Linux hosts to manage local SLM tr
 
 ## Install
 
-First, make sure you install [enroot](https://github.com/NVIDIA/enroot/blob/main/doc/installation.md)
-and [container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+First, make sure you install [podman](https://podman.io/docs/installation) and
+[container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 either from packages or from source.
+
+Containers run rootless and reach the host GPUs through a CDI spec that utrain
+generates per run with `nvidia-ctk`, so no root setup is needed — no
+`setsebool`, no persistent spec to refresh after a driver update. Only `cpu`
+runs work without the container toolkit.
 
 Then install utrain. We recommend the use of pipx:
 ```console

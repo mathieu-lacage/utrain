@@ -304,11 +304,11 @@ def create_run(
     session: sqlalchemy.orm.Session,
     print_id: bool = False,
 ) -> str:
-    presets = container.enroot.list_presets()
+    presets = container.podman.list_presets()
     if image not in presets:
         raise exceptions.UI(f"abort: image '{image}' not found")
 
-    describe = container.enroot.describe(presets[image])
+    describe = container.podman.describe(presets[image])
     if not describe.phase_order:
         raise exceptions.UI(f"abort: image '{image}' has no phases")
 
@@ -393,8 +393,8 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
     )
 
     # Determine phase order from image
-    presets = container.enroot.list_presets()
-    describe = container.enroot.describe(presets[image_key])
+    presets = container.podman.list_presets()
+    describe = container.podman.describe(presets[image_key])
     for i, phase in enumerate(describe.phase_order):
         session.execute(
             sqlalchemy.insert(dbmod.run_phases).values(
@@ -540,8 +540,8 @@ def restart_run(
 
     # Validate from_phase
     from_phase_order: int | None = None
-    presets = container.enroot.list_presets()
-    describe = container.enroot.describe(presets[image_key])
+    presets = container.podman.list_presets()
+    describe = container.podman.describe(presets[image_key])
 
     if from_phase is not None:
         if from_phase not in describe.phase_order:

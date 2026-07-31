@@ -65,8 +65,8 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> None:
     # Get all phases from the image to show pre-from_phase entries
     run_row = dbmod.get_run(run_id, session)
     image_key = str(run_row["image"])
-    presets = container.enroot.list_presets()
-    describe = container.enroot.describe(presets[image_key])
+    presets = container.podman.list_presets()
+    describe = container.podman.describe(presets[image_key])
     all_phases = describe.phase_order
 
     from_phase_order = 0
@@ -137,8 +137,8 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
 
     run_row = dbmod.get_run(run_id, session)
     image_key = str(run_row["image"])
-    presets = container.enroot.list_presets()
-    describe = container.enroot.describe(presets[image_key])
+    presets = container.podman.list_presets()
+    describe = container.podman.describe(presets[image_key])
 
     return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
 
@@ -181,8 +181,8 @@ def show_phase(
 
     # Resolve phase label from image describe
     image_key = str(run_row["image"])
-    presets = container.enroot.list_presets()
-    describe = container.enroot.describe(presets[image_key])
+    presets = container.podman.list_presets()
+    describe = container.podman.describe(presets[image_key])
     phase_label = phase
     for pi in describe.phases:
         if pi.name == phase:

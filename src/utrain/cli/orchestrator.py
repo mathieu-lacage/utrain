@@ -1,5 +1,6 @@
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,33 +17,71 @@ from . import db as dbmod
 # package and the wandb shim (see _wandb_mount_args).
 _WANDB_PYPATH = "/opt/utrain-py"
 
+# Where the attempt dir is bind-mounted inside the container. Deliberately not
+# `/run`: podman populates a container's /run with its own bind mounts (a
+# `secrets` dir from /usr/share/containers/mounts.conf, plus `nvidia-ctk-hook*`
+# and `nvidia-persistenced` when a GPU device is attached), and those land in
+# the attempt dir on the host. Images take the run dir as a positional argument,
+# so the path is theirs to receive, not to hardcode.
+_RUN_MOUNT = "/utrain"
 
-def _gpu_env(compute: str) -> dict[str, str]:
-    """Env that makes enroot's nvidia hook expose the selected GPU inside the container."""
+
+def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[str, str]]:
+    """podman args + env that expose the selected GPU inside the container.
+
+    GPUs reach a rootless container through a CDI spec, which pins driver
+    library paths by version and so goes stale on every driver update. Rather
+    than keep a persistent spec, generate one per run (~0.2s) into the attempt
+    dir and point podman at it with CONTAINERS_CONF_OVERRIDE, which is layered
+    on top of the system and user config -- unlike CONTAINERS_CONF, which would
+    replace both.
+
+    Returns no args and does no nvidia-ctk work for `compute == "cpu"`, so CPU
+    runs stay independent of the NVIDIA toolchain.
+    """
     env = dict(os.environ)
-    if compute.startswith("gpu"):
-        env["NVIDIA_VISIBLE_DEVICES"] = compute.removeprefix("gpu")
-        env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
-    return env
+    if not compute.startswith("gpu"):
+        return [], env
+
+    if shutil.which("nvidia-ctk") is None:
+        raise RuntimeError(
+            "nvidia-ctk not found; install the NVIDIA container toolkit to run on a GPU"
+        )
+
+    cdi_dir = attempt_dir / ".cdi"
+    cdi_dir.mkdir(parents=True, exist_ok=True)
+    spec = cdi_dir / "nvidia.yaml"
+    result = subprocess.run(
+        ["nvidia-ctk", "cdi", "generate", f"--output={spec}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nvidia-ctk cdi generate failed: {result.stderr.strip()}")
+
+    conf = cdi_dir / "containers.conf"
+    conf.write_text(f'[engine]\ncdi_spec_dirs = ["{cdi_dir}"]\n')
+    env["CONTAINERS_CONF_OVERRIDE"] = str(conf)
+    return ["--device", f"nvidia.com/gpu={compute.removeprefix('gpu')}"], env
 
 
 def _wandb_mount_args() -> list[str]:
-    """enroot args that shadow the image's real wandb with naw's rtsdb backend.
+    """podman args that shadow the image's real wandb with naw's rtsdb backend.
 
     Mounts the naw package plus a tiny ``wandb`` shim read-only under a single
     dir put first on PYTHONPATH, so ``import wandb`` inside the container
     resolves to the shim -> ``naw.wandb`` and metrics are written as rtsdb
-    files, regardless of what wandb the image itself ships. ``x-create=dir``
-    makes enroot create the mountpoints, which don't exist in the image.
+    files, regardless of what wandb the image itself ships. podman creates the
+    mountpoints itself, so no equivalent of enroot's `x-create=dir` is needed.
     """
     naw_dir = pathlib.Path(naw.__file__).parent
     shim_dir = pathlib.Path(container.__file__).parent / "wandb_shim" / "wandb"
     return [
-        "--mount",
-        f"{naw_dir}:{_WANDB_PYPATH}/naw:none:x-create=dir,bind,ro",
-        "--mount",
-        f"{shim_dir}:{_WANDB_PYPATH}/wandb:none:x-create=dir,bind,ro",
-        "--env",
+        "-v",
+        f"{naw_dir}:{_WANDB_PYPATH}/naw:ro",
+        "-v",
+        f"{shim_dir}:{_WANDB_PYPATH}/wandb:ro",
+        "-e",
         f"PYTHONPATH={_WANDB_PYPATH}",
     ]
 
@@ -103,24 +142,34 @@ def _start_phase(
     data_dir.mkdir(parents=True, exist_ok=True)
     (attempt_dir / "wandb").mkdir(parents=True, exist_ok=True)
 
+    gpu_args, env = _gpu_args(compute, attempt_dir)
+
+    # `podman run` proxies SIGTERM to PID 1 and returns the container's exit
+    # status, so the caller's terminate()/wait() handling needs no adjustment.
+    # `label=disable` avoids an SELinux denial on /dev/nvidia* without needing
+    # root, and `--network=host` matches enroot's shared network namespace.
     return subprocess.Popen(
         [
-            "enroot",
-            "start",
-            *_wandb_mount_args(),
-            "--mount",
-            f"{attempt_dir}:/run",
-            "--mount",
-            f"{data_dir}:/data",
-            f"{image_key}+utrain",
+            "podman",
             "run",
-            "/run",
+            "--rm",
+            "--network=host",
+            "--security-opt=label=disable",
+            *gpu_args,
+            *_wandb_mount_args(),
+            "-v",
+            f"{attempt_dir}:{_RUN_MOUNT}",
+            "-v",
+            f"{data_dir}:/data",
+            container.podman.image_ref(image_key),
+            "run",
+            _RUN_MOUNT,
             "--phase",
             phase,
         ],
         stdout=stdout,
         stderr=stderr,
-        env=_gpu_env(compute),
+        env=env,
     )
 
 
@@ -160,7 +209,7 @@ def run_orchestrator(
         run_dir = pathlib.Path(str(run_row["run_dir"]))
         image_key = str(run_row["image"])
         compute = str(run_row["compute"])
-        presets = container.enroot.list_presets()
+        presets = container.podman.list_presets()
         if image_key not in presets:
             print(f"orchestrator: image '{image_key}' not found", file=sys.stderr)
             sys.exit(1)
