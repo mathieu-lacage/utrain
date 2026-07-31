@@ -5,4 +5,3 @@ frontend/dist
 .coverage*
 **/*.swp
 **/*.t.err
-

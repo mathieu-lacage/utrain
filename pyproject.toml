@@ -16,11 +16,8 @@ dependencies = [
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
     "anyio>=4.0",
-    "naw",
+    "naw>=0.0.4",
 ]
-
-[tool.uv.sources]
-naw = { path = "packages/naw" }
 
 [project.scripts]
 utrain = "utrain.cli.main:main"
@@ -44,7 +41,6 @@ reportMissingTypeStubs = "none"
 
 [tool.ruff]
 line-length = 100
-exclude = ["packages/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

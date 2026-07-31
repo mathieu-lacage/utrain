@@ -14,7 +14,7 @@ def _build_image(name: str) -> str | None:
 
     Returns None if podman/enroot is missing or the build fails (callers turn
     None into a skip). The build context is the repo root (not the container
-    dir) because the Containerfile `COPY packages/naw`, which lives there.
+    dir) because the Containerfile `COPY`s repo-root-relative paths.
     """
     if shutil.which("podman") is None or shutil.which("enroot") is None:
         return None
