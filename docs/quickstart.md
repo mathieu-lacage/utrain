@@ -70,5 +70,3 @@ $ naw watch runs/$RID/attempt/1/wandb/pretrain/*.rtsdb                # live tai
 
 `naw plot ...` also supports `--output png`/`--output svg`/`--output csv` if you
 want to save the curve instead of drawing it in the terminal.
-
-
