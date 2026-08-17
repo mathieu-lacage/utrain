@@ -60,6 +60,23 @@ select = ["E", "F", "I", "UP"]
 [tool.coverage.run]
 source = ["utrain"]
 parallel = true
+branch = true
+relative_files = true
+omit = [
+    "*/test_*.py",
+    "*/bench_*.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "cov"
+
 
 [dependency-groups]
 dev = [
