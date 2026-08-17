@@ -14,11 +14,6 @@ First, make sure you install [podman](https://podman.io/docs/installation) and
 [container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 either from packages or from source.
 
-Containers run rootless and reach the host GPUs through a CDI spec that utrain
-generates per run with `nvidia-ctk`, so no root setup is needed — no
-`setsebool`, no persistent spec to refresh after a driver update. Only `cpu`
-runs work without the container toolkit.
-
 Then install utrain. We recommend the use of pipx:
 ```console
 $ pipx install utrain
@@ -30,13 +25,9 @@ and `store`. Run `utrain --help` for the full list.
 
 ## Quickstart: train a tiny Shakespeare model
 
-This walks through training a character-level Shakespeare transformer end to end
-and looking at the loss curve. It uses the `shakespeare-char` preset that ships
-with the repo, sized down so it builds a model and produces a usable loss curve
-in a couple of minutes on a laptop GPU (e.g. an RTX Ada mobile card).
-
-Commands below assume utrain is on your `PATH`. Working from a checkout instead,
-prefix each with `uv run` (e.g. `uv run utrain ...`, `uv run naw ...`).
+This walks through training a character-level Shakespeare model end to end.
+It uses one of our prebuilt images which is designed to produce
+a working model within a couple of minutes on a laptop GPU: `shakespeare-char`.
 
 ### 1. Download an image
 
@@ -60,8 +51,7 @@ $ RID=$(utrain run create --name tiny-shakespeare \
 
 ### 3. Shrink the model
 
-Edit `runs/$RID/config.yaml` down to the smallest useful size. The config keys are
-grouped by section; only the values matter:
+Edit `runs/$RID/config.yaml` down to a small useful size:
 
 ```yaml
 globals:
@@ -98,14 +88,13 @@ Each phase logs its metrics as a `naw` time-series file under the run directory.
 Point `naw` at the pretrain metrics to plot the loss right in your terminal:
 
 ```console
-$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb metrics          # list metrics
-$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb plot -y loss --lines
-$ naw runs/$RID/attempt/1/wandb/pretrain/*.rtsdb watch            # live tail while training
+$ naw metrics runs/$RID/attempt/1/wandb/pretrain/*.rtsdb              # list metrics
+$ naw plot -y loss --lines runs/$RID/attempt/1/wandb/pretrain/*.rtsdb # display a plot in-terminal
+$ naw watch runs/$RID/attempt/1/wandb/pretrain/*.rtsdb                # live tail while training
 ```
 
-`naw ... plot` also supports `--output png`/`--output svg`/`--output csv` if you
+`naw plot ...` also supports `--output png`/`--output svg`/`--output csv` if you
 want to save the curve instead of drawing it in the terminal.
-
 
 ## License
 
