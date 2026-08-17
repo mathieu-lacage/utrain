@@ -36,36 +36,54 @@ pre-commit:
 
 test:
   stage: check
-  # The suite drives podman (every cram test builds and runs a container), so it
-  # needs a runner that can nest containers: podman/stable ships podman and runs
-  # rootless inside the job, which requires a privileged runner. vfs is the only
-  # storage driver that works without a host overlay mount.
-  image: quay.io/podman/stable
+  # Every cram test builds and runs a container, so the suite needs podman. The
+  # job container itself cannot provide it: podman needs a user namespace, and
+  # the shared runners deny CLONE_NEWUSER inside a job ("cannot clone: Operation
+  # not permitted"). No combination of added capabilities gets there -- only
+  # full privilege does.
+  #
+  # So don't run podman in the job. The shared runners expose the VM's docker
+  # socket and allow privileged containers, so the job starts a *privileged
+  # sibling* through that socket and runs the whole suite inside it. pytest and
+  # podman then live in the same container, which is what makes the bind mounts
+  # in orchestrator.py work: they resolve in a single filesystem view, with no
+  # host/container path translation anywhere.
+  #
+  # $CI_PROJECT_DIR is mountable because it sits under /builds, which the runner
+  # docs name (with /tmp) as the only paths shared between the job container and
+  # the VM the docker engine runs on. A checkout anywhere else would mount empty.
+  image: docker:stable
   tags:
     - linux
-  variables:
-    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
-    STORAGE_DRIVER: vfs
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   cache:
     key: test
     paths:
       - .cache/uv
-  rules:
-    - if: '$CI_COMMIT_TAG'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  before_script:
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
-    # Fail loudly here rather than let the suite skip its way to a green run:
-    # conftest turns an unbuildable image into pytest.skip, so a podman that
-    # cannot nest looks exactly like a passing pipeline. Print the diagnosis
-    # (`podman info`) before proving podman can actually build and run.
-    - podman info
-    - podman run --rm docker.io/library/busybox:latest true
   script:
-    # -rs prints the reason for every skip, so a suite that goes quiet in CI
-    # says why in the job log instead of just shrinking.
-    - uv run --frozen pytest -rs
+    # vfs because the sibling's container storage is itself inside a container,
+    # where overlay needs a host mount it does not have. It is space-hungry --
+    # if this job starts failing on disk, move to the `large_more_disk` runner.
+    #
+    # The busybox run is a guard, not a warm-up: conftest turns a failed image
+    # build into pytest.skip, so a podman that cannot nest would otherwise show
+    # up as a green pipeline that silently tested nothing. Fail loudly instead.
+    #
+    # -rs prints every skip reason, so a suite that goes quiet in CI says why in
+    # the job log rather than just shrinking.
+    - |
+      docker run --rm --privileged \
+        -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR" -w "$CI_PROJECT_DIR" \
+        -e STORAGE_DRIVER=vfs -e UV_CACHE_DIR="$CI_PROJECT_DIR/.cache/uv" \
+        quay.io/podman/stable sh -c '
+          set -e
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          podman run --rm docker.io/library/busybox:latest true
+          uv run --frozen pytest -rs
+        '
 
 build-images:
   stage: release
