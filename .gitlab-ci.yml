@@ -99,12 +99,9 @@ build-images:
 
 pages:
   stage: deploy
-  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm
   tags:
     - self-linux
-  # `needs` makes this start as soon as the named jobs are green, ignoring stage
-  # order, so both check-stage jobs have to be listed: with only pre-commit
-  # here, a red test suite would still publish docs.
   needs:
     - job: pre-commit
       artifacts: false
