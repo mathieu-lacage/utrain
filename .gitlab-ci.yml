@@ -43,14 +43,6 @@ pre-commit:
     - uv run --frozen pre-commit run --all-files --show-diff-on-failure
 
 test:
-  services:
-    - name: docker:24-dind # or docker:dind
-      alias: docker
-
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-
   stage: check
   # Every cram test builds and runs a container, so the suite needs podman. The
   # job container itself cannot provide it: podman needs a user namespace, and
