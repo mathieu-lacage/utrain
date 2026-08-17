@@ -1,4 +1,5 @@
 import argparse
+import signal
 import sys
 import typing
 
@@ -351,6 +352,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # Die on SIGPIPE the way every other Unix tool does. Python installs SIG_IGN
+    # for it at startup, which turns `utrain run show | head -7` into a
+    # BrokenPipeError traceback once head exits: the writes that follow raise
+    # instead of killing us. Output buffering hides this -- buffered, the whole
+    # output flushes in one write while head is still reading -- so it only
+    # surfaces under PYTHONUNBUFFERED or once output outgrows the buffer.
+    #
+    # SIG_IGN is also inherited across exec, so this hands the default
+    # disposition to the podman children the orchestrator spawns rather than
+    # passing them Python's.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
     parser = build_parser()
     args = parser.parse_args()
 
