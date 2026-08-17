@@ -1,6 +1,10 @@
   $ . "$TESTDIR/setup.sh"
   $ utrain image add "$UTRAIN_TEST_IMAGE_URL" >/dev/null 2>&1
   $ RID=$(utrain run create --name hello --image utrain-fake --compute cpu --print-id)
+Hold the tokenizer phase open so the mid-run snapshots below don't race the
+phase's own duration: with `gate: true` the fake container reports the phase
+started and then blocks until the gate file appears in the attempt dir.
+  $ echo "gate: true" >> "$UTRAIN_DATA_DIR/runs/$RID/config.yaml"
   $ utrain run start "$RID"
   ID\s+NAME\s+IMAGE\s+COMPUTE\s+STATUS\s+ATTEMPT\s+PHASE\s+CREATED (re)
   [0-9a-f]+\s+hello  utrain-fake  cpu      running  1        tokenizer  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
@@ -13,6 +17,7 @@
   [0-9a-f]{32}/1/pretrain (re)
   $ utrain attempt list "$RID" -q
   [0-9a-f]{32}/1 (re)
+  $ touch "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/gate"
   $ utrain run show "$RID" --wait
   id:       [0-9a-f]{32} (re)
   name:     hello

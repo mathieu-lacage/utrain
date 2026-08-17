@@ -124,9 +124,30 @@ def _flatten_config(cfg: dict[str, object], phase: str) -> dict[str, object]:
     return flat
 
 
-def _run_tokenizer(run_dir: pathlib.Path, run_id: str, total_steps: int = 50) -> bool:
+def _wait_for_gate(run_dir: pathlib.Path, cfg: dict[str, object], timeout: float = 120.0) -> None:
+    """Block after the started event until the host creates `<run_dir>/gate`.
+
+    Opt-in via a `gate: true` config key. It lets a test observe a phase in
+    `running` (and its successors in `pending`) deterministically, instead of
+    racing the phase's own duration -- on a loaded CI runner the 5s tokenizer
+    can finish before the next `utrain` invocation gets to look at it. The
+    timeout only exists so a test that dies before releasing the gate leaves no
+    container behind.
+    """
+    if not cfg.get("gate"):
+        return
+    gate = run_dir / "gate"
+    deadline = time.monotonic() + timeout
+    while not gate.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def _run_tokenizer(
+    run_dir: pathlib.Path, run_id: str, cfg: dict[str, object], total_steps: int = 50
+) -> bool:
     run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
     run.log({"_phase_event": "tokenizer/started"})
+    _wait_for_gate(run_dir, cfg)
     ok = True
     for step in range(total_steps):
         if _read_control(run_dir / "control.json") == "stop":
@@ -182,7 +203,7 @@ def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
     cfg = _flatten_config(raw_cfg, phase)
     run_id = str(cfg.get("run_id", ""))
     if phase == "tokenizer":
-        ok = _run_tokenizer(run_dir, run_id)
+        ok = _run_tokenizer(run_dir, run_id, cfg)
     elif phase == "pretrain":
         ok = _run_pretrain(run_dir, run_id, cfg)
     else:
@@ -199,7 +220,7 @@ def cmd_run_all(run_dir: pathlib.Path) -> None:
         cfg = _flatten_config(raw_cfg, phase)
         run_id = str(cfg.get("run_id", ""))
         if phase == "tokenizer":
-            ok = _run_tokenizer(run_dir, run_id)
+            ok = _run_tokenizer(run_dir, run_id, cfg)
         elif phase == "pretrain":
             ok = _run_pretrain(run_dir, run_id, cfg)
         else:
