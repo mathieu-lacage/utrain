@@ -13,7 +13,7 @@
 # Prerequisites:
 #   - Container Registry enabled (Settings -> General -> Visibility).
 
-stages: [check, release]
+stages: [check, release, deploy]
 
 pre-commit:
   stage: check
@@ -112,3 +112,49 @@ build-images:
           --destination "$CI_REGISTRY_IMAGE/$name:$CI_COMMIT_TAG" \
           --destination "$CI_REGISTRY_IMAGE/$name:latest"
       done
+
+pages:
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  stage: deploy
+  tags:
+    - linux
+  needs:
+    - job: pre-commit
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+  variables:
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+    GIT_DEPTH: "0"
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .cache/uv
+  before_script:
+    - uv sync --frozen
+    - git remote set-url origin "https://oauth2:${MIKE_ACCESS_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    - git config user.name "GitLab CI"
+    - git config user.email "gitlab-ci@$CI_SERVER_HOST"
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        uv run mike deploy --push --update-aliases "$CI_COMMIT_TAG" latest
+        uv run mike set-default --push latest
+      else
+        uv run mike deploy --push --update-aliases dev
+        # mike only creates the "/" redirect once "set-default" has been
+        # run at least once. Bootstrap it to "dev" so the site is reachable
+        # at "/" before the first release tag exists; once a tag has set
+        # the default to "latest", leave it alone on later dev pushes.
+        if ! git cat-file -e pages:index.html 2>/dev/null; then
+          uv run mike set-default --push dev
+        fi
+      fi
+    - rm -rf public && mkdir public
+    - git archive pages | tar -x -C public
+  artifacts:
+    paths:
+      - public
