@@ -6,12 +6,20 @@
 #                containers/<name>/ and push it to this project's GitLab
 #                container registry. The pre-commit hooks also run on tags (the
 #                check stage runs first), so a release only publishes if they pass.
+# deploy stage:  build the docs with zensical and publish them to GitLab Pages,
+#                one version per release tag plus a rolling "dev" for main. mike
+#                owns the `pages` branch -- it keeps every version there, and
+#                the job only unpacks that branch into public/. Nothing should
+#                commit to it by hand.
 #
 # Users pull a published preset with:
 #   utrain image add docker://$CI_REGISTRY_IMAGE/<name>:latest
 #
 # Prerequisites:
 #   - Container Registry enabled (Settings -> General -> Visibility).
+#   - Pages enabled (Settings -> General -> Visibility).
+#   - MIKE_ACCESS_TOKEN: a project access token with the write_repository scope,
+#     masked and protected, so the pages job can push to the `pages` branch.
 
 stages: [check, release, deploy]
 
@@ -114,19 +122,35 @@ build-images:
       done
 
 pages:
-  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
   stage: deploy
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
   tags:
     - linux
+  # `needs` makes this start as soon as the named jobs are green, ignoring stage
+  # order, so both check-stage jobs have to be listed: with only pre-commit
+  # here, a red test suite would still publish docs.
   needs:
     - job: pre-commit
       artifacts: false
+    - job: test
+      artifacts: false
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
     - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  # A tag is pushed right after the release commit, so the tag pipeline and the
+  # main pipeline overlap. Both push $MIKE_BRANCH; serialize them or the second
+  # one dies on a non-fast-forward.
+  resource_group: pages
   variables:
     UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+    # mike appends to the published site by resetting the local branch to
+    # origin/$MIKE_BRANCH, comparing the two through their merge-base. A shallow
+    # clone has no merge-base to find.
     GIT_DEPTH: "0"
+    # Where mike keeps the built site. mike itself takes this from
+    # `remote_branch` in zensical.toml; it is repeated here only for the two git
+    # commands below, so the two have to be changed together.
+    MIKE_BRANCH: pages
   cache:
     key:
       files:
@@ -134,27 +158,39 @@ pages:
     paths:
       - .cache/uv
   before_script:
+    # The token has to be masked *and* protected: main and the release tags are
+    # protected refs, and an unprotected variable is simply absent here, which
+    # would otherwise surface as an opaque auth failure at push time.
+    - |
+      if [ -z "$MIKE_ACCESS_TOKEN" ]; then
+        echo "MIKE_ACCESS_TOKEN is unset -- add it as a masked, protected CI/CD variable" >&2
+        exit 1
+      fi
     - uv sync --frozen
     - git remote set-url origin "https://oauth2:${MIKE_ACCESS_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
     - git config user.name "GitLab CI"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
   script:
+    # --alias-type=copy because mike defaults to publishing an alias as a
+    # symlink to the version it points at, and GitLab Pages serves the artifact
+    # archive without resolving symlinks: "latest" would 404 while "1.2.3"
+    # works. set-default has no such option -- it always writes a real redirect.
     - |
       if [ -n "$CI_COMMIT_TAG" ]; then
-        uv run mike deploy --push --update-aliases "$CI_COMMIT_TAG" latest
+        uv run mike deploy --push --update-aliases --alias-type=copy "$CI_COMMIT_TAG" latest
         uv run mike set-default --push latest
       else
-        uv run mike deploy --push --update-aliases dev
+        uv run mike deploy --push --update-aliases --alias-type=copy dev
         # mike only creates the "/" redirect once "set-default" has been
         # run at least once. Bootstrap it to "dev" so the site is reachable
         # at "/" before the first release tag exists; once a tag has set
         # the default to "latest", leave it alone on later dev pushes.
-        if ! git cat-file -e pages:index.html 2>/dev/null; then
+        if ! git cat-file -e "$MIKE_BRANCH:index.html" 2>/dev/null; then
           uv run mike set-default --push dev
         fi
       fi
     - rm -rf public && mkdir public
-    - git archive pages | tar -x -C public
+    - git archive "$MIKE_BRANCH" | tar -x -C public
   artifacts:
     paths:
       - public
