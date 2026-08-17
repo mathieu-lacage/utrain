@@ -20,6 +20,7 @@
 #   - Pages enabled (Settings -> General -> Visibility).
 #   - MIKE_ACCESS_TOKEN: a project access token with the write_repository scope,
 #     masked and protected, so the pages job can push to the `pages` branch.
+#   - runner has privileged = true
 
 stages: [check, release, deploy]
 
@@ -44,54 +45,29 @@ pre-commit:
 
 test:
   stage: check
-  # Every cram test builds and runs a container, so the suite needs podman. The
-  # job container itself cannot provide it: podman needs a user namespace, and
-  # the shared runners deny CLONE_NEWUSER inside a job ("cannot clone: Operation
-  # not permitted"). No combination of added capabilities gets there -- only
-  # full privilege does.
-  #
-  # So don't run podman in the job. The shared runners expose the VM's docker
-  # socket and allow privileged containers, so the job starts a *privileged
-  # sibling* through that socket and runs the whole suite inside it. pytest and
-  # podman then live in the same container, which is what makes the bind mounts
-  # in orchestrator.py work: they resolve in a single filesystem view, with no
-  # host/container path translation anywhere.
-  #
-  # $CI_PROJECT_DIR is mountable because it sits under /builds, which the runner
-  # docs name (with /tmp) as the only paths shared between the job container and
-  # the VM the docker engine runs on. A checkout anywhere else would mount empty.
-  image: docker:stable
+  image: quay.io/podman/stable
   tags:
     - self-linux
   rules:
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == "main"'
+  variables:
+    # vfs because the job's container storage is itself inside a container,
+    # where overlay needs a host mount it does not have. It is space-hungry --
+    # if this job starts failing on disk, give the runner a bigger volume.
+    STORAGE_DRIVER: vfs
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
   cache:
     key: test
     paths:
       - .cache/uv
   script:
-    # vfs because the sibling's container storage is itself inside a container,
-    # where overlay needs a host mount it does not have. It is space-hungry --
-    # if this job starts failing on disk, move to the `large_more_disk` runner.
-    #
-    # The busybox run is a guard, not a warm-up: conftest turns a failed image
-    # build into pytest.skip, so a podman that cannot nest would otherwise show
-    # up as a green pipeline that silently tested nothing. Fail loudly instead.
-    #
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - podman run --rm docker.io/library/busybox:latest true
     # -rs prints every skip reason, so a suite that goes quiet in CI says why in
     # the job log rather than just shrinking.
-    - |
-      docker run --rm --privileged \
-        -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR" -w "$CI_PROJECT_DIR" \
-        -e STORAGE_DRIVER=vfs -e UV_CACHE_DIR="$CI_PROJECT_DIR/.cache/uv" \
-        quay.io/podman/stable sh -c '
-          set -e
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          export PATH="$HOME/.local/bin:$PATH"
-          podman run --rm docker.io/library/busybox:latest true
-          uv run --frozen pytest -rs
-        '
+    - uv run --frozen pytest -rs
 
 build-images:
   stage: release
