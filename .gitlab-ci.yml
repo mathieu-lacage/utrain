@@ -27,7 +27,7 @@ pre-commit:
   stage: check
   image: ghcr.io/astral-sh/uv:python3.11-bookworm
   tags:
-    - linux
+    - self-linux
   variables:
     PRE_COMMIT_HOME: "$CI_PROJECT_DIR/.cache/pre-commit"
     UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
@@ -62,7 +62,7 @@ test:
   # the VM the docker engine runs on. A checkout anywhere else would mount empty.
   image: docker:stable
   tags:
-    - linux
+    - self-linux
   rules:
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -100,7 +100,7 @@ build-images:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
   tags:
-    - linux
+    - self-linux
   rules:
     - if: '$CI_COMMIT_TAG'
   script:
@@ -125,7 +125,7 @@ pages:
   stage: deploy
   image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
   tags:
-    - linux
+    - self-linux
   # `needs` makes this start as soon as the named jobs are green, ignoring stage
   # order, so both check-stage jobs have to be listed: with only pre-commit
   # here, a red test suite would still publish docs.
