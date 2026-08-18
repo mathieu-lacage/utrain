@@ -39,7 +39,7 @@ dependencies = [
 Homepage = "https://mlacage.gitlabpages.inria.fr/utrain"
 Documentation = "https://mlacage.gitlabpages.inria.fr/utrain"
 Repository = "https://gitlab.inria.fr/mlacage/utrain"
-Changelog = "https://gitlab.inria.fr/mlacage/utrain/-/raw/main/CHANGELOG.md?ref_type=heads"
+Changelog = "https://mlacage.gitlabpages.inria.fr/utrain/latest/changelog"
 
 [project.scripts]
 utrain = "utrain.cli.main:main"
