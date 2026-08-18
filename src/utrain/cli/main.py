@@ -1,4 +1,5 @@
 import argparse
+import importlib.metadata
 import signal
 import sys
 import typing
@@ -230,6 +231,11 @@ def _cmd_orchestrate(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="utrain")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('utrain')}",
+    )
     parser.add_argument("-d", "--debug", action="count", default=0)
     parser.add_argument("--log-filename", help="Filename where logs will be written", default=None)
     sub = parser.add_subparsers(dest="command", required=True)

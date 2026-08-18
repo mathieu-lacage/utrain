@@ -29,6 +29,10 @@ def test_compute() -> None:
     _run_cram(_CRAM_DIR / "compute.t", {})
 
 
+def test_version() -> None:
+    _run_cram(_CRAM_DIR / "version.t", {})
+
+
 def test_id_prefix(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "id-prefix.t", fake_image)
 
