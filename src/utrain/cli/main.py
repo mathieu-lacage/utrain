@@ -232,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="utrain")
     parser.add_argument("-d", "--debug", action="count", default=0)
     parser.add_argument("--log-filename", help="Filename where logs will be written", default=None)
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", required=True)
 
     # compute
     compute_p = sub.add_parser("compute", help="CPU/GPU on host")
@@ -346,7 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--from-phase", dest="from_phase", default=None)
     orch.set_defaults(func=_cmd_orchestrate)
 
-    sub.metavar = "{serve,compute,image,run,attempt,phase,store}"
+    sub.metavar = "{compute,image,run,attempt,phase,store}"
 
     return parser
 
