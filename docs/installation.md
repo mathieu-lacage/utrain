@@ -6,7 +6,7 @@ either from packages or from source.
 
 Then install utrain. We recommend the use of pipx:
 ```console
-$ pipx install utrain
+$ pipx install utrain naw
 ```
 
 `utrain` groups its commands as `compute`, `image`, `run`, `attempt`, `phase`
