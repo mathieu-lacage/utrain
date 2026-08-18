@@ -19,6 +19,7 @@ nav = [
   { "Get started" = "index.md" },
   { "Installation" = "installation.md" },
   { "Quickstart" = "quickstart.md" },
+  { "Changelog" = "changelog.md" },
 ]
 
 # extra_css = ["stylesheets/extra.css"]
