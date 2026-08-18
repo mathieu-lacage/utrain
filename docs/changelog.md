@@ -2,6 +2,13 @@
 
 <!-- towncrier release notes start -->
 
+## 0.0.6 (2026-08-18)
+
+### Fixed
+
+- test all supported python versions via to and Gitlab CI/CD ([#5](https://gitlab.inria.fr/mlacage/utrain/-/issues/5))
+
+
 ## 0.0.5 (2026-08-18)
 
 ### Fixed
