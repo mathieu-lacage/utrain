@@ -374,6 +374,8 @@ def main() -> None:
     except exceptions.UI as e:
         print(e)
         sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":
