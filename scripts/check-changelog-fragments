@@ -1,0 +1,48 @@
+#!/usr/bin/env -S uv run -q --script
+import pathlib
+import re
+import sys
+import tomllib
+
+FRAGMENT_RE = re.compile(r"^(?:\+[^.]+|\d+)\.(?P<type>[a-zA-Z]+)(?:\.\d+)?\.[^.]+$")
+
+# Files that live in changes/ but are not towncrier fragments.
+IGNORED = {".empty", "README.md"}
+
+
+def configured_types(pyproject: pathlib.Path) -> set[str]:
+    with open(pyproject, "rb") as f:
+        data = tomllib.load(f)
+    return {entry["directory"] for entry in data["tool"]["towncrier"]["type"]}
+
+
+def main() -> int:
+    root = pathlib.Path(__file__).resolve().parent.parent
+    changes_dir = root / "changes"
+    types = configured_types(root / "pyproject.toml")
+
+    errors = []
+    for path in sorted(changes_dir.iterdir()):
+        if not path.is_file() or path.name in IGNORED:
+            continue
+        match = FRAGMENT_RE.match(path.name)
+        if not match:
+            errors.append(
+                f"{path}: does not match towncrier fragment naming "
+                f"(<issue>.<type>.md or +<slug>.<type>.md)"
+            )
+            continue
+        if match.group("type") not in types:
+            errors.append(
+                f"{path}: unknown towncrier type '{match.group('type')}', "
+                f"expected one of {sorted(types)}"
+            )
+
+    if errors:
+        print("\n".join(errors))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -46,3 +46,9 @@ repos:
         entry: uv audit
         language: system
         pass_filenames: false
+      - id: check-changelog-fragments
+        name: Check changes/ fragments match a configured towncrier type
+        entry: scripts/check-changelog-fragments
+        language: system
+        files: ^changes/
+        pass_filenames: false
