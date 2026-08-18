@@ -139,4 +139,5 @@ dev = [
     "uv-audit>=0.1.9",
     "zensical>=0.0.55",
     "mike",
+    "uniplot>=0.23.2",
 ]
