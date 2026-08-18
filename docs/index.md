@@ -1,6 +1,6 @@
 # Get started
 
-utrain trains small language models on your machine with your GPU.
+utrain trains small language models on your computer with your GPU.
 
 Training a model end to end normally means gluing together a pile of moving
 parts: a container with the right CUDA and PyTorch versions, a training script,
@@ -13,7 +13,7 @@ use, utrain generates a config file to edit, and from then on the run is
 something you can start, monitor, stop, restart and inspect:
 
 ```console
-$ utrain image add docker://gitlab.inria.fr:5050/mlacage/utrain/shakespeare-char:latest
+$ utrain image add docker://registry.gitlab.inria.fr/mlacage/utrain/shakespeare-char:latest
 $ RID=$(utrain run create --name tiny --image utrain-shakespeare-char --compute gpu0 --print-id)
 $ utrain run start "$RID"
 $ utrain run show "$RID"

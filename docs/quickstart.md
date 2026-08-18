@@ -9,7 +9,7 @@ a working model within a couple of minutes on a laptop GPU: `shakespeare-char`.
 Tagged releases publish classic models to the project's GitLab container registry:
 
 ```console
-$ utrain image add docker://gitlab.inria.fr:5050/mlacage/utrain/shakespeare-char:latest
+$ utrain image add docker://registry.gitlab.inria.fr/mlacage/utrain/shakespeare-char:latest
 ```
 
 ## 2. Create a run
