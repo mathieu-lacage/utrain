@@ -14,6 +14,17 @@ class Settings(pydantic_settings.BaseSettings):
         env_nested_delimiter="__",
     )
 
+    @pydantic.field_validator("data_dir")
+    @classmethod
+    def _resolve_data_dir(cls, value: pathlib.Path) -> pathlib.Path:
+        # `data_dir` seeds `run_dir`, which podman later mounts with `-v`. A
+        # relative host path there isn't parsed as a bind mount -- podman
+        # instead tries to create a *named* volume with that string, which
+        # fails since volume names can't contain `/`. Resolving here also
+        # protects against the orchestrator subprocess having a different cwd
+        # than wherever the run was created.
+        return value.resolve()
+
     @pydantic.model_validator(mode="before")
     @classmethod
     def load_yaml(cls, data: object) -> dict[str, object]:
