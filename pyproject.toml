@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -136,6 +137,16 @@ directory = "misc"
 name = "Misc"
 showcontent = false
 
+[tool.tox]
+requires = ["tox-uv>=1.13"]
+env_list = ["py311", "py312", "py313", "py314"]
+
+[tool.tox.env_run_base]
+description = "Run the test suite under {base_python}"
+runner = "uv-venv-lock-runner"
+dependency_groups = ["dev"]
+commands = [["pytest", "-rs"]]
+
 [tool.uv.sources]
 mike = { git = "https://github.com/squidfunk/mike.git" }
 
@@ -161,4 +172,6 @@ dev = [
     "zensical>=0.0.55",
     "mike",
     "uniplot>=0.23.2",
+    "tox>=4.21",
+    "tox-uv>=1.13",
 ]

@@ -13,6 +13,9 @@ containers/%: FORCE
 cram:
 	uv run pytest tests/test_cram.py
 
+test-matrix:
+	uv run tox
+
 check:
 	uv run pre-commit run --all-files
 

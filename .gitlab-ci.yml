@@ -1,7 +1,9 @@
 # CI pipeline.
 #
 # check stage:   run the pre-commit hooks (`make check`) and the pytest suite on
-#                every push to main.
+#                every push to main. The pytest suite runs as a matrix across
+#                every supported Python version (`make test-matrix` / `uv run
+#                tox` reproduces the same matrix locally).
 # release stage: on tag pipelines, build every container preset under
 #                containers/<name>/ and push it to this project's GitLab
 #                container registry. The pre-commit hooks also run on tags (the
@@ -58,6 +60,9 @@ test:
   rules:
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == "main"'
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.11", "3.12", "3.13", "3.14"]
   variables:
     # vfs because the job's container storage is itself inside a container,
     # where overlay needs a host mount it does not have. It is space-hungry --
@@ -65,7 +70,7 @@ test:
     STORAGE_DRIVER: vfs
     UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
   cache:
-    key: test
+    key: test-$PYTHON_VERSION
     paths:
       - .cache/uv
   script:
@@ -73,8 +78,10 @@ test:
     - export PATH="$HOME/.local/bin:$PATH"
     - podman run --rm docker.io/library/busybox:latest true
     # -rs prints every skip reason, so a suite that goes quiet in CI says why in
-    # the job log rather than just shrinking.
-    - uv run --frozen pytest -rs
+    # the job log rather than just shrinking. --python downloads that
+    # interpreter on demand and resolves it against uv.lock's matching
+    # marker branch, same as tox-uv does locally.
+    - uv run --python "$PYTHON_VERSION" --frozen pytest -rs
 
 build-images:
   stage: release
