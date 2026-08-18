@@ -18,8 +18,7 @@ Create a run on the first GPU (`gpu0`; use `cpu` if you have no GPU). `--print-i
 prints just the new run id so you can capture it:
 
 ```console
-$ RID=$(utrain run create --name tiny-shakespeare \
-    --image utrain-shakespeare-char --compute gpu0 --print-id)
+$ RID=$(utrain run create --name shake --image utrain-shakespeare-char --compute gpu0 --print-id)
 ```
 
 `run create` writes a default `runs/$RID/config.yaml` you can edit before starting.
