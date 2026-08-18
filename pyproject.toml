@@ -6,8 +6,23 @@ build-backend = "hatchling.build"
 name = "utrain"
 version = "0.0.4"
 description = "Local web UI for end-to-end LLM training"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "INRIA", email = "mathieu.lacage@inria.fr" }]
+keywords = ["llm", "training", "fine-tuning", "local"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -18,6 +33,12 @@ dependencies = [
     "anyio>=4.0",
     "naw>=0.0.4",
 ]
+
+[project.urls]
+Homepage = "https://mlacage.gitlabpages.inria.fr/utrain"
+Documentation = "https://mlacage.gitlabpages.inria.fr/utrain"
+Repository = "https://gitlab.inria.fr/mlacage/utrain"
+Changelog = "https://gitlab.inria.fr/mlacage/utrain/-/raw/main/CHANGELOG.md?ref_type=heads"
 
 [project.scripts]
 utrain = "utrain.cli.main:main"
