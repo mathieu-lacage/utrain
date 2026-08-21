@@ -130,17 +130,23 @@ Runs exactly one phase and exits. This is what utrain's orchestrator
 invokes once per phase, in `phase_order`. `run_dir` is a positional
 argument — utrain passes the path where it mounted the run directory
 (always `/utrain` in practice, see [Filesystem contract](#filesystem-contract)),
-so don't hardcode a path inside your container; read the argument.
+so don't hardcode a path inside your container; read the argument. The other
+fundamental input is `/data`: this is where a phase reads what earlier
+phases produced and writes its own output for later phases to build on (see
+[Filesystem contract](#filesystem-contract)).
 
 Inside `run`, your container must:
 
 1. Read `<run_dir>/config.yaml` and flatten it for this phase (see
    [Config protocol](#config-protocol)).
-2. Periodically read `<run_dir>/control.json` and stop cleanly if
+2. Read whatever earlier phases left in `/data` and write this phase's
+   output back to `/data` — this is the sole channel phases use to hand
+   off state to each other.
+3. Periodically read `<run_dir>/control.json` and stop cleanly if
    `{"action": "stop"}` is set (see [Graceful stop](#graceful-stop)).
-3. Log progress through `wandb` and emit `_phase_event` markers (see
+4. Log progress through `wandb` and emit `_phase_event` markers (see
    [Metrics and phase events](#metrics-and-phase-events)).
-4. Exit `0` on success, non-zero on failure or stop.
+5. Exit `0` on success, non-zero on failure or stop.
 
 ## `serve`
 
