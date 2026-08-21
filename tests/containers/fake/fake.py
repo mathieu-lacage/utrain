@@ -2,6 +2,7 @@
 """Fake training container implementing the utrain container contract."""
 
 import argparse
+import hashlib
 import http.server
 import json
 import math
@@ -13,11 +14,19 @@ import time
 import wandb
 import yaml
 
+# Kept in sync with what _run_tokenizer actually writes -- manifest declares
+# these without running the phase, so a real container would compute this
+# deterministically from its config/inputs instead of hardcoding it.
+_TOKENIZER_FILES = {
+    "tokenizer.txt": "tokenizer output\n",
+    "common.txt": "shared payload\n",
+}
+
 DESCRIBE = {
     "name": "nanochat-d12-english",
     "version": "1.0.0",
     "phases": [
-        {"name": "tokenizer", "label": "Tokenizer Training"},
+        {"name": "tokenizer", "label": "Tokenizer Training", "cacheable": True},
         {"name": "pretrain", "label": "Pre-Training"},
     ],
     "phase_order": ["tokenizer", "pretrain"],
@@ -158,7 +167,7 @@ def _run_tokenizer(
         run.log({"vocab_coverage": vocab_coverage}, step=step, commit=True)
         time.sleep(0.1)
     if ok:
-        _write_phase_data({"tokenizer.txt": "tokenizer output\n", "common.txt": "shared payload\n"})
+        _write_phase_data(_TOKENIZER_FILES)
         run.log({"_phase_event": "tokenizer/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
@@ -196,6 +205,17 @@ def _run_pretrain(
         run.log({"_phase_event": "pretrain/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
+
+
+def cmd_check_cache(run_dir: pathlib.Path, phase: str) -> None:
+    if phase != "tokenizer":
+        print(f"phase not cacheable: {phase}", file=sys.stderr)
+        sys.exit(1)
+    files = [
+        {"path": name, "sha256": hashlib.sha256(content.encode()).hexdigest()}
+        for name, content in _TOKENIZER_FILES.items()
+    ]
+    print(json.dumps({"files": files}))
 
 
 def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
@@ -245,6 +265,9 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     sub.add_parser("check-compat")
+    check_cache_p = sub.add_parser("check-cache")
+    check_cache_p.add_argument("run_dir", type=pathlib.Path)
+    check_cache_p.add_argument("--phase", required=True)
     run_p = sub.add_parser("run")
     run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
@@ -257,6 +280,8 @@ def main() -> None:
         cmd_describe()
     elif args.cmd == "check-compat":
         cmd_check_compat()
+    elif args.cmd == "check-cache":
+        cmd_check_cache(args.run_dir, args.phase)
     elif args.cmd == "run":
         cmd_run(args.run_dir, args.phase)
     elif args.cmd == "serve":

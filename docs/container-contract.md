@@ -7,7 +7,8 @@ this contract works with utrain, regardless of what training code or
 framework lives inside.
 
 The CLI must implement three subcommands — `describe`, `check-compat`,
-`run` — plus `serve` if the image supports live chat testing.
+`run` — plus `serve` if the image supports live chat testing, and
+`check-cache` if any phase declares itself `cacheable`.
 This page documents each one precisely. If you just want to see it work,
 follow [Building a container](building-a-container.md) first and come back
 here for details.
@@ -30,6 +31,7 @@ version: str              # defaults to "1.0.0" if omitted
 phases:                   # every phase the container knows about
   - name: str
     label: str             # human-readable, shown in the UI/CLI
+    cacheable: bool        # defaults to false; see `check-cache` below
 phase_order: [str, ...]   # the subset (and order) of `phases` to run
 config_schema:
   globals:
@@ -78,6 +80,45 @@ compute capability, driver version). Not currently invoked by utrain itself,
 but part of the contract every reference container implements — a
 reasonable place to put your own compatibility checks even if nothing calls
 it yet.
+
+## `check-cache`
+
+```console
+$ podman run ... <image> check-cache <run_dir> --phase <phase_name>
+```
+
+Only required for phases whose `describe` entry sets `cacheable: true`.
+Takes the same arguments and filesystem mounts as `run` (see
+[Filesystem contract](#filesystem-contract)) — `/utrain` holds
+`config.yaml`, and `/data` is the phase's data directory, already populated
+with whatever the previous phase carried forward.
+
+Prints a single line of JSON to stdout describing the exact set of files
+this phase *would* produce if run right now, given the current config and
+`/data` contents — without doing the phase's real (expensive) work:
+
+```yaml
+files:
+  - path: str      # relative to /data
+    sha256: str     # content hash of the file this phase would write there
+```
+
+utrain uses this to skip actually running the phase: if every declared
+`sha256` is already present in its content-addressed store, it populates
+`/data` from the store directly and never launches your container for that
+phase. This only makes sense for phases whose output is a deterministic
+function of their config and input data (e.g. a fixed-parameter
+preprocessing step) — don't mark a phase `cacheable` if its output can vary
+run to run (e.g. anything driven by an unseeded random process). utrain
+trusts the declared hashes; it never verifies them against what `run` would
+actually produce, so an incorrect `check-cache` answer silently serves stale
+or wrong data from the store.
+
+`check-cache` must not write to `/data` and should return quickly (no GPU
+work, no heavy compute) — it runs on every attempt of a cacheable phase, not
+just cache hits. Exit non-zero (or time out) if you can't predict the
+manifest for some reason; utrain treats that as a cache miss and runs the
+phase normally.
 
 ## `run`
 
@@ -155,7 +196,7 @@ both reference containers and is safe to copy verbatim:
 `{"action": "stop"}`. utrain writes `"stop"` when the user stops a run.
 Your training loop should check this periodically (e.g. once per step or
 every few seconds) and, on seeing `"stop"`, log a `<phase>/failed` event,
-finish the wandb run, and exit non-zero. Treat a missing or unparseable
+finish the wandb run, and exit non-zero. Treat a missing or unparsable
 file as `"continue"`.
 
 ## Metrics and phase events
@@ -200,7 +241,9 @@ $ podman run --rm --network=host --security-opt=label=disable \
   write here is available to later phases: utrain hardlink-copies the
   previous phase's `/data` contents forward as the starting point of the
   next phase's `/data`, and deduplicates everything into a content-addressed
-  store once the run finishes.
+  store once the run finishes. For a `cacheable` phase, utrain may skip
+  `run` entirely and populate `/data` straight from that store — see
+  [`check-cache`](#check-cache).
 - Exit code `0` means success; anything else means failure.
 
 You don't need to reproduce this invocation yourself — it's shown so you

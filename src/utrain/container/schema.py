@@ -37,6 +37,7 @@ class ConfigSchema(pydantic.BaseModel):
 class PhaseInfo(pydantic.BaseModel):
     name: str
     label: str
+    cacheable: bool = False
 
 
 class DescribeOutput(pydantic.BaseModel):
@@ -51,3 +52,12 @@ class DescribeOutput(pydantic.BaseModel):
 class CompatResult(pydantic.BaseModel):
     compatible: bool
     details: str = ""
+
+
+class CacheFile(pydantic.BaseModel):
+    path: str
+    sha256: str
+
+
+class CacheManifest(pydantic.BaseModel):
+    files: list[CacheFile] = []

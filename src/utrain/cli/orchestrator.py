@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import shutil
@@ -12,6 +13,12 @@ import sqlalchemy.orm
 
 from .. import config, container
 from . import db as dbmod
+
+# Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy
+# compute -- see docs/container-contract.md), so a generous ceiling is enough
+# to catch a container that hangs or ignores the contract without slowing
+# down every cacheable phase check.
+_MANIFEST_TIMEOUT_S = 30
 
 # Single dir placed first on the container's PYTHONPATH; holds the mounted naw
 # package and the wandb shim (see _wandb_mount_args).
@@ -173,6 +180,70 @@ def _start_phase(
     )
 
 
+def _check_cache(
+    image_key: str,
+    attempt_dir: pathlib.Path,
+    phase: str,
+    data_dir: pathlib.Path,
+) -> container.schema.CacheManifest | None:
+    """Ask a cacheable phase what it would produce, without running it.
+
+    Returns None on any protocol violation (non-zero exit, timeout, unparsable
+    output) -- the caller treats that exactly like a cache miss.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--network=host",
+                "--security-opt=label=disable",
+                "-v",
+                f"{attempt_dir}:{_RUN_MOUNT}",
+                "-v",
+                f"{data_dir}:/data",
+                container.podman.image_ref(image_key),
+                "check-cache",
+                _RUN_MOUNT,
+                "--phase",
+                phase,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_MANIFEST_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return container.schema.CacheManifest.model_validate(json.loads(result.stdout.strip()))
+    except Exception:
+        return None
+
+
+def _try_serve_from_cache(
+    manifest: container.schema.CacheManifest,
+    data_dir: pathlib.Path,
+    store_dir: pathlib.Path,
+) -> bool:
+    """Populate data_dir from the store if every declared file is already there.
+
+    All-or-nothing: on any miss, returns False without touching data_dir, so
+    the caller falls through to running the phase for real.
+    """
+    if not all((store_dir / f.sha256).exists() for f in manifest.files):
+        return False
+    for f in manifest.files:
+        target = data_dir / f.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.unlink()
+        os.link(store_dir / f.sha256, target)
+    return True
+
+
 def run_orchestrator(
     run_id: str,
     attempt: int,
@@ -230,6 +301,11 @@ def run_orchestrator(
     phases_to_run = [str(r["phase"]) for r in phase_rows]
     phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 
+    describe_output = container.podman.describe(container.podman.image_ref(image_key))
+    cacheable_phases = {p.name for p in describe_output.phases if p.cacheable}
+    store_dir = settings.data_dir / "store"
+    store_dir.mkdir(parents=True, exist_ok=True)
+
     for phase in phases_to_run:
         if shutting_down:
             break
@@ -238,8 +314,20 @@ def run_orchestrator(
         sys.stdout.flush()
 
         now = time.time()
+        data_dir = attempt_dir / "data" / phase
+        cache_hit = False
         with sqlalchemy.orm.Session(engine) as session:
             _init_phase_data(run_id, attempt, phase, phase_orders[phase], run_dir, session)
+            if phase in cacheable_phases:
+                manifest = _check_cache(image_key, attempt_dir, phase, data_dir)
+                if manifest is not None:
+                    cache_hit = _try_serve_from_cache(manifest, data_dir, store_dir)
+            values: dict[str, object] = {
+                "status": "done" if cache_hit else "running",
+                "started_at": now,
+            }
+            if cache_hit:
+                values["ended_at"] = now
             session.execute(
                 sqlalchemy.update(dbmod.run_phases)
                 .where(
@@ -247,9 +335,14 @@ def run_orchestrator(
                     & (dbmod.run_phases.c.attempt == attempt)
                     & (dbmod.run_phases.c.phase == phase)
                 )
-                .values(status="running", started_at=now)
+                .values(**values)
             )
             session.commit()
+
+        if cache_hit:
+            print(f"orchestrator: phase '{phase}' served from cache")
+            sys.stdout.flush()
+            continue
 
         current_proc = _start_phase(image_key, attempt_dir, phase, run_dir, compute)
         exit_code = current_proc.wait()

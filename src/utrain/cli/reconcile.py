@@ -105,8 +105,12 @@ def reconcile_attempt(
     for phase_row in phase_rows:
         phase = str(phase_row["phase"])
         events = container.run_data.read_phase_events(attempt_dir, phase)
-        if not events and not finalize:
-            statuses[phase] = str(phase_row["status"])
+        current_status = str(phase_row["status"])
+        if not events and (not finalize or current_status in ("done", "failed", "stopped")):
+            # A cache-served phase (see orchestrator._try_serve_from_cache) never
+            # launches a container, so it never writes rtsdb events -- don't let
+            # a dead-orchestrator finalize downgrade its already-terminal status.
+            statuses[phase] = current_status
             continue
         status = _phase_status_from_events(events, finalize)
         started_at, ended_at = _phase_boundaries(events)

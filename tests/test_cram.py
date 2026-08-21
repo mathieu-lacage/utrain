@@ -92,3 +92,7 @@ def test_data_store(fake_image: dict[str, str]) -> None:
 
 def test_wandb_compat(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "wandb-compat.t", fake_image)
+
+
+def test_check_cache(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "check-cache.t", fake_image)
