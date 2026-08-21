@@ -3,9 +3,8 @@
   $ RID=$(utrain run create --name hello --image utrain-fake --compute cpu --print-id)
   $ ls "$UTRAIN_DATA_DIR/runs/$RID"
   config.yaml
-  $ head -3 "$UTRAIN_DATA_DIR/runs/$RID/config.yaml"
+  $ head -2 "$UTRAIN_DATA_DIR/runs/$RID/config.yaml"
   run_id: [0-9a-f]{32} (re)
-  output_dir: /run
   compute: cpu
   $ grep 'num_layers' "$UTRAIN_DATA_DIR/runs/$RID/config.yaml"
       num_layers: 12
@@ -13,7 +12,19 @@
   $ ls -l "$UTRAIN_DATA_DIR/runs/$RID/config.yaml" | awk '{print $1}'
   -r--r--r--* (glob)
   $ ls "$UTRAIN_DATA_DIR/runs/$RID/attempt/1"
+  logs
+  mnt
+  orchestrator.log
+  wandb
+
+`mnt` is the container's entire view of the host, bind-mounted read-only at
+/utrain. It holds only the two files a phase may read; `data` and `wandb` are
+empty stubs that exist so the writable mounts have somewhere to land.
+
+  $ ls "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/mnt"
   config.yaml
   control.json
-  logs
-  orchestrator.log
+  data
+  wandb
+  $ ls -l "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/mnt/config.yaml" | awk '{print $1}'
+  -r--r--r--* (glob)

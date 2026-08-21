@@ -84,29 +84,30 @@ it yet.
 ## `check-cache`
 
 ```console
-$ podman run ... <image> check-cache <run_dir> --phase <phase_name>
+$ podman run ... <image> check-cache --phase <phase_name>
 ```
 
 Only required for phases whose `describe` entry sets `cacheable: true`.
 Takes the same arguments and filesystem mounts as `run` (see
-[Filesystem contract](#filesystem-contract)) — `/utrain` holds
-`config.yaml`, and `/data` is the phase's data directory, already populated
-with whatever the previous phase carried forward.
+[Filesystem contract](#filesystem-contract)), with one difference:
+`/utrain/data` is mounted **read-only**, so the no-write rule below is
+enforced rather than merely requested. It is already populated with
+whatever the previous phase carried forward.
 
 Prints a single line of JSON to stdout describing the exact set of files
 this phase *would* produce if run right now, given the current config and
-`/data` contents — without doing the phase's real (expensive) work:
+`/utrain/data` contents — without doing the phase's real (expensive) work:
 
 ```yaml
 files:
-  - path: str      # relative to /data
+  - path: str      # relative to /utrain/data
     sha256: str     # content hash of the file this phase would write there
 ```
 
 utrain uses this to skip actually running the phase: if every declared
 `sha256` is already present in its content-addressed store, it populates
-`/data` from the store directly and never launches your container for that
-phase. This only makes sense for phases whose output is a deterministic
+`/utrain/data` from the store directly and never launches your container
+for that phase. This only makes sense for phases whose output is a deterministic
 function of their config and input data (e.g. a fixed-parameter
 preprocessing step) — don't mark a phase `cacheable` if its output can vary
 run to run (e.g. anything driven by an unseeded random process). utrain
@@ -114,8 +115,8 @@ trusts the declared hashes; it never verifies them against what `run` would
 actually produce, so an incorrect `check-cache` answer silently serves stale
 or wrong data from the store.
 
-`check-cache` must not write to `/data` and should return quickly (no GPU
-work, no heavy compute) — it runs on every attempt of a cacheable phase, not
+`check-cache` must not write to `/utrain/data` and should return quickly (no
+GPU work, no heavy compute) — it runs on every attempt of a cacheable phase, not
 just cache hits. Exit non-zero (or time out) if you can't predict the
 manifest for some reason; utrain treats that as a cache miss and runs the
 phase normally.
@@ -123,26 +124,25 @@ phase normally.
 ## `run`
 
 ```console
-$ podman run ... <image> run <run_dir> --phase <phase_name>
+$ podman run ... <image> run --phase <phase_name>
 ```
 
 Runs exactly one phase and exits. This is what utrain's orchestrator
-invokes once per phase, in `phase_order`. `run_dir` is a positional
-argument — utrain passes the path where it mounted the run directory
-(always `/utrain` in practice, see [Filesystem contract](#filesystem-contract)),
-so don't hardcode a path inside your container; read the argument. The other
-fundamental input is `/data`: this is where a phase reads what earlier
-phases produced and writes its own output for later phases to build on (see
-[Filesystem contract](#filesystem-contract)).
+invokes once per phase, in `phase_order`. Every path your container needs
+lives at a fixed location under `/utrain`, so `--phase` is the only input it
+receives on the command line — see
+[Filesystem contract](#filesystem-contract) for the layout. The fundamental
+one is `/utrain/data`: this is where a phase reads what earlier phases
+produced and writes its own output for later phases to build on.
 
 Inside `run`, your container must:
 
-1. Read `<run_dir>/config.yaml` and flatten it for this phase (see
+1. Read `/utrain/config.yaml` and flatten it for this phase (see
    [Config protocol](#config-protocol)).
-2. Read whatever earlier phases left in `/data` and write this phase's
-   output back to `/data` — this is the sole channel phases use to hand
-   off state to each other.
-3. Periodically read `<run_dir>/control.json` and stop cleanly if
+2. Read whatever earlier phases left in `/utrain/data` and write this
+   phase's output back to `/utrain/data` — this is the sole channel phases
+   use to hand off state to each other.
+3. Periodically read `/utrain/control.json` and stop cleanly if
    `{"action": "stop"}` is set (see [Graceful stop](#graceful-stop)).
 4. Log progress through `wandb` and emit `_phase_event` markers (see
    [Metrics and phase events](#metrics-and-phase-events)).
@@ -151,7 +151,7 @@ Inside `run`, your container must:
 ## `serve`
 
 ```console
-$ podman run ... <image> serve <run_dir> [--port PORT]
+$ podman run ... <image> serve [--port PORT]
 ```
 
 Optional — only required if `describe` reports `can_serve: true`. Starts an
@@ -165,18 +165,17 @@ POST /chat
 ```
 
 utrain's CLI doesn't currently launch `serve` for you; run it directly with
-`podman run`, mounting the same `run_dir` your training phases wrote their
-output to.
+`podman run`, mounting the same dirs the training phases used — in
+particular `/utrain/data`, since that is where the trained model lives.
 
 ## Config protocol
 
-Before starting a run, utrain writes `<run_dir>/config.yaml` from your
+Before starting a run, utrain writes `/utrain/config.yaml` from your
 `config_schema` defaults (`src/utrain/cli/runs.py`, `_write_config`), and
 the user may hand-edit it before starting:
 
 ```yaml
 run_id: <uuid>
-output_dir: /run
 compute: cpu | gpu<N>
 globals:
   <group_name>:
@@ -198,7 +197,7 @@ both reference containers and is safe to copy verbatim:
 
 ## Graceful stop
 
-`<run_dir>/control.json` holds `{"action": "continue"}` or
+`/utrain/control.json` holds `{"action": "continue"}` or
 `{"action": "stop"}`. utrain writes `"stop"` when the user stops a run.
 Your training loop should check this periodically (e.g. once per step or
 every few seconds) and, on seeing `"stop"`, log a `<phase>/failed` event,
@@ -227,6 +226,10 @@ utrain can track phase status independent of your process's exit code:
 
 ## Filesystem contract
 
+Everything utrain gives your container lives under a single root, `/utrain`,
+at fixed paths. There is nothing to configure and nothing to discover: hardcode
+them.
+
 utrain runs your image roughly as:
 
 ```console
@@ -234,23 +237,40 @@ $ podman run --rm --network=host --security-opt=label=disable \
     [gpu device args if compute is gpuN] \
     -v <naw>:/opt/utrain-py/naw:ro -v <shim>:/opt/utrain-py/wandb:ro \
     -e PYTHONPATH=/opt/utrain-py \
-    -v <attempt_dir>:/utrain \
-    -v <phase_data_dir>:/data \
+    -v <attempt_dir>/mnt:/utrain:ro \
+    -v <phase_data_dir>:/utrain/data \
+    -v <attempt_dir>/wandb:/utrain/wandb \
     localhost/<image>:utrain \
-    run /utrain --phase <phase>
+    run --phase <phase>
 ```
 
-- **`/utrain`** — the run directory, passed to your container as the
-  `run_dir` positional argument. Contains `config.yaml`, `control.json`,
-  and (once you write to it) `wandb/` and `logs/`.
-- **`/data`** — a phase-specific scratch/output directory. Anything you
-  write here is available to later phases: utrain hardlink-copies the
-  previous phase's `/data` contents forward as the starting point of the
-  next phase's `/data`, and deduplicates everything into a content-addressed
-  store once the run finishes. For a `cacheable` phase, utrain may skip
-  `run` entirely and populate `/data` straight from that store — see
-  [`check-cache`](#check-cache).
-- Exit code `0` means success; anything else means failure.
+| path | mode | what it is |
+|---|---|---|
+| `/utrain/config.yaml` | ro | this run's config (see [Config protocol](#config-protocol)) |
+| `/utrain/control.json` | ro | the stop flag (see [Graceful stop](#graceful-stop)) |
+| `/utrain/data` | rw | the phase's data dir — inputs from earlier phases, and your output |
+| `/utrain/wandb` | rw | where the wandb shim writes metrics; you never touch it directly |
+
+`/utrain` itself is read-only, and `data/` and `wandb/` are the only two
+places a phase may write. That is deliberate: it makes `/utrain/data` provably
+the sole channel phases hand state through. utrain's own bookkeeping for the
+run — logs, the orchestrator's state, other phases' data dirs — is not mounted
+and is not visible to your container at all.
+
+**`/utrain/data`** is a phase-specific scratch/output directory. Anything you
+write here is available to later phases: utrain hardlink-copies the previous
+phase's contents forward as the starting point of the next phase's data dir,
+and deduplicates everything into a content-addressed store once the run
+finishes. For a `cacheable` phase, utrain may skip `run` entirely and populate
+it straight from that store — see [`check-cache`](#check-cache). The trained
+model belongs here too, so that `serve` and later phases can find it.
+
+Exit code `0` means success; anything else means failure.
+
+The top level of `/utrain` is reserved for utrain: don't create your own files
+or directories beside `config.yaml` and `data/` (it's read-only, so you can't),
+and expect utrain to add entries there in future versions. Keep everything of
+your own inside `/utrain/data`.
 
 You don't need to reproduce this invocation yourself — it's shown so you
 can build the same command by hand with `podman run` while developing and

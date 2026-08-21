@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import pathlib
 import subprocess
 import sys
 
@@ -34,7 +33,6 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     run_p = sub.add_parser("run")
-    run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
 
     args = parser.parse_args()

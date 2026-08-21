@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 import pathlib
 import shutil
@@ -14,7 +13,7 @@ import sqlalchemy.orm
 import yaml
 
 from .. import config, container
-from . import compute, exceptions, output, reconcile
+from . import compute, exceptions, orchestrator, output, reconcile
 from . import db as dbmod
 
 
@@ -49,7 +48,6 @@ def _write_config(
     schema = describe.config_schema
     cfg: dict[str, object] = {
         "run_id": run_id,
-        "output_dir": "/run",
         "compute": compute,
     }
     # globals section
@@ -371,12 +369,7 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
     attempt_dir = run_dir / "attempt" / str(attempt)
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(config_path, attempt_dir / "config.yaml")
-    os.chmod(attempt_dir / "config.yaml", 0o444)
-
-    control_path = attempt_dir / "control.json"
-    control_path.write_text(json.dumps({"action": "continue"}))
+    orchestrator.init_mount_dir(attempt_dir, config_path)
 
     image_key = str(row["image"])
     now = time.time()
@@ -485,8 +478,7 @@ def _stop_attempt(run_id: str, attempt_n: int, session: sqlalchemy.orm.Session) 
     run_row = dbmod.get_run(run_id, session)
     run_dir = pathlib.Path(str(run_row["run_dir"]))
     attempt_dir = run_dir / "attempt" / str(attempt_n)
-    control_path = attempt_dir / "control.json"
-    control_path.write_text(json.dumps({"action": "stop"}))
+    orchestrator.write_control(attempt_dir, "stop")
 
     pid = attempt_row["pid"]
     if pid is not None:
@@ -552,17 +544,12 @@ def restart_run(
     attempt_dir = run_dir / "attempt" / str(new_attempt)
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(config_path, attempt_dir / "config.yaml")
-    os.chmod(attempt_dir / "config.yaml", 0o444)
+    orchestrator.init_mount_dir(attempt_dir, config_path)
 
     chash = _config_hash(config_path)
     session.execute(
         sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(config_hash=chash)
     )
-
-    control_path = attempt_dir / "control.json"
-    control_path.write_text(json.dumps({"action": "continue"}))
 
     now = time.time()
     session.execute(

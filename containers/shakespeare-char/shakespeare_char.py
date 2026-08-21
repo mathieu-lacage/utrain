@@ -19,6 +19,13 @@ SHAKESPEARE_URL = (
     "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 )
 
+# The utrain filesystem contract: a single mount root, whose layout is fixed, so
+# a container hardcodes these rather than receiving them. RUN_DIR is read-only
+# (config.yaml, control.json); RUN_DIR/data and RUN_DIR/wandb are writable, and
+# RUN_DIR/data is the only channel phases hand state through.
+RUN_DIR = pathlib.Path("/utrain")
+DATA_DIR = RUN_DIR / "data"
+
 DESCRIBE = {
     "name": "shakespeare-char",
     "version": "1.0.0",
@@ -223,16 +230,16 @@ class CharLM(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _read_control(control_path: pathlib.Path) -> str:
+def _read_control() -> str:
     try:
-        data = json.loads(control_path.read_text())
+        data = json.loads((RUN_DIR / "control.json").read_text())
         return str(data.get("action", "continue"))
     except Exception:
         return "continue"
 
 
-def _load_config(run_dir: pathlib.Path) -> dict[str, object]:
-    cfg_path = run_dir / "config.yaml"
+def _load_config() -> dict[str, object]:
+    cfg_path = RUN_DIR / "config.yaml"
     if cfg_path.exists():
         return dict(yaml.safe_load(cfg_path.read_text()) or {})
     return {}
@@ -302,12 +309,11 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
 # ---------------------------------------------------------------------------
 
 
-def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
+def _run_tokenizer(run_id: str) -> bool:
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(RUN_DIR))
     run.log({"_phase_event": "tokenizer/started"})
-    data_dir = run_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    input_path = data_dir / "input.txt"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    input_path = DATA_DIR / "input.txt"
 
     print("Downloading Shakespeare dataset...", flush=True)
     try:
@@ -323,7 +329,7 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
     stoi_map = {c: i for i, c in enumerate(chars)}
     itos_map = {i: c for i, c in enumerate(chars)}
     vocab = {"chars": chars, "stoi": stoi_map, "itos": itos_map}
-    vocab_path = data_dir / "vocab.json"
+    vocab_path = DATA_DIR / "vocab.json"
     vocab_path.write_text(json.dumps(vocab))
 
     vocab_size = len(chars)
@@ -334,8 +340,8 @@ def _run_tokenizer(run_dir: pathlib.Path, run_id: str) -> bool:
     return True
 
 
-def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(run_dir))
+def _run_pretrain(run_id: str, cfg: dict[str, object]) -> bool:
+    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(RUN_DIR))
     run.log({"_phase_event": "pretrain/started"})
 
     # Config
@@ -349,11 +355,11 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) ->
     eval_interval = _get_int(cfg, "eval_interval", 500)
 
     # Load vocab + data
-    vocab_path = run_dir / "data" / "vocab.json"
+    vocab_path = DATA_DIR / "vocab.json"
     vocab = json.loads(vocab_path.read_text())
     stoi: dict[str, int] = vocab["stoi"]
     vocab_size = len(stoi)
-    text = (run_dir / "data" / "input.txt").read_text(encoding="utf-8")
+    text = (DATA_DIR / "input.txt").read_text(encoding="utf-8")
     data = torch.tensor([stoi[c] for c in text if c in stoi], dtype=torch.long)
     n_train = int(0.9 * len(data))
     train_data = data[:n_train]
@@ -395,7 +401,7 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) ->
     last_metric_time = time.time()
 
     for step in range(max_iters):
-        if _read_control(run_dir / "control.json") == "stop":
+        if _read_control() == "stop":
             run.log({"_phase_event": "pretrain/failed"})
             run.finish(exit_code=1)
             return False
@@ -444,7 +450,7 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) ->
                     "block_size": block_size,
                     "vocab_size": vocab_size,
                 },
-                str(run_dir / "model.pt"),
+                str(DATA_DIR / "model.pt"),
             )
         elif time.time() - last_metric_time >= 10.0:
             run.log({"loss": loss.item()}, step=step, commit=True)
@@ -460,14 +466,14 @@ def _run_pretrain(run_dir: pathlib.Path, run_id: str, cfg: dict[str, object]) ->
 # ---------------------------------------------------------------------------
 
 
-def _load_model(run_dir: pathlib.Path) -> tuple[CharLM, dict[str, int], dict[str, int], int]:
-    ckpt = torch.load(str(run_dir / "model.pt"), map_location="cpu", weights_only=True)
+def _load_model() -> tuple[CharLM, dict[str, int], dict[str, int], int]:
+    ckpt = torch.load(str(DATA_DIR / "model.pt"), map_location="cpu", weights_only=True)
     model = CharLM(
         ckpt["vocab_size"], ckpt["n_embd"], ckpt["n_layer"], ckpt["n_head"], ckpt["block_size"]
     )
     model.load_state_dict(ckpt["model"])
     model.eval()
-    vocab = json.loads((run_dir / "data" / "vocab.json").read_text())
+    vocab = json.loads((DATA_DIR / "vocab.json").read_text())
     return model, vocab["stoi"], vocab["itos"], ckpt["block_size"]
 
 
@@ -522,23 +528,23 @@ def cmd_check_compat() -> None:
     print(json.dumps({"compatible": True, "details": details}))
 
 
-def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
-    cfg = _flatten_config(_load_config(run_dir), phase)
+def cmd_run(phase: str) -> None:
+    cfg = _flatten_config(_load_config(), phase)
     run_id = _get_str(cfg, "run_id", "")
     if phase == "tokenizer":
-        ok = _run_tokenizer(run_dir, run_id)
+        ok = _run_tokenizer(run_id)
     elif phase == "pretrain":
-        ok = _run_pretrain(run_dir, run_id, cfg)
+        ok = _run_pretrain(run_id, cfg)
     else:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
     sys.exit(0 if ok else 1)
 
 
-def cmd_serve(run_dir: pathlib.Path, port: int) -> None:
-    cfg = _flatten_config(_load_config(run_dir), "pretrain")
+def cmd_serve(port: int) -> None:
+    cfg = _flatten_config(_load_config(), "pretrain")
     generate_len = _get_int(cfg, "generate_len", 200)
-    model, stoi, itos, _ = _load_model(run_dir)
+    model, stoi, itos, _ = _load_model()
 
     _ChatHandler.model = model
     _ChatHandler.stoi = stoi
@@ -556,10 +562,8 @@ def main() -> None:
     sub.add_parser("describe")
     sub.add_parser("check-compat")
     run_p = sub.add_parser("run")
-    run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
-    serve_p.add_argument("run_dir", type=pathlib.Path)
     serve_p.add_argument("--port", type=int, default=8080)
 
     args = parser.parse_args()
@@ -568,9 +572,9 @@ def main() -> None:
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "run":
-        cmd_run(args.run_dir, args.phase)
+        cmd_run(args.phase)
     elif args.cmd == "serve":
-        cmd_serve(args.run_dir, args.port)
+        cmd_serve(args.port)
 
 
 if __name__ == "__main__":

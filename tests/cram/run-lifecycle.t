@@ -17,7 +17,7 @@ started and then blocks until the gate file appears in the attempt dir.
   [0-9a-f]{32}/1/pretrain (re)
   $ utrain attempt list "$RID" -q
   [0-9a-f]{32}/1 (re)
-  $ touch "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/gate"
+  $ touch "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/mnt/gate"
   $ utrain run show "$RID" --wait
   id:       [0-9a-f]{32} (re)
   name:     hello

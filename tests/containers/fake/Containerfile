@@ -1,5 +1,4 @@
 FROM python:3.11-slim
-RUN mkdir -p /run/wandb /data /attempt && touch /run/config.yaml /attempt/control.json
 WORKDIR /app
 RUN pip install --no-cache-dir pyyaml wandb
 COPY tests/containers/fake/fake.py /app/fake.py

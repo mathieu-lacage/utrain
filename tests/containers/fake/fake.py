@@ -14,6 +14,12 @@ import time
 import wandb
 import yaml
 
+# The utrain filesystem contract: a single mount root, whose layout is fixed, so
+# a container hardcodes these rather than receiving them. RUN_DIR is read-only
+# (config.yaml, control.json); RUN_DIR/data and RUN_DIR/wandb are writable.
+RUN_DIR = pathlib.Path("/utrain")
+DATA_DIR = RUN_DIR / "data"
+
 # Kept in sync with what _run_tokenizer actually writes -- manifest declares
 # these without running the phase, so a real container would compute this
 # deterministically from its config/inputs instead of hardcoding it.
@@ -88,17 +94,16 @@ def cmd_check_compat() -> None:
 
 
 def _write_phase_data(files: dict[str, str]) -> None:
-    """Write phase output files into the /data mount (if mounted)."""
-    data = pathlib.Path("/data")
-    if not data.exists():
+    """Write phase output files into the data mount (if mounted)."""
+    if not DATA_DIR.exists():
         return
     for name, content in files.items():
-        (data / name).write_text(content)
+        (DATA_DIR / name).write_text(content)
 
 
-def _read_control(control_path: pathlib.Path) -> str:
+def _read_control() -> str:
     try:
-        data = json.loads(control_path.read_text())
+        data = json.loads((RUN_DIR / "control.json").read_text())
         return str(data.get("action", "continue"))
     except Exception:
         return "continue"
@@ -133,8 +138,8 @@ def _flatten_config(cfg: dict[str, object], phase: str) -> dict[str, object]:
     return flat
 
 
-def _wait_for_gate(run_dir: pathlib.Path, cfg: dict[str, object], timeout: float = 120.0) -> None:
-    """Block after the started event until the host creates `<run_dir>/gate`.
+def _wait_for_gate(cfg: dict[str, object], timeout: float = 120.0) -> None:
+    """Block after the started event until the host creates `RUN_DIR/gate`.
 
     Opt-in via a `gate: true` config key. It lets a test observe a phase in
     `running` (and its successors in `pending`) deterministically, instead of
@@ -145,21 +150,19 @@ def _wait_for_gate(run_dir: pathlib.Path, cfg: dict[str, object], timeout: float
     """
     if not cfg.get("gate"):
         return
-    gate = run_dir / "gate"
+    gate = RUN_DIR / "gate"
     deadline = time.monotonic() + timeout
     while not gate.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
 
 
-def _run_tokenizer(
-    run_dir: pathlib.Path, run_id: str, cfg: dict[str, object], total_steps: int = 50
-) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(run_dir))
+def _run_tokenizer(run_id: str, cfg: dict[str, object], total_steps: int = 50) -> bool:
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(RUN_DIR))
     run.log({"_phase_event": "tokenizer/started"})
-    _wait_for_gate(run_dir, cfg)
+    _wait_for_gate(cfg)
     ok = True
     for step in range(total_steps):
-        if _read_control(run_dir / "control.json") == "stop":
+        if _read_control() == "stop":
             run.log({"_phase_event": "tokenizer/failed"})
             ok = False
             break
@@ -173,10 +176,8 @@ def _run_tokenizer(
     return ok
 
 
-def _run_pretrain(
-    run_dir: pathlib.Path, run_id: str, cfg: dict[str, object], total_steps: int = 200
-) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, dir=str(run_dir))
+def _run_pretrain(run_id: str, cfg: dict[str, object], total_steps: int = 200) -> bool:
+    run = wandb.init(project="pretrain", id=run_id, dir=str(RUN_DIR))
     run.log({"_phase_event": "pretrain/started"})
     # Echo the effective config so the e2e suite can verify the utrain config
     # protocol: `num_layers` comes from `globals`, `batch_size` from this phase.
@@ -185,7 +186,7 @@ def _run_pretrain(
     print(f"config: num_layers={num_layers} batch_size={batch_size}", flush=True)
     ok = True
     for step in range(total_steps):
-        if _read_control(run_dir / "control.json") == "stop":
+        if _read_control() == "stop":
             run.log({"_phase_event": "pretrain/failed"})
             ok = False
             break
@@ -207,7 +208,7 @@ def _run_pretrain(
     return ok
 
 
-def cmd_check_cache(run_dir: pathlib.Path, phase: str) -> None:
+def cmd_check_cache(phase: str) -> None:
     if phase != "tokenizer":
         print(f"phase not cacheable: {phase}", file=sys.stderr)
         sys.exit(1)
@@ -218,14 +219,14 @@ def cmd_check_cache(run_dir: pathlib.Path, phase: str) -> None:
     print(json.dumps({"files": files}))
 
 
-def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
-    raw_cfg: dict[str, object] = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+def cmd_run(phase: str) -> None:
+    raw_cfg: dict[str, object] = yaml.safe_load((RUN_DIR / "config.yaml").read_text()) or {}
     cfg = _flatten_config(raw_cfg, phase)
     run_id = str(cfg.get("run_id", ""))
     if phase == "tokenizer":
-        ok = _run_tokenizer(run_dir, run_id, cfg)
+        ok = _run_tokenizer(run_id, cfg)
     elif phase == "pretrain":
-        ok = _run_pretrain(run_dir, run_id, cfg)
+        ok = _run_pretrain(run_id, cfg)
     else:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
@@ -255,7 +256,7 @@ class _ChatHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(reply.encode())
 
 
-def cmd_serve(run_dir: pathlib.Path, port: int) -> None:
+def cmd_serve(port: int) -> None:
     server = http.server.HTTPServer(("", port), _ChatHandler)
     server.serve_forever()
 
@@ -266,13 +267,10 @@ def main() -> None:
     sub.add_parser("describe")
     sub.add_parser("check-compat")
     check_cache_p = sub.add_parser("check-cache")
-    check_cache_p.add_argument("run_dir", type=pathlib.Path)
     check_cache_p.add_argument("--phase", required=True)
     run_p = sub.add_parser("run")
-    run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
-    serve_p.add_argument("run_dir", type=pathlib.Path)
     serve_p.add_argument("--port", type=int, default=8080)
 
     args = parser.parse_args()
@@ -281,11 +279,11 @@ def main() -> None:
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "check-cache":
-        cmd_check_cache(args.run_dir, args.phase)
+        cmd_check_cache(args.phase)
     elif args.cmd == "run":
-        cmd_run(args.run_dir, args.phase)
+        cmd_run(args.phase)
     elif args.cmd == "serve":
-        cmd_serve(args.run_dir, args.port)
+        cmd_serve(args.port)
 
 
 if __name__ == "__main__":

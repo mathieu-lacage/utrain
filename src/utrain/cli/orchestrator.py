@@ -24,13 +24,21 @@ _MANIFEST_TIMEOUT_S = 30
 # package and the wandb shim (see _wandb_mount_args).
 _WANDB_PYPATH = "/opt/utrain-py"
 
-# Where the attempt dir is bind-mounted inside the container. Deliberately not
-# `/run`: podman populates a container's /run with its own bind mounts (a
-# `secrets` dir from /usr/share/containers/mounts.conf, plus `nvidia-ctk-hook*`
-# and `nvidia-persistenced` when a GPU device is attached), and those land in
-# the attempt dir on the host. Images take the run dir as a positional argument,
-# so the path is theirs to receive, not to hardcode.
+# The single root every contract path hangs off, and the layout beneath it. This
+# tree *is* the container's whole view of the host: `mnt/` holds only config.yaml
+# and control.json and goes in read-only, while the two dirs a phase is entitled
+# to write get their own read-write mounts on top of it. Everything else in the
+# attempt dir -- logs/, orchestrator.log, .cdi/, and every *other* phase's data --
+# stays invisible, so /utrain/data really is the only channel phases hand state
+# through.
+#
+# Deliberately not `/run`: podman populates a container's /run with its own bind
+# mounts (a `secrets` dir from /usr/share/containers/mounts.conf, plus
+# `nvidia-ctk-hook*` and `nvidia-persistenced` when a GPU device is attached), and
+# those would land in the attempt dir on the host.
 _RUN_MOUNT = "/utrain"
+_DATA_MOUNT = f"{_RUN_MOUNT}/data"
+_WANDB_MOUNT = f"{_RUN_MOUNT}/wandb"
 
 
 def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[str, str]]:
@@ -93,6 +101,55 @@ def _wandb_mount_args() -> list[str]:
     ]
 
 
+def mount_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
+    """Host dir bind-mounted read-only at `_RUN_MOUNT`."""
+    return attempt_dir / "mnt"
+
+
+def write_control(attempt_dir: pathlib.Path, action: str) -> None:
+    """Set the graceful-stop flag the running phase polls."""
+    (mount_dir(attempt_dir) / "control.json").write_text(json.dumps({"action": action}))
+
+
+def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None:
+    """Lay out the container's read-only view of the run before starting it.
+
+    The `data` and `wandb` entries are deliberately empty: podman cannot create a
+    mountpoint inside a read-only bind, so the two writable mounts layered on top
+    of `_RUN_MOUNT` need their targets to already exist in the source dir.
+
+    config.yaml is copied (not linked) and made read-only so the attempt keeps the
+    config it was started with even if the user edits the run's copy afterwards.
+    """
+    mnt = mount_dir(attempt_dir)
+    (mnt / "data").mkdir(parents=True, exist_ok=True)
+    (mnt / "wandb").mkdir(parents=True, exist_ok=True)
+    # The real metrics dir, mounted over the stub above. Created here rather than
+    # in _start_phase because _check_cache mounts it too, and runs first.
+    (attempt_dir / "wandb").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config_path, mnt / "config.yaml")
+    os.chmod(mnt / "config.yaml", 0o444)
+    write_control(attempt_dir, "continue")
+
+
+def _mount_args(attempt_dir: pathlib.Path, data_dir: pathlib.Path, *, data_ro: bool) -> list[str]:
+    """The three `-v` flags making up the container's `/utrain` tree.
+
+    `data_ro` is for `check-cache`, which the contract forbids from writing to the
+    data dir; mounting it read-only makes that a guarantee rather than a request.
+    A container that violates it fails, which the caller already treats as a cache
+    miss -- the safe outcome.
+    """
+    return [
+        "-v",
+        f"{mount_dir(attempt_dir)}:{_RUN_MOUNT}:ro",
+        "-v",
+        f"{data_dir}:{_DATA_MOUNT}{':ro' if data_ro else ''}",
+        "-v",
+        f"{attempt_dir / 'wandb'}:{_WANDB_MOUNT}",
+    ]
+
+
 def _init_phase_data(
     run_id: str,
     attempt: int,
@@ -137,7 +194,6 @@ def _start_phase(
     image_key: str,
     attempt_dir: pathlib.Path,
     phase: str,
-    run_dir: pathlib.Path,
     compute: str,
 ) -> subprocess.Popen[bytes]:
     logs_dir = attempt_dir / "logs"
@@ -147,7 +203,6 @@ def _start_phase(
 
     data_dir = attempt_dir / "data" / phase
     data_dir.mkdir(parents=True, exist_ok=True)
-    (attempt_dir / "wandb").mkdir(parents=True, exist_ok=True)
 
     gpu_args, env = _gpu_args(compute, attempt_dir)
 
@@ -164,13 +219,9 @@ def _start_phase(
             "--security-opt=label=disable",
             *gpu_args,
             *_wandb_mount_args(),
-            "-v",
-            f"{attempt_dir}:{_RUN_MOUNT}",
-            "-v",
-            f"{data_dir}:/data",
+            *_mount_args(attempt_dir, data_dir, data_ro=False),
             container.podman.image_ref(image_key),
             "run",
-            _RUN_MOUNT,
             "--phase",
             phase,
         ],
@@ -199,13 +250,9 @@ def _check_cache(
                 "--rm",
                 "--network=host",
                 "--security-opt=label=disable",
-                "-v",
-                f"{attempt_dir}:{_RUN_MOUNT}",
-                "-v",
-                f"{data_dir}:/data",
+                *_mount_args(attempt_dir, data_dir, data_ro=True),
                 container.podman.image_ref(image_key),
                 "check-cache",
-                _RUN_MOUNT,
                 "--phase",
                 phase,
             ],
@@ -344,7 +391,7 @@ def run_orchestrator(
             sys.stdout.flush()
             continue
 
-        current_proc = _start_phase(image_key, attempt_dir, phase, run_dir, compute)
+        current_proc = _start_phase(image_key, attempt_dir, phase, compute)
         exit_code = current_proc.wait()
         current_proc = None
 

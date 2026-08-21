@@ -22,6 +22,10 @@ import time
 import wandb
 import yaml
 
+# Every path utrain gives you hangs off this root, at fixed locations.
+RUN_DIR = pathlib.Path("/utrain")
+DATA_DIR = RUN_DIR / "data"
+
 DESCRIBE = {
     "name": "demo",
     "version": "1.0.0",
@@ -70,9 +74,9 @@ def _flatten_config(cfg: dict, phase: str) -> dict:
     return flat
 
 
-def _read_control(path: pathlib.Path) -> str:
+def _read_control() -> str:
     try:
-        return json.loads(path.read_text()).get("action", "continue")
+        return json.loads((RUN_DIR / "control.json").read_text()).get("action", "continue")
     except Exception:
         return "continue"
 
@@ -85,13 +89,13 @@ def cmd_check_compat():
     print(json.dumps({"compatible": True, "details": "always compatible"}))
 
 
-def _run_train(run_dir: pathlib.Path, cfg: dict) -> bool:
-    run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(run_dir))
+def _run_train(cfg: dict) -> bool:
+    run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(RUN_DIR))
     run.log({"_phase_event": "train/started"})
     steps = int(cfg.get("steps", 50))
     ok = True
     for step in range(steps):
-        if _read_control(run_dir / "control.json") == "stop":
+        if _read_control() == "stop":
             run.log({"_phase_event": "train/failed"})
             ok = False
             break
@@ -99,18 +103,20 @@ def _run_train(run_dir: pathlib.Path, cfg: dict) -> bool:
         run.log({"loss": loss}, step=step, commit=True)
         time.sleep(0.05)
     if ok:
+        # Hand the result to later phases (and `serve`) through the data dir.
+        (DATA_DIR / "model.txt").write_text(f"trained for {steps} steps\n")
         run.log({"_phase_event": "train/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 
 
-def cmd_run(run_dir: pathlib.Path, phase: str):
-    raw_cfg = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+def cmd_run(phase: str):
+    raw_cfg = yaml.safe_load((RUN_DIR / "config.yaml").read_text()) or {}
     cfg = _flatten_config(raw_cfg, phase)
     if phase != "train":
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
-    sys.exit(0 if _run_train(run_dir, cfg) else 1)
+    sys.exit(0 if _run_train(cfg) else 1)
 
 
 def main():
@@ -119,7 +125,6 @@ def main():
     sub.add_parser("describe")
     sub.add_parser("check-compat")
     run_p = sub.add_parser("run")
-    run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
 
     args = parser.parse_args()
@@ -128,7 +133,7 @@ def main():
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "run":
-        cmd_run(args.run_dir, args.phase)
+        cmd_run(args.phase)
 
 
 if __name__ == "__main__":
@@ -137,9 +142,12 @@ if __name__ == "__main__":
 
 This is the minimum viable version of the contract: one phase, one config
 field, `describe`/`check-compat`/`run` but no `serve`. It reads
-`config.yaml`, checks `control.json` for a stop request, and logs a
-`loss` metric plus `_phase_event` markers through `wandb` — utrain will
-capture those transparently, no wandb account needed. See the
+`/utrain/config.yaml`, checks `/utrain/control.json` for a stop request,
+writes its output to `/utrain/data`, and logs a `loss` metric plus
+`_phase_event` markers through `wandb` — utrain will capture those
+transparently, no wandb account needed. Note that nothing tells the
+container where those paths are: `/utrain` is a fixed part of the
+contract, and only `/utrain/data` and the metrics dir are writable. See the
 [container reference](container-contract.md) for what each of these does
 and why.
 
