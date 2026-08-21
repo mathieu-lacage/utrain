@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shakespeare-char"
+version = "1.0.0"
+description = "Character-level Shakespeare LLM, packaged as a utrain container"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "torch>=2.0",
+    "pyyaml>=6.0",
+    "wandb>=0.18",
+]
+
+# The container contract's entry point: `describe`, `check-compat`,
+# `run --phase <p>` and `serve --port <n>` are subcommands of this script, which
+# is what the Containerfile's ENTRYPOINT resolves to.
+[project.scripts]
+shakespeare-char = "shakespeare_char.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shakespeare_char"]

@@ -193,7 +193,7 @@ globals on key collision. This exact merge is implemented identically in
 both reference containers and is safe to copy verbatim:
 
 - `tests/containers/fake/fake.py` — `_flatten_config`
-- `containers/shakespeare-char/shakespeare_char.py` — `_flatten_config`
+- `containers/shakespeare-char/src/shakespeare_char/config.py` — `flatten`
 
 ## Graceful stop
 
@@ -300,4 +300,8 @@ $ podman run --rm localhost/utrain-<name>:utrain describe
   `run`, showing that `serve`/`check-compat` are only needed if you use
   them.
 - `containers/shakespeare-char/` — a real, published container (character-level
-  GPT training), showing the full contract used end to end.
+  GPT training), showing the full contract used end to end. It is a normal
+  Python project (`pyproject.toml` plus `src/shakespeare_char/`) whose CLI
+  entry point, in `cli.py`, is the only module that knows about the
+  subcommands above; the phases, model, and serve handler are plain modules
+  next to it.

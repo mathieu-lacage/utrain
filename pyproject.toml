@@ -64,7 +64,10 @@ testpaths = ["tests"]
 addopts = "--tb=short -n auto --dist worksteal"
 
 [tool.pyright]
-include = ["src"]
+# The reference container is a project of its own (its own pyproject.toml, its
+# own deps) but is checked with the same settings as the orchestrator. Its
+# imports come from the `containers` dependency group below.
+include = ["src", "containers/shakespeare-char/src"]
 pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
@@ -149,6 +152,9 @@ commands = [["pytest", "-rs"]]
 
 [tool.uv.sources]
 mike = { git = "https://github.com/squidfunk/mike.git" }
+# Editable so the type checker and the installed copy never disagree; the
+# container image does not use this path, it pip-installs the directory itself.
+shakespeare-char = { path = "containers/shakespeare-char", editable = true }
 
 
 [dependency-groups]
@@ -174,4 +180,14 @@ dev = [
     "uniplot>=0.23.2",
     "tox>=4.21",
     "tox-uv>=1.13",
+]
+# The reference container, so that pyright can resolve what it imports. It
+# declares its own dependencies (torch, wandb) in its own pyproject.toml; they
+# arrive here transitively and are pinned in this project's uv.lock.
+#
+# Deliberately its own group rather than part of `dev`: nothing in utrain
+# imports any of it and torch is multi-GB, so no test or docs job should pay for
+# it. Installed by the pyright hook in .pre-commit-config.yaml, and nothing else.
+containers = [
+    "shakespeare-char",
 ]

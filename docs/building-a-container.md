@@ -210,4 +210,7 @@ You should see `loss` decreasing across steps.
   points and podman invocation utrain uses.
 - Look at `containers/shakespeare-char/` in this repository for a
   real, published container that trains an actual small language model
-  end to end.
+  end to end. The tutorial above deliberately stays in one file; that one
+  is packaged the way a container you maintain should be — a `pyproject.toml`
+  and a `src/` layout, with the CLI in its own module and the model, phases,
+  and serve handler beside it.

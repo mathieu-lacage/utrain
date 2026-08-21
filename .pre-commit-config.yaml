@@ -32,7 +32,10 @@ repos:
         types: [python]
       - id: pyright
         name: Type checking for python
-        entry: uv run --frozen pyright
+        # --group containers: pyright also checks containers/shakespeare-char,
+        # which imports torch and wandb. They live in their own group so the
+        # test and docs jobs, which do not type check, never download torch.
+        entry: uv run --frozen --group containers pyright
         language: system
         types: [python]
         pass_filenames: false

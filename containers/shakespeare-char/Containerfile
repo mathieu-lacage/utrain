@@ -2,5 +2,8 @@ FROM docker.io/python:3.11-slim
 WORKDIR /app
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir pyyaml wandb
-COPY containers/shakespeare-char/shakespeare_char.py /app/shakespeare_char.py
-ENTRYPOINT ["python", "/app/shakespeare_char.py"]
+COPY containers/shakespeare-char /app
+# --no-deps: torch/pyyaml/wandb already come from the layers above, and
+# resolving them again would re-download torch on every source change.
+RUN pip install --no-cache-dir --no-deps /app
+ENTRYPOINT ["shakespeare-char"]
