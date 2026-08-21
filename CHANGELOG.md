@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- test all supported python versions via to and Gitlab CI/CD ([#5](https://gitlab.inria.fr/mlacage/utrain/-/issues/5))
+- test all supported python versions via tox and Gitlab CI/CD ([#5](https://gitlab.inria.fr/mlacage/utrain/-/issues/5))
 
 
 ## 0.0.5 (2026-08-18)
