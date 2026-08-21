@@ -535,25 +535,6 @@ def cmd_run(run_dir: pathlib.Path, phase: str) -> None:
     sys.exit(0 if ok else 1)
 
 
-def cmd_run_all(run_dir: pathlib.Path) -> None:
-    raw_cfg = _load_config(run_dir)
-    for phase in DESCRIBE["phase_order"]:
-        if _read_control(run_dir / "control.json") == "stop":
-            sys.exit(1)
-        cfg = _flatten_config(raw_cfg, phase)
-        run_id = _get_str(cfg, "run_id", "")
-        if phase == "tokenizer":
-            ok = _run_tokenizer(run_dir, run_id)
-        elif phase == "pretrain":
-            ok = _run_pretrain(run_dir, run_id, cfg)
-        else:
-            print(f"unknown phase: {phase}", file=sys.stderr)
-            sys.exit(1)
-        if not ok:
-            sys.exit(1)
-    sys.exit(0)
-
-
 def cmd_serve(run_dir: pathlib.Path, port: int) -> None:
     cfg = _flatten_config(_load_config(run_dir), "pretrain")
     generate_len = _get_int(cfg, "generate_len", 200)
@@ -577,8 +558,6 @@ def main() -> None:
     run_p = sub.add_parser("run")
     run_p.add_argument("run_dir", type=pathlib.Path)
     run_p.add_argument("--phase", required=True)
-    run_all_p = sub.add_parser("run-all")
-    run_all_p.add_argument("run_dir", type=pathlib.Path)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("run_dir", type=pathlib.Path)
     serve_p.add_argument("--port", type=int, default=8080)
@@ -590,8 +569,6 @@ def main() -> None:
         cmd_check_compat()
     elif args.cmd == "run":
         cmd_run(args.run_dir, args.phase)
-    elif args.cmd == "run-all":
-        cmd_run_all(args.run_dir)
     elif args.cmd == "serve":
         cmd_serve(args.run_dir, args.port)
 
