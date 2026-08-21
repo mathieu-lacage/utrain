@@ -19,6 +19,8 @@ nav = [
   { "Get started" = "index.md" },
   { "Installation" = "installation.md" },
   { "Quickstart" = "quickstart.md" },
+  { "Building a container" = "building-a-container.md" },
+  { "Container reference" = "container-contract.md" },
   { "Changelog" = "changelog.md" },
 ]
 
