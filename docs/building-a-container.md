@@ -231,11 +231,12 @@ You should see `loss` decreasing across steps.
 ## Next steps
 
 - Read the [container reference](container-contract.md) for the full
-  contract, including `serve` (live chat testing) and the exact mount
-  points and podman invocation utrain uses.
+  contract, including `serve` (the OpenAI-compatible protocol behind
+  `utrain run chat`) and the exact mount points and podman invocation
+  utrain uses.
 - Look at `containers/shakespeare-char/` in this repository for a
   real, published container that trains an actual small language model
   end to end. The tutorial above deliberately stays in one file; that one
   is packaged the way a container you maintain should be — a `pyproject.toml`
   and a `src/` layout, with the CLI in its own module and the model, phases,
-  and serve handler beside it.
+  and serve loop beside it.

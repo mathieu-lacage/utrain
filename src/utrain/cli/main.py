@@ -7,7 +7,7 @@ import typing
 import sqlalchemy.orm
 
 from .. import config
-from . import attempts, compute, debug, exceptions, images, output, phases, runs, store
+from . import attempts, compute, debug, exceptions, images, output, phases, runs, serve, store
 from . import db as dbmod
 
 
@@ -176,6 +176,16 @@ def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 
 
 @db_command
+def _cmd_run_chat(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    serve.chat_run(
+        args.id,
+        session,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+    )
+
+
+@db_command
 def _cmd_attempt_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     if args.quiet:
         for addr in attempts.list_attempt_ids(args.run_id, session):
@@ -314,6 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_logs.add_argument("--stderr", action="store_true")
     run_logs.add_argument("--tail", type=int, default=200)
     run_logs.set_defaults(func=_cmd_run_logs)
+
+    run_chat = run_sub.add_parser("chat", help="Chat interactively with a run's trained model")
+    run_chat.add_argument("id")
+    run_chat.add_argument("--max-tokens", type=int, default=200, dest="max_tokens")
+    run_chat.add_argument("--temperature", type=float, default=0.8)
+    run_chat.set_defaults(func=_cmd_run_chat)
 
     # attempt
     attempt_p = sub.add_parser("attempt")

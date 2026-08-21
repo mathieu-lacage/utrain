@@ -24,26 +24,17 @@ _MANIFEST_TIMEOUT_S = 30
 # package and the wandb shim (see _wandb_mount_args).
 _WANDB_PYPATH = "/opt/utrain-py"
 
-# The single root every contract path hangs off, and the layout beneath it. This
-# tree *is* the container's whole view of the host: `mnt/` holds only config.yaml
-# and control.json and goes in read-only, while the two dirs a phase is entitled
-# to write get their own read-write mounts on top of it. Everything else in the
-# attempt dir -- logs/, orchestrator.log, .cdi/, and every *other* phase's data --
-# stays invisible, so /utrain/data really is the only channel phases hand state
-# through.
-#
-# Deliberately not `/run`: podman populates a container's /run with its own bind
-# mounts (a `secrets` dir from /usr/share/containers/mounts.conf, plus
-# `nvidia-ctk-hook*` and `nvidia-persistenced` when a GPU device is attached), and
-# those would land in the attempt dir on the host.
-#
-# The container is *told* this path, as `--utrain-root`, rather than assuming it:
-# the layout beneath the root is the contract, the root itself is utrain's choice.
-# That is what lets a container author run their phases against a plain directory
-# on the host (the contract's default, `$CWD/run`) without building an image.
+# all utrain-specific paths live below /utrain below. Handed over to the container
+# as `--utrain-root`. Some paths are mounted ro, others rw, for the container to
+# be able to write data
 _RUN_MOUNT = "/utrain"
 _DATA_MOUNT = f"{_RUN_MOUNT}/data"
 _WANDB_MOUNT = f"{_RUN_MOUNT}/wandb"
+
+# Writable, and mounted only for `serve`. It exists so the container has
+# somewhere to publish the port it bound
+_SERVE_MOUNT = f"{_RUN_MOUNT}/serve"
+_PORT_FILE = f"{_SERVE_MOUNT}/port.json"
 
 
 def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[str, str]]:
@@ -111,6 +102,16 @@ def mount_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
     return attempt_dir / "mnt"
 
 
+def serve_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
+    """Host dir bind-mounted read-write at `_SERVE_MOUNT`, holding `port.json`."""
+    return attempt_dir / "serve"
+
+
+def port_file(attempt_dir: pathlib.Path) -> pathlib.Path:
+    """Host path of the port file the container writes once it is listening."""
+    return serve_dir(attempt_dir) / "port.json"
+
+
 def write_control(attempt_dir: pathlib.Path, action: str) -> None:
     """Set the graceful-stop flag the running phase polls."""
     (mount_dir(attempt_dir) / "control.json").write_text(json.dumps({"action": action}))
@@ -119,9 +120,9 @@ def write_control(attempt_dir: pathlib.Path, action: str) -> None:
 def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None:
     """Lay out the container's read-only view of the run before starting it.
 
-    The `data` and `wandb` entries are deliberately empty: podman cannot create a
-    mountpoint inside a read-only bind, so the two writable mounts layered on top
-    of `_RUN_MOUNT` need their targets to already exist in the source dir.
+    The `data`, `wandb` and `serve` entries are deliberately empty: podman cannot
+    create a mountpoint inside a read-only bind, so every writable mount layered
+    on top of `_RUN_MOUNT` needs its target to already exist in the source dir.
 
     config.yaml is copied (not linked) and made read-only so the attempt keeps the
     config it was started with even if the user edits the run's copy afterwards.
@@ -129,6 +130,7 @@ def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None
     mnt = mount_dir(attempt_dir)
     (mnt / "data").mkdir(parents=True, exist_ok=True)
     (mnt / "wandb").mkdir(parents=True, exist_ok=True)
+    (mnt / "serve").mkdir(parents=True, exist_ok=True)
     # The real metrics dir, mounted over the stub above. Created here rather than
     # in _start_phase because _check_cache mounts it too, and runs first.
     (attempt_dir / "wandb").mkdir(parents=True, exist_ok=True)
@@ -236,6 +238,55 @@ def _start_phase(
         stderr=stderr,
         env=env,
     )
+
+
+def serve_argv(
+    image_key: str,
+    attempt_dir: pathlib.Path,
+    data_dir: pathlib.Path,
+    compute: str,
+) -> tuple[list[str], dict[str, str]]:
+    """podman argv + env to serve `data_dir` over an OpenAI-compatible endpoint.
+
+    Lives here rather than in the serve command so the mount layout stays defined
+    in exactly one place, beside _start_phase and _check_cache.
+
+    `--port 0` tells the container to let the kernel pick a free port, and it
+    publishes the one it bound to `_PORT_FILE` inside the writable `serve` mount.
+
+    `data_ro=True` because serving is a read of a finished run: by the time a run
+    is servable its data files are hardlinked into the content-addressed store,
+    so a write here would corrupt every other run sharing them. And no wandb
+    mounts, since serve logs no metrics -- the same reasoning as _check_cache.
+
+    `compute` comes from the run, so a model trained on a GPU is served on one.
+    """
+    gpu_args, env = _gpu_args(compute, attempt_dir)
+    host_serve_dir = serve_dir(attempt_dir)
+    host_serve_dir.mkdir(parents=True, exist_ok=True)
+    # Created lazily here as well as in init_mount_dir, so a run started before
+    # `serve` existed can still be chatted with.
+    (mount_dir(attempt_dir) / "serve").mkdir(parents=True, exist_ok=True)
+    # A port file left by an earlier session would be read as this one's answer,
+    # pointing the client at a dead port.
+    port_file(attempt_dir).unlink(missing_ok=True)
+    return [
+        "podman",
+        "run",
+        "--rm",
+        "--network=host",
+        "--security-opt=label=disable",
+        *gpu_args,
+        *_mount_args(attempt_dir, data_dir, data_ro=True),
+        "-v",
+        f"{host_serve_dir}:{_SERVE_MOUNT}",
+        container.podman.image_ref(image_key),
+        "--utrain-root",
+        _RUN_MOUNT,
+        "serve",
+        "--port",
+        "0",
+    ], env
 
 
 def _check_cache(

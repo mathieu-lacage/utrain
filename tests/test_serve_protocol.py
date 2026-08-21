@@ -1,0 +1,408 @@
+"""The serve endpoint, container and client halves, without podman.
+
+`tests/cram/serve.t` covers `utrain run chat` end to end, but it needs podman and
+so skips in CI. This drives the same client code (`utrain.cli.serve`) against the
+same reference container (`tests/containers/fake/fake.py`), just spawned directly
+instead of inside an image -- which is exactly what the contract's "a container
+runs from a checkout too" rule makes possible. It runs everywhere.
+"""
+
+import http.client
+import io
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import typing
+import uuid
+
+import pytest
+import sqlalchemy
+import sqlalchemy.orm
+
+import utrain.cli.db
+import utrain.cli.exceptions
+import utrain.cli.orchestrator
+import utrain.cli.serve
+import utrain.config
+import utrain.container.podman
+import utrain.container.schema
+
+_PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+_FAKE = _PROJECT_ROOT / "tests" / "containers" / "fake" / "fake.py"
+# The wandb shim, so fake.py's module-level `import wandb` resolves without the
+# real package installed -- the same substitution utrain does inside a container.
+_SHIM = _PROJECT_ROOT / "src" / "utrain" / "container" / "wandb_shim"
+
+
+def _spawn(root: pathlib.Path) -> subprocess.Popen[bytes]:
+    """Run the fake container's `serve`, with its output going nowhere in particular.
+
+    stdout and stderr are deliberately left alone: the port arrives through
+    `<root>/serve/port.json`, so the container's output is not a protocol and
+    nothing here has to consume it.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(_SHIM), env.get("PYTHONPATH", "")])
+    return subprocess.Popen(
+        [sys.executable, str(_FAKE), "--utrain-root", str(root), "serve", "--port", "0"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+
+
+@pytest.fixture()
+def served(tmp_path: pathlib.Path) -> typing.Iterator[int]:
+    """A running fake container; yields the port it published."""
+    proc = _spawn(tmp_path)
+    try:
+        yield utrain.cli.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def _post(port: int, path: str, payload: dict[str, object]) -> http.client.HTTPResponse:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request(
+        "POST", path, body=json.dumps(payload), headers={"Content-Type": "application/json"}
+    )
+    return conn.getresponse()
+
+
+def test_port_file_appears_only_once_the_port_is_usable(served: int) -> None:
+    """The port file's appearance is a readiness signal, not just an address.
+
+    The container writes it after `listen()`, so a client may connect the
+    instant it reads the file -- no retry loop on the connection itself. That
+    only holds because bind-then-publish would leave a window where the kernel
+    refuses connections; this asserts the container does not have that window.
+    """
+    assert served > 0
+    conn = http.client.HTTPConnection("127.0.0.1", served, timeout=30)
+    conn.request("GET", "/v1/models")
+    assert conn.getresponse().status == 200
+
+
+def test_port_file_is_valid_json_at_the_documented_path(tmp_path: pathlib.Path) -> None:
+    proc = _spawn(tmp_path)
+    try:
+        utrain.cli.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
+        published = json.loads((tmp_path / "serve" / "port.json").read_text())
+        assert isinstance(published["port"], int)
+        # The temporary file the atomic rename went through must not survive.
+        assert list((tmp_path / "serve").iterdir()) == [tmp_path / "serve" / "port.json"]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_models_endpoint_reports_the_data_dir(served: int, tmp_path: pathlib.Path) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", served, timeout=30)
+    conn.request("GET", "/v1/models")
+    data = json.loads(conn.getresponse().read())
+    assert data["data"][0]["id"] == "fake"
+    # Proves the filesystem contract reached `serve`.
+    assert data["data"][0]["data_dir"] == str(tmp_path / "data")
+
+
+def test_non_streaming_completion(served: int) -> None:
+    response = _post(
+        served, "/v1/chat/completions", {"messages": [{"role": "user", "content": "hello"}]}
+    )
+    assert response.status == 200
+    body = json.loads(response.read())
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["content"] == "[fake model] turn 1: 'hello'"
+
+
+def test_streaming_completion_is_sse_and_terminates(served: int) -> None:
+    response = _post(
+        served,
+        "/v1/chat/completions",
+        {"messages": [{"role": "user", "content": "hello"}], "stream": True},
+    )
+    assert response.status == 200
+    # startswith, not ==: Starlette appends "; charset=utf-8", which is a valid
+    # media type and which SSE clients handle.
+    content_type = response.getheader("Content-Type") or ""
+    assert content_type.startswith("text/event-stream")
+    raw = response.read().decode()
+
+    chunks = [line[len("data:") :].strip() for line in raw.splitlines() if line.startswith("data:")]
+    assert chunks[-1] == "[DONE]", "the stream must end with OpenAI's [DONE] sentinel"
+    parsed = [json.loads(c) for c in chunks[:-1]]
+    assert all(c["object"] == "chat.completion.chunk" for c in parsed)
+    assert parsed[-1]["choices"][0]["finish_reason"] == "stop"
+    # More than one content chunk: it really streams rather than arriving whole.
+    content = [c["choices"][0]["delta"].get("content") for c in parsed]
+    assert len([c for c in content if c]) > 1
+    assert "".join(c for c in content if c) == "[fake model] turn 1: 'hello'"
+
+
+def test_history_is_carried_by_the_client_not_the_server(served: int) -> None:
+    """The API is stateless: turn 2 is turn 2 only because the client said so.
+
+    This is the property that makes the KV-cache a prefix-match rather than an
+    append -- the server is told the whole conversation every time and has to
+    work out for itself what it has already seen.
+    """
+    first = json.loads(
+        _post(
+            served, "/v1/chat/completions", {"messages": [{"role": "user", "content": "one"}]}
+        ).read()
+    )
+    assert "turn 1" in first["choices"][0]["message"]["content"]
+
+    resent = json.loads(
+        _post(
+            served,
+            "/v1/chat/completions",
+            {
+                "messages": [
+                    {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": first["choices"][0]["message"]["content"]},
+                    {"role": "user", "content": "two"},
+                ]
+            },
+        ).read()
+    )
+    assert "turn 2" in resent["choices"][0]["message"]["content"]
+
+    # A fresh single-message request is turn 1 again: nothing was retained.
+    again = json.loads(
+        _post(
+            served, "/v1/chat/completions", {"messages": [{"role": "user", "content": "three"}]}
+        ).read()
+    )
+    assert "turn 1" in again["choices"][0]["message"]["content"]
+
+
+def test_bad_request_uses_openai_error_envelope(served: int) -> None:
+    response = _post(served, "/v1/chat/completions", {"no": "messages"})
+    assert response.status == 400
+    assert "message" in json.loads(response.read())["error"]
+
+
+def test_unknown_path_is_404(served: int) -> None:
+    response = _post(served, "/v1/nonsense", {})
+    assert response.status == 404
+
+
+def test_openapi_schema_is_published(served: int) -> None:
+    """A container built on FastAPI describes its own endpoint, for free."""
+    conn = http.client.HTTPConnection("127.0.0.1", served, timeout=30)
+    conn.request("GET", "/openapi.json")
+    schema = json.loads(conn.getresponse().read())
+    conn.close()
+    assert "/v1/chat/completions" in schema["paths"]
+    assert "/v1/models" in schema["paths"]
+    assert "ChatCompletionRequest" in schema["components"]["schemas"]
+
+
+def test_empty_messages_is_rejected(served: int) -> None:
+    """`messages` is required to be non-empty, and the rejection uses OpenAI's
+    envelope rather than FastAPI's default 422 `{"detail": ...}`."""
+    response = _post(served, "/v1/chat/completions", {"messages": []})
+    assert response.status == 400
+    assert "messages" in json.loads(response.read())["error"]["message"]
+
+
+# `utrain run chat` itself. Same trick as above -- the container is spawned
+# directly rather than through podman -- so everything from resolving the run to
+# driving the REPL is covered where `tests/cram/serve.t` cannot run.
+
+
+def _make_run(
+    session: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    *,
+    phase_statuses: dict[str, str],
+) -> str:
+    run_id = uuid.uuid4().hex
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    session.execute(
+        sqlalchemy.insert(utrain.cli.db.runs).values(
+            id=run_id,
+            name="chat",
+            image="utrain-fake",
+            compute="cpu",
+            run_dir=str(run_dir),
+            status="done",
+            created_at=0.0,
+        )
+    )
+    session.execute(
+        sqlalchemy.insert(utrain.cli.db.run_attempts).values(
+            run_id=run_id, attempt=1, status="done", started_at=0.0
+        )
+    )
+    for order, (phase, status) in enumerate(phase_statuses.items()):
+        session.execute(
+            sqlalchemy.insert(utrain.cli.db.run_phases).values(
+                run_id=run_id, attempt=1, phase=phase, phase_order=order, status=status
+            )
+        )
+        if status == "done":
+            (run_dir / "attempt" / "1" / "data" / phase).mkdir(parents=True)
+    return run_id
+
+
+def _patch_describe(monkeypatch: pytest.MonkeyPatch, *, can_serve: bool) -> None:
+    described = utrain.container.schema.DescribeOutput(
+        name="fake",
+        phases=[utrain.container.schema.PhaseInfo(name="pretrain", label="Pretrain")],
+        phase_order=["pretrain"],
+        can_serve=can_serve,
+    )
+    monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: described)
+
+
+@pytest.fixture()
+def chat_env(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> typing.Iterator[sqlalchemy.orm.Session]:
+    """A DB with utrain's podman call replaced by a directly-spawned fake."""
+    monkeypatch.setenv("UTRAIN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        utrain.container.podman,
+        "list_presets",
+        lambda: {"utrain-fake": "localhost/utrain-fake:utrain"},
+    )
+    _patch_describe(monkeypatch, can_serve=True)
+
+    def fake_serve_argv(
+        image_key: str, attempt_dir: pathlib.Path, data_dir: pathlib.Path, compute: str
+    ) -> tuple[list[str], dict[str, str]]:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([str(_SHIM), env.get("PYTHONPATH", "")])
+        # Stand in for the two bind mounts the real serve_argv sets up. They come
+        # from unrelated host directories -- data_dir is a *phase's* data dir,
+        # while the serve dir hangs off the attempt -- so a single root cannot
+        # contain both; symlinks reproduce that faithfully. Getting this wrong
+        # means the container publishes its port somewhere utrain never looks.
+        serve_host_dir = utrain.cli.orchestrator.serve_dir(attempt_dir)
+        serve_host_dir.mkdir(parents=True, exist_ok=True)
+        root = attempt_dir / "mount-root"
+        root.mkdir(parents=True, exist_ok=True)
+        for name, target in (("data", data_dir), ("serve", serve_host_dir)):
+            link = root / name
+            if not link.exists():
+                link.symlink_to(target)
+        return [
+            sys.executable,
+            str(_FAKE),
+            "--utrain-root",
+            str(root),
+            "serve",
+            "--port",
+            "0",
+        ], env
+
+    monkeypatch.setattr(utrain.cli.orchestrator, "serve_argv", fake_serve_argv)
+
+    with utrain.cli.db.with_db(utrain.config.Settings()) as session:
+        yield session
+
+
+def _feed(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+
+
+def test_chat_run_streams_turns(
+    chat_env: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
+    _feed(monkeypatch, "hello\nagain\n/quit\n")
+    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    lines = capsys.readouterr().out.splitlines()
+    # Exact shape, because tests/cram/serve.t asserts the same output verbatim.
+    # The *last* completed phase is the one holding the model.
+    assert lines[0] == "serving chat (utrain-fake, phase 'pretrain')"
+    assert lines[1].startswith("endpoint: http://127.0.0.1:")
+    assert lines[2].startswith("model: data_dir=")
+    # turn 2 proves the client resent the history, since the server keeps none.
+    assert lines[3:] == [
+        "[fake model] turn 1: 'hello'",
+        "[fake model] turn 2: 'again'",
+    ]
+
+
+def test_chat_run_reset_clears_the_client_side_history(
+    chat_env: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
+    _feed(monkeypatch, "one\n/reset\ntwo\n/quit\n")
+    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    out = capsys.readouterr().out
+    assert "[fake model] turn 1: 'one'" in out
+    assert "[fake model] turn 1: 'two'" in out
+
+
+def test_chat_run_tolerates_a_container_that_logs_freely(
+    chat_env: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A container's output is not a protocol, so it cannot wedge the session.
+
+    The reference containers leave uvicorn's access log on, which means a line
+    of output per request. The port arrives through a file, so utrain never
+    reads these streams as protocol and never has to keep a pipe drained.
+    """
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
+    _feed(monkeypatch, "hello\nagain\n/quit\n")
+    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    out = capsys.readouterr().out
+    assert "[fake model] turn 1: 'hello'" in out
+    assert "[fake model] turn 2: 'again'" in out
+
+
+def test_chat_run_reports_a_container_that_fails_to_start(
+    chat_env: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
+
+    def broken_argv(
+        image_key: str, attempt_dir: pathlib.Path, data_dir: pathlib.Path, compute: str
+    ) -> tuple[list[str], dict[str, str]]:
+        return [sys.executable, "-c", "raise SystemExit('no model here')"], dict(os.environ)
+
+    monkeypatch.setattr(utrain.cli.orchestrator, "serve_argv", broken_argv)
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.cli.exceptions.UI, match="before it published a port"):
+        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    # The container's stderr is otherwise only in a log file, so it gets echoed.
+    assert "no model here" in capsys.readouterr().err
+
+
+def test_chat_run_refuses_a_run_with_no_completed_phase(
+    chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "pending"})
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.cli.exceptions.UI, match="no completed phase"):
+        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+
+
+def test_chat_run_refuses_an_image_that_cannot_serve(
+    chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
+    _patch_describe(monkeypatch, can_serve=False)
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.cli.exceptions.UI, match="does not support serve"):
+        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)

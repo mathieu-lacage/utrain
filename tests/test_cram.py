@@ -50,6 +50,15 @@ def test_image(fake_image_url: str, fake_gpu_image_url: str) -> None:
     )
 
 
+def test_serve(fake_image_url: str, fake_gpu_image_url: str) -> None:
+    # Two image URLs: fake implements serve, fake-gpu does not, which is how
+    # serve.t exercises utrain's refusal on `can_serve: false`.
+    _run_cram(
+        _CRAM_DIR / "serve.t",
+        {"UTRAIN_TEST_IMAGE_URL": fake_image_url, "UTRAIN_TEST_IMAGE_URL2": fake_gpu_image_url},
+    )
+
+
 def test_phase_show(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "phase-show.t", fake_image)
 

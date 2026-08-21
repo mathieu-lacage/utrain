@@ -2,16 +2,22 @@
 """Fake training container implementing the utrain container contract."""
 
 import argparse
+import collections.abc
 import dataclasses
 import hashlib
-import http.server
 import json
 import math
 import pathlib
 import random
+import socket
 import sys
 import time
 
+import fastapi
+import fastapi.exceptions
+import fastapi.responses
+import pydantic
+import uvicorn
 import wandb
 import yaml
 
@@ -31,9 +37,23 @@ class Paths:
     def data_dir(self) -> pathlib.Path:
         return self.run_dir / "data"
 
+    @property
+    def serve_dir(self) -> pathlib.Path:
+        """Writable, and mounted only for `serve`. Holds `port.json`."""
+        return self.run_dir / "serve"
+
     def ensure(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.run_dir / "wandb").mkdir(parents=True, exist_ok=True)
+
+
+def write_port_file(p: Paths, port: int) -> None:
+    if not p.serve_dir.exists():
+        p.serve_dir.mkdir(parents=True, exist_ok=True)
+    target = p.serve_dir / "port.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"port": port}))
+    tmp.replace(target)
 
 
 # Kept in sync with what _run_tokenizer actually writes -- manifest declares
@@ -253,32 +273,152 @@ def cmd_run(p: Paths, phase: str) -> None:
     sys.exit(0 if ok else 1)
 
 
-class _ChatHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format: str, *args: object) -> None:
+class ChatMessage(pydantic.BaseModel):
+    role: str
+    content: str = ""
+
+
+class ChatCompletionRequest(pydantic.BaseModel):
+    # Extra fields are accepted and ignored: real clients send plenty this
+    # container has no use for, and refusing them would break callers.
+    model_config = pydantic.ConfigDict(extra="allow")
+
+    messages: list[ChatMessage] = pydantic.Field(min_length=1)
+    model: str | None = None
+    stream: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+
+
+class Choice(pydantic.BaseModel):
+    index: int = 0
+    message: ChatMessage
+    finish_reason: str = "stop"
+
+
+class ChatCompletionResponse(pydantic.BaseModel):
+    id: str = "chatcmpl-fake"
+    object: str = "chat.completion"
+    created: int = 0
+    model: str = "fake"
+    choices: list[Choice]
+
+
+class Delta(pydantic.BaseModel):
+    role: str | None = None
+    content: str | None = None
+
+
+class ChunkChoice(pydantic.BaseModel):
+    index: int = 0
+    delta: Delta
+    finish_reason: str | None = None
+
+
+class ChatCompletionChunk(pydantic.BaseModel):
+    id: str = "chatcmpl-fake"
+    object: str = "chat.completion.chunk"
+    created: int = 0
+    model: str = "fake"
+    choices: list[ChunkChoice]
+
+    def to_sse(self) -> str:
+        return f"data: {self.model_dump_json()}\n\n"
+
+
+class ModelCard(pydantic.BaseModel):
+    id: str = "fake"
+    object: str = "model"
+    created: int = 0
+    owned_by: str = "utrain"
+    # Not part of the OpenAI schema; the tests read it back to prove utrain's
+    # filesystem contract reached `serve`.
+    data_dir: str
+
+
+class ModelList(pydantic.BaseModel):
+    object: str = "list"
+    data: list[ModelCard]
+
+
+class ErrorBody(pydantic.BaseModel):
+    message: str
+    type: str = "invalid_request_error"
+
+
+class ErrorResponse(pydantic.BaseModel):
+    error: ErrorBody
+
+
+router = fastapi.APIRouter()
+
+
+def _validation_error(request: fastapi.Request, exc: Exception) -> fastapi.responses.JSONResponse:
+    """FastAPI answers 422 {"detail": ...}; the contract wants 400 + this envelope."""
+    errors = exc.errors() if isinstance(exc, fastapi.exceptions.RequestValidationError) else []
+    detail = "; ".join(
+        f"{'.'.join(str(part) for part in e['loc'][1:])}: {e['msg']}" for e in errors
+    )
+    return fastapi.responses.JSONResponse(
+        status_code=400,
+        content=ErrorResponse(error=ErrorBody(message=detail or "invalid request")).model_dump(),
+    )
+
+
+@router.get("/v1/models", response_model=ModelList)
+def list_models(request: fastapi.Request) -> ModelList:
+    return ModelList(data=[ModelCard(data_dir=request.app.state.data_dir)])
+
+
+@router.post("/v1/chat/completions")
+def chat_completions(req: ChatCompletionRequest) -> fastapi.Response:
+    # The API is stateless, so the turn count comes from the history the client
+    # resent rather than from anything held here.
+    turns = sum(1 for m in req.messages if m.role == "user")
+    reply = f"[fake model] turn {turns}: {req.messages[-1].content!r}"
+
+    if not req.stream:
+        return fastapi.responses.JSONResponse(
+            ChatCompletionResponse(
+                choices=[Choice(message=ChatMessage(role="assistant", content=reply))]
+            ).model_dump()
+        )
+
+    def events() -> collections.abc.Iterator[str]:
+        def chunk(delta: Delta, finish: str | None) -> str:
+            return ChatCompletionChunk(
+                choices=[ChunkChoice(delta=delta, finish_reason=finish)]
+            ).to_sse()
+
+        yield chunk(Delta(role="assistant"), None)
+        # Split across several chunks so a test can see this streams rather than
+        # arriving in one piece.
+        for i in range(0, len(reply), 8):
+            yield chunk(Delta(content=reply[i : i + 8]), None)
+        yield chunk(Delta(), "stop")
+        yield "data: [DONE]\n\n"
+
+    return fastapi.responses.StreamingResponse(events(), media_type="text/event-stream")
+
+
+def cmd_serve(p: Paths, port: int) -> None:
+    app = fastapi.FastAPI(title="fake")
+    app.state.data_dir = str(p.data_dir)
+    app.add_exception_handler(fastapi.exceptions.RequestValidationError, _validation_error)
+    app.include_router(router)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen()
+    write_port_file(p, sock.getsockname()[1])
+
+    server = uvicorn.Server(uvicorn.Config(app, access_log=True, log_level="info"))
+    try:
+        server.run(sockets=[sock])
+    except KeyboardInterrupt:
         pass
-
-    def do_POST(self) -> None:
-        if self.path != "/chat":
-            self.send_response(404)
-            self.end_headers()
-            return
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode()
-        try:
-            msg = json.loads(body).get("message", "")
-        except Exception:
-            msg = ""
-        reply = json.dumps({"reply": f"[fake model] You said: {msg!r}"})
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(reply)))
-        self.end_headers()
-        self.wfile.write(reply.encode())
-
-
-def cmd_serve(port: int) -> None:
-    server = http.server.HTTPServer(("", port), _ChatHandler)
-    server.serve_forever()
 
 
 def main() -> None:
@@ -297,7 +437,7 @@ def main() -> None:
     run_p = sub.add_parser("run")
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
-    serve_p.add_argument("--port", type=int, default=8080)
+    serve_p.add_argument("--port", type=int, default=0)
 
     args = parser.parse_args()
     if args.cmd == "describe":
@@ -311,7 +451,8 @@ def main() -> None:
         p.ensure()
         cmd_run(p, args.phase)
     elif args.cmd == "serve":
-        cmd_serve(args.port)
+        # No ensure(): <root>/data is mounted read-only for serve.
+        cmd_serve(Paths(args.utrain_root), args.port)
 
 
 if __name__ == "__main__":

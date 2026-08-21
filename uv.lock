@@ -1863,15 +1863,21 @@ name = "shakespeare-char"
 version = "1.0.0"
 source = { editable = "containers/shakespeare-char" }
 dependencies = [
+    { name = "fastapi" },
+    { name = "pydantic" },
     { name = "pyyaml" },
     { name = "torch" },
+    { name = "uvicorn" },
     { name = "wandb" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "torch", specifier = ">=2.0" },
+    { name = "uvicorn", specifier = ">=0.32" },
     { name = "wandb", specifier = ">=0.18" },
 ]
 

@@ -1,5 +1,7 @@
 """The character-level transformer."""
 
+import collections.abc
+
 import torch
 import torch.nn as nn
 
@@ -60,7 +62,7 @@ class CharLM(nn.Module):
         self.block_size = block_size
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(*[_Block(n_embd, n_head, block_size) for _ in range(n_layer)])
+        self.blocks = nn.ModuleList([_Block(n_embd, n_head, block_size) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
 
@@ -70,7 +72,9 @@ class CharLM(nn.Module):
         _, T = idx.shape
         tok = self.token_emb(idx)
         pos = self.pos_emb(torch.arange(T, device=idx.device))
-        x = self.blocks(tok + pos)
+        x = tok + pos
+        for block in self.blocks:
+            x = block(x)
         x = self.ln_f(x)
         logits = self.lm_head(x)
         loss = None
@@ -79,9 +83,15 @@ class CharLM(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(
+    def stream_generate(
         self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 0.8
-    ) -> torch.Tensor:
+    ) -> collections.abc.Iterator[int]:
+        """Yield token ids one at a time, so `serve` can stream them as it goes.
+
+        Note that `pos_emb` is *learned absolute*, so once
+        the context fills `block_size` the crop below shifts every position and
+        any cache built up to that point is invalid and must be rebuilt.
+        """
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size :]
             logits, _ = self(idx_cond)
@@ -89,4 +99,4 @@ class CharLM(nn.Module):
             probs = torch.softmax(logits, dim=-1)
             next_tok = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, next_tok], dim=1)
-        return idx
+            yield int(next_tok.item())

@@ -12,11 +12,11 @@ dependencies = [
     "torch>=2.0",
     "pyyaml>=6.0",
     "wandb>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pydantic>=2.0",
 ]
 
-# The container contract's entry point: `describe`, `check-compat`,
-# `run --phase <p>` and `serve --port <n>` are subcommands of this script, which
-# is what the Containerfile's ENTRYPOINT resolves to.
 [project.scripts]
 shakespeare-char = "shakespeare_char.cli:main"
 

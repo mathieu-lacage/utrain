@@ -44,8 +44,6 @@ def cmd_run(p: paths.Paths, phase: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    # Where the utrain contract tree lives. utrain always passes /utrain; the
-    # default lets the phases be run straight from a checkout, no image needed.
     parser.add_argument(
         "--utrain-root",
         type=pathlib.Path,
@@ -58,7 +56,7 @@ def main() -> None:
     run_p = sub.add_parser("run")
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
-    serve_p.add_argument("--port", type=int, default=8080)
+    serve_p.add_argument("--port", type=int, default=0)
 
     args = parser.parse_args()
     if args.cmd == "describe":
@@ -67,8 +65,8 @@ def main() -> None:
         cmd_check_compat()
     else:
         p = paths.Paths(args.utrain_root)
-        p.ensure()
         if args.cmd == "run":
+            p.ensure()
             cmd_run(p, args.phase)
         elif args.cmd == "serve":
             serve.serve(p, args.port)

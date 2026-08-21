@@ -69,3 +69,58 @@ $ naw watch runs/$RID/attempt/1/wandb/pretrain/*.rtsdb                # live tai
 
 `naw plot ...` also supports `--output png`/`--output svg`/`--output csv` if you
 want to save the curve instead of drawing it in the terminal.
+
+## 6. Use the model
+
+`utrain run chat` starts an interactive session against what the run produced.
+Type a prompt and the model's continuation streams back a character at a time:
+
+```console
+$ utrain run chat "$RID"
+serving shake (utrain-shakespeare-char, phase 'pretrain')
+endpoint: http://127.0.0.1:42317/v1  (OpenAI-compatible)
+model: context_window=128, id=shakespeare-char, owned_by=utrain
+commands:
+  /reset   forget the conversation so far
+  /quit    end the session (or Ctrl-D)
+  /help    this message
+anything else is sent to the model as the next turn.
+> ROMEO:
+O, she doth teach the torches to burn bright...
+```
+
+Each turn continues the previous one, so the conversation builds up; `/reset`
+starts over. `Ctrl-C` interrupts a reply that has run on too long without ending
+the session, and `--max-tokens`/`--temperature` set how long and how adventurous
+the replies are.
+
+## 7. Or skip utrain entirely
+
+That `endpoint:` line is not decoration. The container serves the OpenAI
+`/v1/chat/completions` API on a port the kernel picks, so while the session
+above is running, anything that speaks to OpenAI speaks to your model:
+
+```console
+$ curl -s http://127.0.0.1:42317/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"ROMEO:"}]}'
+```
+
+```python
+client = openai.OpenAI(base_url="http://127.0.0.1:42317/v1", api_key="not-needed")
+client.chat.completions.create(model="shakespeare-char",
+                               messages=[{"role": "user", "content": "ROMEO:"}])
+```
+
+The container serves this with FastAPI, so it also describes itself. Point a
+browser at `http://127.0.0.1:42317/docs` while a session is running for a
+browsable schema of exactly what the endpoint accepts, or fetch
+`/openapi.json` for the machine-readable version.
+
+You can also start the server without utrain in the loop at all — run the image
+directly with `serve --port 0` and read the port it prints. See the
+[`serve` contract](container-contract.md#serve) for that, and for what to
+implement if you are building your own container.
+
+Only images whose `describe` reports `can_serve: true` can be chatted with, and
+the run needs at least one completed phase.

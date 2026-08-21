@@ -1,5 +1,5 @@
 FROM python:3.11-slim
 WORKDIR /app
-RUN pip install --no-cache-dir pyyaml wandb
+RUN pip install --no-cache-dir pyyaml wandb fastapi uvicorn pydantic
 COPY tests/containers/fake/fake.py /app/fake.py
 ENTRYPOINT ["python", "/app/fake.py"]
