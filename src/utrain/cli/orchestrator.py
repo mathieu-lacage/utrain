@@ -36,6 +36,11 @@ _WANDB_PYPATH = "/opt/utrain-py"
 # mounts (a `secrets` dir from /usr/share/containers/mounts.conf, plus
 # `nvidia-ctk-hook*` and `nvidia-persistenced` when a GPU device is attached), and
 # those would land in the attempt dir on the host.
+#
+# The container is *told* this path, as `--utrain-root`, rather than assuming it:
+# the layout beneath the root is the contract, the root itself is utrain's choice.
+# That is what lets a container author run their phases against a plain directory
+# on the host (the contract's default, `$CWD/run`) without building an image.
 _RUN_MOUNT = "/utrain"
 _DATA_MOUNT = f"{_RUN_MOUNT}/data"
 _WANDB_MOUNT = f"{_RUN_MOUNT}/wandb"
@@ -221,6 +226,8 @@ def _start_phase(
             *_wandb_mount_args(),
             *_mount_args(attempt_dir, data_dir, data_ro=False),
             container.podman.image_ref(image_key),
+            "--utrain-root",
+            _RUN_MOUNT,
             "run",
             "--phase",
             phase,
@@ -252,6 +259,8 @@ def _check_cache(
                 "--security-opt=label=disable",
                 *_mount_args(attempt_dir, data_dir, data_ro=True),
                 container.podman.image_ref(image_key),
+                "--utrain-root",
+                _RUN_MOUNT,
                 "check-cache",
                 "--phase",
                 phase,

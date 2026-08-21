@@ -12,11 +12,10 @@ SHAKESPEARE_URL = (
 )
 
 
-def run(run_id: str) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(paths.RUN_DIR))
+def run(p: paths.Paths, run_id: str) -> bool:
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
     run.log({"_phase_event": "tokenizer/started"})
-    paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    input_path = paths.DATA_DIR / "input.txt"
+    input_path = p.data_dir / "input.txt"
 
     print("Downloading Shakespeare dataset...", flush=True)
     try:
@@ -32,7 +31,7 @@ def run(run_id: str) -> bool:
     stoi_map = {c: i for i, c in enumerate(chars)}
     itos_map = {i: c for i, c in enumerate(chars)}
     vocab = {"chars": chars, "stoi": stoi_map, "itos": itos_map}
-    vocab_path = paths.DATA_DIR / "vocab.json"
+    vocab_path = p.data_dir / "vocab.json"
     vocab_path.write_text(json.dumps(vocab))
 
     vocab_size = len(chars)

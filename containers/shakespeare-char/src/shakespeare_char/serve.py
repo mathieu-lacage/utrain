@@ -9,14 +9,14 @@ from . import config, paths
 from . import model as model_mod
 
 
-def _load_model() -> tuple[model_mod.CharLM, dict[str, int], dict[str, str], int]:
-    ckpt = torch.load(str(paths.DATA_DIR / "model.pt"), map_location="cpu", weights_only=True)
+def _load_model(p: paths.Paths) -> tuple[model_mod.CharLM, dict[str, int], dict[str, str], int]:
+    ckpt = torch.load(str(p.data_dir / "model.pt"), map_location="cpu", weights_only=True)
     model = model_mod.CharLM(
         ckpt["vocab_size"], ckpt["n_embd"], ckpt["n_layer"], ckpt["n_head"], ckpt["block_size"]
     )
     model.load_state_dict(ckpt["model"])
     model.eval()
-    vocab = json.loads((paths.DATA_DIR / "vocab.json").read_text())
+    vocab = json.loads((p.data_dir / "vocab.json").read_text())
     return model, vocab["stoi"], vocab["itos"], ckpt["block_size"]
 
 
@@ -57,10 +57,10 @@ class _ChatHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(reply.encode())
 
 
-def serve(port: int) -> None:
-    cfg = config.flatten(config.load(), "pretrain")
+def serve(p: paths.Paths, port: int) -> None:
+    cfg = config.flatten(config.load(p), "pretrain")
     generate_len = config.get_int(cfg, "generate_len", 200)
-    model, stoi, itos, _ = _load_model()
+    model, stoi, itos, _ = _load_model(p)
 
     _ChatHandler.model = model
     _ChatHandler.stoi = stoi

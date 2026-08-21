@@ -1,4 +1,4 @@
-"""Reading the two files utrain writes into the run dir: config.yaml and control.json."""
+"""Reading the two files utrain writes into the utrain root: config.yaml and control.json."""
 
 import json
 import typing
@@ -8,16 +8,16 @@ import yaml
 from . import paths
 
 
-def read_control() -> str:
+def read_control(p: paths.Paths) -> str:
     try:
-        data = json.loads((paths.RUN_DIR / "control.json").read_text())
+        data = json.loads((p.run_dir / "control.json").read_text())
         return str(data.get("action", "continue"))
     except Exception:
         return "continue"
 
 
-def load() -> dict[str, object]:
-    cfg_path = paths.RUN_DIR / "config.yaml"
+def load(p: paths.Paths) -> dict[str, object]:
+    cfg_path = p.run_dir / "config.yaml"
     if cfg_path.exists():
         return dict(yaml.safe_load(cfg_path.read_text()) or {})
     return {}

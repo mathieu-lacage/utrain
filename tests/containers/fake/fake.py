@@ -2,6 +2,7 @@
 """Fake training container implementing the utrain container contract."""
 
 import argparse
+import dataclasses
 import hashlib
 import http.server
 import json
@@ -14,11 +15,26 @@ import time
 import wandb
 import yaml
 
-# The utrain filesystem contract: a single mount root, whose layout is fixed, so
-# a container hardcodes these rather than receiving them. RUN_DIR is read-only
-# (config.yaml, control.json); RUN_DIR/data and RUN_DIR/wandb are writable.
-RUN_DIR = pathlib.Path("/utrain")
-DATA_DIR = RUN_DIR / "data"
+# The utrain filesystem contract: a single root whose layout is fixed. The root
+# holds the read-only config.yaml and control.json; `data/` and `wandb/` beneath
+# it are writable. The root itself comes in as `--utrain-root` (utrain mounts
+# everything at /utrain) and defaults to $CWD/run so the phases can be run
+# without building an image.
+DEFAULT_ROOT = "run"
+
+
+@dataclasses.dataclass(frozen=True)
+class Paths:
+    run_dir: pathlib.Path
+
+    @property
+    def data_dir(self) -> pathlib.Path:
+        return self.run_dir / "data"
+
+    def ensure(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "wandb").mkdir(parents=True, exist_ok=True)
+
 
 # Kept in sync with what _run_tokenizer actually writes -- manifest declares
 # these without running the phase, so a real container would compute this
@@ -93,17 +109,15 @@ def cmd_check_compat() -> None:
     print(json.dumps({"compatible": True, "details": "fake GPU ok (always compatible)"}))
 
 
-def _write_phase_data(files: dict[str, str]) -> None:
-    """Write phase output files into the data mount (if mounted)."""
-    if not DATA_DIR.exists():
-        return
+def _write_phase_data(p: Paths, files: dict[str, str]) -> None:
+    """Write phase output files into the data dir."""
     for name, content in files.items():
-        (DATA_DIR / name).write_text(content)
+        (p.data_dir / name).write_text(content)
 
 
-def _read_control() -> str:
+def _read_control(p: Paths) -> str:
     try:
-        data = json.loads((RUN_DIR / "control.json").read_text())
+        data = json.loads((p.run_dir / "control.json").read_text())
         return str(data.get("action", "continue"))
     except Exception:
         return "continue"
@@ -138,8 +152,8 @@ def _flatten_config(cfg: dict[str, object], phase: str) -> dict[str, object]:
     return flat
 
 
-def _wait_for_gate(cfg: dict[str, object], timeout: float = 120.0) -> None:
-    """Block after the started event until the host creates `RUN_DIR/gate`.
+def _wait_for_gate(p: Paths, cfg: dict[str, object], timeout: float = 120.0) -> None:
+    """Block after the started event until the host creates `<root>/gate`.
 
     Opt-in via a `gate: true` config key. It lets a test observe a phase in
     `running` (and its successors in `pending`) deterministically, instead of
@@ -150,19 +164,19 @@ def _wait_for_gate(cfg: dict[str, object], timeout: float = 120.0) -> None:
     """
     if not cfg.get("gate"):
         return
-    gate = RUN_DIR / "gate"
+    gate = p.run_dir / "gate"
     deadline = time.monotonic() + timeout
     while not gate.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
 
 
-def _run_tokenizer(run_id: str, cfg: dict[str, object], total_steps: int = 50) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(RUN_DIR))
+def _run_tokenizer(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 50) -> bool:
+    run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
     run.log({"_phase_event": "tokenizer/started"})
-    _wait_for_gate(cfg)
+    _wait_for_gate(p, cfg)
     ok = True
     for step in range(total_steps):
-        if _read_control() == "stop":
+        if _read_control(p) == "stop":
             run.log({"_phase_event": "tokenizer/failed"})
             ok = False
             break
@@ -170,14 +184,14 @@ def _run_tokenizer(run_id: str, cfg: dict[str, object], total_steps: int = 50) -
         run.log({"vocab_coverage": vocab_coverage}, step=step, commit=True)
         time.sleep(0.1)
     if ok:
-        _write_phase_data(_TOKENIZER_FILES)
+        _write_phase_data(p, _TOKENIZER_FILES)
         run.log({"_phase_event": "tokenizer/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 
 
-def _run_pretrain(run_id: str, cfg: dict[str, object], total_steps: int = 200) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, dir=str(RUN_DIR))
+def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 200) -> bool:
+    run = wandb.init(project="pretrain", id=run_id, dir=str(p.run_dir))
     run.log({"_phase_event": "pretrain/started"})
     # Echo the effective config so the e2e suite can verify the utrain config
     # protocol: `num_layers` comes from `globals`, `batch_size` from this phase.
@@ -186,7 +200,7 @@ def _run_pretrain(run_id: str, cfg: dict[str, object], total_steps: int = 200) -
     print(f"config: num_layers={num_layers} batch_size={batch_size}", flush=True)
     ok = True
     for step in range(total_steps):
-        if _read_control() == "stop":
+        if _read_control(p) == "stop":
             run.log({"_phase_event": "pretrain/failed"})
             ok = False
             break
@@ -202,7 +216,9 @@ def _run_pretrain(run_id: str, cfg: dict[str, object], total_steps: int = 200) -
         )
         time.sleep(0.1)
     if ok:
-        _write_phase_data({"pretrain.txt": "pretrain output\n", "common2.txt": "shared payload\n"})
+        _write_phase_data(
+            p, {"pretrain.txt": "pretrain output\n", "common2.txt": "shared payload\n"}
+        )
         run.log({"_phase_event": "pretrain/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
@@ -219,14 +235,18 @@ def cmd_check_cache(phase: str) -> None:
     print(json.dumps({"files": files}))
 
 
-def cmd_run(phase: str) -> None:
-    raw_cfg: dict[str, object] = yaml.safe_load((RUN_DIR / "config.yaml").read_text()) or {}
+def cmd_run(p: Paths, phase: str) -> None:
+    # Missing config.yaml -> the phase's own defaults, so a bare local run works.
+    cfg_path = p.run_dir / "config.yaml"
+    raw_cfg: dict[str, object] = (
+        (yaml.safe_load(cfg_path.read_text()) or {}) if cfg_path.exists() else {}
+    )
     cfg = _flatten_config(raw_cfg, phase)
     run_id = str(cfg.get("run_id", ""))
     if phase == "tokenizer":
-        ok = _run_tokenizer(run_id, cfg)
+        ok = _run_tokenizer(p, run_id, cfg)
     elif phase == "pretrain":
-        ok = _run_pretrain(run_id, cfg)
+        ok = _run_pretrain(p, run_id, cfg)
     else:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
@@ -263,6 +283,12 @@ def cmd_serve(port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--utrain-root",
+        type=pathlib.Path,
+        default=pathlib.Path.cwd() / DEFAULT_ROOT,
+        help=f"root of the utrain filesystem contract (default: ./{DEFAULT_ROOT})",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     sub.add_parser("check-compat")
@@ -281,7 +307,9 @@ def main() -> None:
     elif args.cmd == "check-cache":
         cmd_check_cache(args.phase)
     elif args.cmd == "run":
-        cmd_run(args.phase)
+        p = Paths(args.utrain_root)
+        p.ensure()
+        cmd_run(p, args.phase)
     elif args.cmd == "serve":
         cmd_serve(args.port)
 

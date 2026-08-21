@@ -22,9 +22,10 @@ import time
 import wandb
 import yaml
 
-# Every path utrain gives you hangs off this root, at fixed locations.
-RUN_DIR = pathlib.Path("/utrain")
-DATA_DIR = RUN_DIR / "data"
+# Every path utrain gives you hangs off one root, at fixed locations beneath it.
+# The root arrives as --utrain-root (utrain passes /utrain); the default lets you
+# run this script straight from your shell, against ./run.
+DEFAULT_ROOT = "run"
 
 DESCRIBE = {
     "name": "demo",
@@ -74,9 +75,9 @@ def _flatten_config(cfg: dict, phase: str) -> dict:
     return flat
 
 
-def _read_control() -> str:
+def _read_control(root: pathlib.Path) -> str:
     try:
-        return json.loads((RUN_DIR / "control.json").read_text()).get("action", "continue")
+        return json.loads((root / "control.json").read_text()).get("action", "continue")
     except Exception:
         return "continue"
 
@@ -89,13 +90,13 @@ def cmd_check_compat():
     print(json.dumps({"compatible": True, "details": "always compatible"}))
 
 
-def _run_train(cfg: dict) -> bool:
-    run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(RUN_DIR))
+def _run_train(root: pathlib.Path, cfg: dict) -> bool:
+    run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(root))
     run.log({"_phase_event": "train/started"})
     steps = int(cfg.get("steps", 50))
     ok = True
     for step in range(steps):
-        if _read_control() == "stop":
+        if _read_control(root) == "stop":
             run.log({"_phase_event": "train/failed"})
             ok = False
             break
@@ -104,23 +105,29 @@ def _run_train(cfg: dict) -> bool:
         time.sleep(0.05)
     if ok:
         # Hand the result to later phases (and `serve`) through the data dir.
-        (DATA_DIR / "model.txt").write_text(f"trained for {steps} steps\n")
+        (root / "data" / "model.txt").write_text(f"trained for {steps} steps\n")
         run.log({"_phase_event": "train/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 
 
-def cmd_run(phase: str):
-    raw_cfg = yaml.safe_load((RUN_DIR / "config.yaml").read_text()) or {}
-    cfg = _flatten_config(raw_cfg, phase)
+def cmd_run(root: pathlib.Path, phase: str):
     if phase != "train":
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
-    sys.exit(0 if _run_train(cfg) else 1)
+    # Missing config.yaml is fine: fall back to the `describe` defaults. That is
+    # what lets this run locally with nothing prepared.
+    cfg_path = root / "config.yaml"
+    raw_cfg = (yaml.safe_load(cfg_path.read_text()) or {}) if cfg_path.exists() else {}
+    cfg = _flatten_config(raw_cfg, phase)
+    sys.exit(0 if _run_train(root, cfg) else 1)
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--utrain-root", type=pathlib.Path, default=pathlib.Path.cwd() / DEFAULT_ROOT
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     sub.add_parser("check-compat")
@@ -133,7 +140,11 @@ def main():
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "run":
-        cmd_run(args.phase)
+        root = args.utrain_root
+        # utrain mounts these already; creating them is what makes a local run work.
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        (root / "wandb").mkdir(parents=True, exist_ok=True)
+        cmd_run(root, args.phase)
 
 
 if __name__ == "__main__":
@@ -142,16 +153,30 @@ if __name__ == "__main__":
 
 This is the minimum viable version of the contract: one phase, one config
 field, `describe`/`check-compat`/`run` but no `serve`. It reads
-`/utrain/config.yaml`, checks `/utrain/control.json` for a stop request,
-writes its output to `/utrain/data`, and logs a `loss` metric plus
+`<root>/config.yaml`, checks `<root>/control.json` for a stop request,
+writes its output to `<root>/data`, and logs a `loss` metric plus
 `_phase_event` markers through `wandb` — utrain will capture those
-transparently, no wandb account needed. Note that nothing tells the
-container where those paths are: `/utrain` is a fixed part of the
-contract, and only `/utrain/data` and the metrics dir are writable. See the
+transparently, no wandb account needed. The *layout* under the root is a
+fixed part of the contract, and only `data/` and the metrics dir are
+writable; the root itself is whatever `--utrain-root` says, which is
+`/utrain` under utrain and `./run` when you run the script yourself. See the
 [container reference](container-contract.md) for what each of these does
 and why.
 
-## 2. Write the Containerfile
+## 2. Run it before you build it
+
+Nothing here needs a container yet, so try the phase directly:
+
+```console
+$ pip install pyyaml wandb
+$ WANDB_MODE=offline python demo_container.py run --phase train
+$ cat run/data/model.txt
+trained for 50 steps
+```
+
+`WANDB_MODE=offline` keeps the real wandb from wanting an account.
+
+## 3. Write the Containerfile
 
 ```dockerfile
 FROM docker.io/python:3.11-slim
@@ -161,7 +186,7 @@ COPY demo_container.py /app/demo_container.py
 ENTRYPOINT ["python", "/app/demo_container.py"]
 ```
 
-## 3. Build and sanity-check it
+## 4. Build and sanity-check it
 
 ```console
 $ podman build -t localhost/utrain-demo:utrain -f Containerfile .
@@ -171,7 +196,7 @@ $ podman run --rm localhost/utrain-demo:utrain describe
 The second command should print the JSON `describe` blob back to you. If
 it does, utrain will be able to parse your container.
 
-## 4. Register it with utrain
+## 5. Register it with utrain
 
 ```console
 $ utrain image add podman://localhost/utrain-demo:utrain
@@ -186,7 +211,7 @@ $ utrain image list
 
 should now show `utrain-demo`.
 
-## 5. Create and start a run
+## 6. Create and start a run
 
 ```console
 $ RID=$(utrain run create --name demo --image utrain-demo --compute cpu --print-id)
@@ -194,7 +219,7 @@ $ utrain run start "$RID"
 $ utrain run show "$RID" --wait
 ```
 
-## 6. Look at the metrics with `naw`
+## 7. Look at the metrics with `naw`
 
 ```console
 $ naw metrics runs/$RID/attempt/1/wandb/train/*.rtsdb

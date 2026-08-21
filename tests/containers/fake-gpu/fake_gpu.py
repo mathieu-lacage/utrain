@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import pathlib
 import subprocess
 import sys
 
@@ -30,6 +31,9 @@ def cmd_run(phase: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    # Accepted and ignored: this phase touches no contract paths, but utrain
+    # passes --utrain-root to every image, and argparse rejects unknown options.
+    parser.add_argument("--utrain-root", type=pathlib.Path, default=pathlib.Path.cwd() / "run")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     run_p = sub.add_parser("run")

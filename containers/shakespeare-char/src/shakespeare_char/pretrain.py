@@ -1,4 +1,4 @@
-"""The `pretrain` phase: train the character LM and checkpoint it into /utrain/data."""
+"""The `pretrain` phase: train the character LM and checkpoint it into the data dir."""
 
 import json
 import math
@@ -28,8 +28,8 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
     return 6.0 * n_params * tokens_per_sec / peak_flops
 
 
-def run(run_id: str, cfg: dict[str, object]) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(paths.RUN_DIR))
+def run(p: paths.Paths, run_id: str, cfg: dict[str, object]) -> bool:
+    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(p.run_dir))
     run.log({"_phase_event": "pretrain/started"})
 
     # Config
@@ -43,11 +43,11 @@ def run(run_id: str, cfg: dict[str, object]) -> bool:
     eval_interval = config.get_int(cfg, "eval_interval", 500)
 
     # Load vocab + data
-    vocab_path = paths.DATA_DIR / "vocab.json"
+    vocab_path = p.data_dir / "vocab.json"
     vocab = json.loads(vocab_path.read_text())
     stoi: dict[str, int] = vocab["stoi"]
     vocab_size = len(stoi)
-    text = (paths.DATA_DIR / "input.txt").read_text(encoding="utf-8")
+    text = (p.data_dir / "input.txt").read_text(encoding="utf-8")
     data = torch.tensor([stoi[c] for c in text if c in stoi], dtype=torch.long)
     n_train = int(0.9 * len(data))
     train_data = data[:n_train]
@@ -89,7 +89,7 @@ def run(run_id: str, cfg: dict[str, object]) -> bool:
     last_metric_time = time.time()
 
     for step in range(max_iters):
-        if config.read_control() == "stop":
+        if config.read_control(p) == "stop":
             run.log({"_phase_event": "pretrain/failed"})
             run.finish(exit_code=1)
             return False
@@ -138,7 +138,7 @@ def run(run_id: str, cfg: dict[str, object]) -> bool:
                     "block_size": block_size,
                     "vocab_size": vocab_size,
                 },
-                str(paths.DATA_DIR / "model.pt"),
+                str(p.data_dir / "model.pt"),
             )
         elif time.time() - last_metric_time >= 10.0:
             run.log({"loss": loss.item()}, step=step, commit=True)
