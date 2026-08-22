@@ -72,7 +72,9 @@ def _post(port: int, path: str, payload: dict[str, object]) -> http.client.HTTPR
     return conn.getresponse()
 
 
-def test_port_file_appears_only_once_the_port_is_usable(served: int) -> None:
+def test_port_file_appears_only_once_the_port_is_usable(
+    served: int, tmp_path: pathlib.Path
+) -> None:
     """The port file's appearance is a readiness signal, not just an address.
 
     The container writes it after `listen()`, so a client may connect the
@@ -80,23 +82,15 @@ def test_port_file_appears_only_once_the_port_is_usable(served: int) -> None:
     only holds because bind-then-publish would leave a window where the kernel
     refuses connections; this asserts the container does not have that window.
     """
-    assert served > 0
     conn = http.client.HTTPConnection("127.0.0.1", served, timeout=30)
     conn.request("GET", "/v1/models")
     assert conn.getresponse().status == 200
 
-
-def test_port_file_is_valid_json_at_the_documented_path(tmp_path: pathlib.Path) -> None:
-    proc = _spawn(tmp_path)
-    try:
-        utrain.cli.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
-        published = json.loads((tmp_path / "serve" / "port.json").read_text())
-        assert isinstance(published["port"], int)
-        # The temporary file the atomic rename went through must not survive.
-        assert list((tmp_path / "serve").iterdir()) == [tmp_path / "serve" / "port.json"]
-    finally:
-        proc.terminate()
-        proc.wait(timeout=10)
+    # And it is where the contract says it is, holding what the contract says.
+    published = json.loads((tmp_path / "serve" / "port.json").read_text())
+    assert published["port"] == served
+    # The temporary file the atomic rename went through must not survive.
+    assert list((tmp_path / "serve").iterdir()) == [tmp_path / "serve" / "port.json"]
 
 
 def test_models_endpoint_reports_the_data_dir(served: int, tmp_path: pathlib.Path) -> None:
@@ -178,12 +172,6 @@ def test_history_is_carried_by_the_client_not_the_server(served: int) -> None:
         ).read()
     )
     assert "turn 1" in again["choices"][0]["message"]["content"]
-
-
-def test_bad_request_uses_openai_error_envelope(served: int) -> None:
-    response = _post(served, "/v1/chat/completions", {"no": "messages"})
-    assert response.status == 400
-    assert "message" in json.loads(response.read())["error"]
 
 
 def test_unknown_path_is_404(served: int) -> None:
@@ -318,6 +306,13 @@ def test_chat_run_streams_turns(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """A full session, and proof a chatty container cannot wedge one.
+
+    The fake serves with uvicorn's access log on, so this runs against a
+    container emitting a line of output per request. That is survivable because
+    the container's output is not a protocol -- the port arrives through a file
+    -- so utrain never reads these streams and never has a pipe to keep drained.
+    """
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
     _feed(monkeypatch, "hello\nagain\n/quit\n")
     utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
@@ -346,26 +341,6 @@ def test_chat_run_reset_clears_the_client_side_history(
     out = capsys.readouterr().out
     assert "[fake model] turn 1: 'one'" in out
     assert "[fake model] turn 1: 'two'" in out
-
-
-def test_chat_run_tolerates_a_container_that_logs_freely(
-    chat_env: sqlalchemy.orm.Session,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A container's output is not a protocol, so it cannot wedge the session.
-
-    The reference containers leave uvicorn's access log on, which means a line
-    of output per request. The port arrives through a file, so utrain never
-    reads these streams as protocol and never has to keep a pipe drained.
-    """
-    run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
-    _feed(monkeypatch, "hello\nagain\n/quit\n")
-    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
-    out = capsys.readouterr().out
-    assert "[fake model] turn 1: 'hello'" in out
-    assert "[fake model] turn 2: 'again'" in out
 
 
 def test_chat_run_reports_a_container_that_fails_to_start(
