@@ -8,10 +8,14 @@ DESCRIBE = {
     "name": "shakespeare-char",
     "version": "1.0.0",
     "phases": [
-        {"name": "tokenizer", "label": "Download & Tokenize"},
+        # `download` is cacheable: it produces the same corpus every time, and
+        # says so up front via `check-cache`, so utrain can serve it from the
+        # store instead of re-fetching it for every run.
+        {"name": "download", "label": "Download Corpus", "cacheable": True},
+        {"name": "tokenizer", "label": "Build Vocabulary"},
         {"name": "pretrain", "label": "Train Character LM"},
     ],
-    "phase_order": ["tokenizer", "pretrain"],
+    "phase_order": ["download", "tokenizer", "pretrain"],
     "config_schema": {
         "globals": {
             "groups": [

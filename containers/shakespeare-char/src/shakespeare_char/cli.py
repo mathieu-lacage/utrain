@@ -12,13 +12,20 @@ import sys
 
 import torch
 
-from . import config, describe, paths, pretrain, serve, tokenizer
+from . import config, describe, download, paths, pretrain, serve, tokenizer
 
 # The phases utrain may ask for, normalized to one signature so dispatch is a
 # lookup rather than an if-chain. Each returns True when the phase succeeded.
 _PHASES: dict[str, collections.abc.Callable[[paths.Paths, str, dict[str, object]], bool]] = {
+    "download": lambda p, run_id, cfg: download.run(p, run_id),
     "tokenizer": lambda p, run_id, cfg: tokenizer.run(p, run_id),
     "pretrain": pretrain.run,
+}
+
+# Phases that can answer `check-cache`, mapped to the manifest they would
+# produce. Keep in sync with `cacheable` in describe.DESCRIBE.
+_MANIFESTS: dict[str, collections.abc.Callable[[], dict[str, object]]] = {
+    "download": download.manifest,
 }
 
 
@@ -30,6 +37,19 @@ def cmd_check_compat() -> None:
     cuda_ok = torch.cuda.is_available()
     details = f"CUDA available: {cuda_ok}. Preset runs on CPU or GPU."
     print(json.dumps({"compatible": True, "details": details}))
+
+
+def cmd_check_cache(phase: str) -> None:
+    """Declare a cacheable phase's output without running it.
+
+    utrain treats any non-zero exit as a plain cache miss, so refusing an
+    uncacheable phase here costs nothing but says what happened.
+    """
+    entry = _MANIFESTS.get(phase)
+    if entry is None:
+        print(f"phase not cacheable: {phase}", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(entry()))
 
 
 def cmd_run(p: paths.Paths, phase: str) -> None:
@@ -53,6 +73,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("describe")
     sub.add_parser("check-compat")
+    check_cache_p = sub.add_parser("check-cache")
+    check_cache_p.add_argument("--phase", required=True)
     run_p = sub.add_parser("run")
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
@@ -63,6 +85,8 @@ def main() -> None:
         cmd_describe()
     elif args.cmd == "check-compat":
         cmd_check_compat()
+    elif args.cmd == "check-cache":
+        cmd_check_cache(args.phase)
     else:
         p = paths.Paths(args.utrain_root)
         if args.cmd == "run":

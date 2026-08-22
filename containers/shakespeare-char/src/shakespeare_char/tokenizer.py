@@ -1,26 +1,26 @@
-"""The `tokenizer` phase: fetch the corpus and build the character vocabulary."""
+"""The `tokenizer` phase: build the character vocabulary from the corpus.
+
+The corpus itself arrives from the `download` phase, through the data dir:
+utrain seeds each phase's data dir from its predecessor's.
+"""
 
 import json
-import urllib.request
 
 import wandb
 
-from . import paths
-
-SHAKESPEARE_URL = (
-    "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-)
+from . import download, paths
 
 
 def run(p: paths.Paths, run_id: str) -> bool:
     run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
-    input_path = p.data_dir / "input.txt"
+    input_path = p.data_dir / download.CORPUS_FILENAME
 
-    print("Downloading Shakespeare dataset...", flush=True)
-    try:
-        urllib.request.urlretrieve(SHAKESPEARE_URL, str(input_path))
-    except Exception as e:
-        print(f"Download failed: {e}", flush=True)
+    if not input_path.exists():
+        print(
+            f"{download.CORPUS_FILENAME} is missing from the data dir -- "
+            "the download phase has to run first.",
+            flush=True,
+        )
         run.finish(exit_code=1)
         return False
 

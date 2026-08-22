@@ -378,10 +378,15 @@ Because the root is an argument rather than a hardcoded `/utrain`, a phase runs
 unmodified straight from a checkout, against `./run`:
 
 ```console
+$ shakespeare-char run --phase download
 $ shakespeare-char run --phase tokenizer
 $ ls run/data
 input.txt  vocab.json
 ```
+
+Each phase sees its predecessor's output because utrain seeds a phase's data
+dir from the one before it; run by hand against a single `./run`, they simply
+share the directory.
 
 No config.yaml is required — a container should treat a missing one as an empty
 config and fall back to its `describe` defaults, and a missing or unparsable
