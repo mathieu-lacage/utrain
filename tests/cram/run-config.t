@@ -25,6 +25,7 @@ empty stubs that exist so the writable mounts have somewhere to land.
   config.yaml
   control.json
   data
+  serve
   wandb
   $ ls -l "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/mnt/config.yaml" | awk '{print $1}'
   -r--r--r--* (glob)
