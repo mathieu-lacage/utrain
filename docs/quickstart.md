@@ -108,8 +108,9 @@ $ curl -s http://127.0.0.1:42317/v1/chat/completions \
 
 ```python
 client = openai.OpenAI(base_url="http://127.0.0.1:42317/v1", api_key="not-needed")
-client.chat.completions.create(model="shakespeare-char",
-                               messages=[{"role": "user", "content": "ROMEO:"}])
+client.chat.completions.create(
+    model="shakespeare-char", messages=[{"role": "user", "content": "ROMEO:"}]
+)
 ```
 
 The container serves this with FastAPI, so it also describes itself. Point a

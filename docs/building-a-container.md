@@ -98,7 +98,7 @@ def _run_train(root: pathlib.Path, cfg: dict) -> bool:
         if _read_control(root) == "stop":
             ok = False
             break
-        loss = 3.0 * (0.95 ** step) + random.gauss(0, 0.02)
+        loss = 3.0 * (0.95**step) + random.gauss(0, 0.02)
         run.log({"loss": loss}, step=step, commit=True)
         time.sleep(0.05)
     if ok:
