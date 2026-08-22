@@ -11,7 +11,7 @@ import naw
 import sqlalchemy
 import sqlalchemy.orm
 
-from .. import config, container
+from . import config, container
 from . import db as dbmod
 
 # Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy

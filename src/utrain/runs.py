@@ -12,8 +12,7 @@ import sqlalchemy
 import sqlalchemy.orm
 import yaml
 
-from .. import config, container
-from . import compute, exceptions, orchestrator, output, reconcile
+from . import compute, config, container, exceptions, logs, orchestrator, reconcile, types
 from . import db as dbmod
 
 
@@ -34,8 +33,7 @@ def _resolve_compute(compute_spec: str) -> str:
         except (ValueError, IndexError):
             pass
     raise exceptions.UI(
-        f"abort: unknown --compute value '{compute_spec}'; "
-        "run 'utrain compute list' to see valid values"
+        f"unknown --compute value '{compute_spec}'; run 'utrain compute list' to see valid values"
     )
 
 
@@ -72,26 +70,14 @@ def _write_config(
     config_path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
 
 
-def _find_min_prefix_len(run_ids: list[str]) -> int:
-    if not run_ids:
-        return 1
-    for prefix_len in range(1, 33):
-        prefixes = {rid[:prefix_len] for rid in run_ids}
-        if len(prefixes) == len(run_ids):
-            return prefix_len
-    return 32
-
-
-def _format_run_row(
+def _run_row(
     row: sqlalchemy.engine.RowMapping,
     session: sqlalchemy.orm.Session,
-    prefix_len: int = 8,
-) -> list[str]:
+) -> types.RunRow:
     run_id = str(row["id"])
     attempt_n = dbmod.latest_attempt(run_id, session)
-    attempt_str = str(attempt_n) if attempt_n is not None else "--"
 
-    phase_str = "--"
+    phase: str | None = None
     if attempt_n is not None:
         phase_rows = (
             session.execute(
@@ -107,37 +93,32 @@ def _format_run_row(
             .fetchall()
         )
         if phase_rows:
-            phase_str = str(phase_rows[0]["phase"])
+            phase = str(phase_rows[0]["phase"])
 
-    return [
-        run_id[:prefix_len],
-        str(row["name"]),
-        str(row["image"]),
-        str(row["compute"]),
-        str(row["status"]),
-        attempt_str,
-        phase_str,
-        output.format_time(row["created_at"]),
-    ]
+    return types.RunRow(
+        id=run_id,
+        name=str(row["name"]),
+        image=str(row["image"]),
+        compute=str(row["compute"]),
+        status=str(row["status"]),
+        created_at=float(row["created_at"]),
+        attempt=attempt_n,
+        phase=phase,
+    )
 
 
-def list_runs(session: sqlalchemy.orm.Session, short: bool = False) -> None:
+def list_runs(session: sqlalchemy.orm.Session) -> list[types.RunRow]:
+    for run_id in list_run_ids(session):
+        attempt_n = dbmod.latest_attempt(run_id, session)
+        if attempt_n is not None:
+            reconcile.reconcile_attempt(run_id, attempt_n, session)
+
     rows = (
         session.execute(sqlalchemy.select(dbmod.runs).order_by(dbmod.runs.c.created_at.desc()))
         .mappings()
         .fetchall()
     )
-    for row in rows:
-        attempt_n = dbmod.latest_attempt(str(row["id"]), session)
-        if attempt_n is not None:
-            reconcile.reconcile_attempt(str(row["id"]), attempt_n, session)
-
-    run_ids = [str(r["id"]) for r in rows]
-    prefix_len = _find_min_prefix_len(run_ids)
-
-    headers = ["ID", "NAME", "IMAGE", "COMPUTE", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
-    table_rows = [_format_run_row(r, session, prefix_len) for r in rows]
-    print(output.format_table(headers, table_rows))
+    return [_run_row(r, session) for r in rows]
 
 
 def list_run_ids(session: sqlalchemy.orm.Session) -> list[str]:
@@ -149,55 +130,29 @@ def list_run_ids(session: sqlalchemy.orm.Session) -> list[str]:
     return [str(r) for r in rows]
 
 
-def list_runs_json(session: sqlalchemy.orm.Session) -> None:
-    import datetime
-
-    rows = (
-        session.execute(sqlalchemy.select(dbmod.runs).order_by(dbmod.runs.c.created_at.desc()))
-        .mappings()
-        .fetchall()
-    )
-    result: list[dict[str, str]] = []
-    for row in rows:
-        run_id = str(row["id"])
-        attempt_n = dbmod.latest_attempt(run_id, session)
-        if attempt_n is not None:
-            reconcile.reconcile_attempt(run_id, attempt_n, session)
-        result.append(
-            {
-                "id": run_id,
-                "name": str(row["name"]),
-                "image": str(row["image"]),
-                "compute": str(row["compute"]),
-                "status": str(row["status"]),
-                "created_at": datetime.datetime.fromtimestamp(row["created_at"]).isoformat(),
-            }
-        )
-    import json as _json
-
-    print(_json.dumps(result))
+def get_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> types.RunRow:
+    run_id = dbmod.resolve_run_id(run_id_prefix, session)
+    return _run_row(dbmod.get_run(run_id, session), session)
 
 
-def show_run(
+def config_path(run_id_prefix: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
+    """Path of a run's config.yaml, for a caller that wants to edit it."""
+    run_id = dbmod.resolve_run_id(run_id_prefix, session)
+    row = dbmod.get_run(run_id, session)
+    return pathlib.Path(str(row["run_dir"])) / "config.yaml"
+
+
+def get_run_detail(
     run_id_prefix: str,
     session: sqlalchemy.orm.Session,
     wait: bool = False,
     timeout: int = 600,
-    edit: bool = False,
-) -> None:
+) -> types.RunDetail:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
-    if edit:
-        config_path = pathlib.Path(str(row["run_dir"])) / "config.yaml"
-        os.chmod(config_path, 0o644)
-        editor = os.environ.get("EDITOR", "vi")
-        subprocess.run([editor, str(config_path)])
-        os.chmod(config_path, 0o444)
-        return
-
     if wait:
-        _wait_for_run(run_id, session, timeout)
+        wait_for_run(run_id, session, timeout)
         # Re-fetch after waiting
         row = dbmod.get_run(run_id, session)
 
@@ -206,10 +161,10 @@ def show_run(
         reconcile.reconcile_attempt(run_id, attempt_n, session)
         row = dbmod.get_run(run_id, session)
 
-    _print_run_detail(run_id, row, attempt_n, session)
+    return _run_detail(run_id, row, attempt_n, session)
 
 
-def _wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) -> None:
+def wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) -> None:
     deadline = time.time() + timeout if timeout > 0 else None
     while True:
         attempt_n = dbmod.latest_attempt(run_id, session)
@@ -219,20 +174,47 @@ def _wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) ->
         if str(row["status"]) in ("done", "failed", "stopped"):
             return
         if deadline is not None and time.time() > deadline:
-            raise exceptions.UI(f"abort: run '{run_id}' did not finish within {timeout}s")
+            raise exceptions.UI(f"run '{run_id}' did not finish within {timeout}s")
         # Commit so this poll's reconcile writes don't hold the SQLite write lock
         # across the sleep — the detached orchestrator needs to write concurrently.
         session.commit()
         time.sleep(1)
 
 
-def _print_run_detail(
+def phase_rows(
+    run_id: str,
+    attempt_n: int,
+    session: sqlalchemy.orm.Session,
+) -> list[types.PhaseRow]:
+    rows = (
+        session.execute(
+            sqlalchemy.select(dbmod.run_phases)
+            .where(
+                (dbmod.run_phases.c.run_id == run_id) & (dbmod.run_phases.c.attempt == attempt_n)
+            )
+            .order_by(dbmod.run_phases.c.phase_order)
+        )
+        .mappings()
+        .fetchall()
+    )
+    return [
+        types.PhaseRow(
+            phase=str(p["phase"]),
+            phase_order=int(p["phase_order"]),
+            status=str(p["status"]),
+            started_at=p["started_at"],
+            ended_at=p["ended_at"],
+        )
+        for p in rows
+    ]
+
+
+def _run_detail(
     run_id: str,
     row: sqlalchemy.engine.RowMapping,
     attempt_n: int | None,
     session: sqlalchemy.orm.Session,
-) -> None:
-    run_dir = pathlib.Path(str(row["run_dir"]))
+) -> types.RunDetail:
     all_attempts = (
         session.execute(
             sqlalchemy.select(dbmod.run_attempts)
@@ -242,56 +224,16 @@ def _print_run_detail(
         .mappings()
         .fetchall()
     )
-    n_attempts = len(all_attempts)
-    latest_status = str(all_attempts[-1]["status"]) if all_attempts else str(row["status"])
-    attempts_str = f"{n_attempts} (latest: {latest_status})" if n_attempts else "0"
 
-    print(f"id:       {run_id}")
-    print(f"name:     {row['name']}")
-    print(f"image:    {row['image']}")
-    print(f"compute:  {row['compute']}")
-    print(f"status:   {row['status']}")
-    print(f"attempts: {attempts_str}")
-    print(f"created:  {output.format_time(row['created_at'])}")
-
-    if attempt_n is not None:
-        phase_rows = (
-            session.execute(
-                sqlalchemy.select(dbmod.run_phases)
-                .where(
-                    (dbmod.run_phases.c.run_id == run_id)
-                    & (dbmod.run_phases.c.attempt == attempt_n)
-                )
-                .order_by(dbmod.run_phases.c.phase_order)
-            )
-            .mappings()
-            .fetchall()
-        )
-        print()
-        headers = ["PHASE", "ORDER", "STATUS", "STARTED", "ENDED"]
-        table_rows = [
-            [
-                str(p["phase"]),
-                str(p["phase_order"]),
-                str(p["status"]),
-                output.format_time(p["started_at"]),
-                output.format_time(p["ended_at"]),
-            ]
-            for p in phase_rows
-        ]
-        print(output.format_table(headers, table_rows))
-        logs_dir = run_dir / "attempt" / str(attempt_n) / "logs"
-        print()
-        print(f"config: {run_dir / 'config.yaml'}")
-        print(f"logs:   {logs_dir}")
-
-
-def print_run_row(run_id: str, session: sqlalchemy.orm.Session) -> None:
-    row = dbmod.get_run(run_id, session)
-    all_run_ids = list_run_ids(session)
-    prefix_len = _find_min_prefix_len(all_run_ids)
-    headers = ["ID", "NAME", "IMAGE", "COMPUTE", "STATUS", "ATTEMPT", "PHASE", "CREATED"]
-    print(output.format_table(headers, [_format_run_row(row, session, prefix_len)]))
+    return types.RunDetail(
+        run=_run_row(row, session),
+        run_dir=pathlib.Path(str(row["run_dir"])),
+        n_attempts=len(all_attempts),
+        latest_attempt_status=(
+            str(all_attempts[-1]["status"]) if all_attempts else str(row["status"])
+        ),
+        phases=phase_rows(run_id, attempt_n, session) if attempt_n is not None else [],
+    )
 
 
 def create_run(
@@ -300,15 +242,14 @@ def create_run(
     compute_spec: str,
     settings: config.Settings,
     session: sqlalchemy.orm.Session,
-    print_id: bool = False,
 ) -> str:
     presets = container.podman.list_presets()
     if image not in presets:
-        raise exceptions.UI(f"abort: image '{image}' not found")
+        raise exceptions.UI(f"image '{image}' not found")
 
     describe = container.podman.describe(presets[image])
     if not describe.phase_order:
-        raise exceptions.UI(f"abort: image '{image}' has no phases")
+        raise exceptions.UI(f"image '{image}' has no phases")
 
     compute_value = _resolve_compute(compute_spec)
     run_id = uuid.uuid4().hex
@@ -331,25 +272,20 @@ def create_run(
         )
     )
 
-    if print_id:
-        print(run_id)
-    else:
-        print_run_row(run_id, session)
-
     return run_id
 
 
-def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
+def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
     status = str(row["status"])
     if status == "running":
-        raise exceptions.UI("abort: run is already running")
+        raise exceptions.UI("run is already running")
     if status in ("done", "failed", "stopped"):
-        raise exceptions.UI("abort: run is terminal; use 'run restart' to re-run")
+        raise exceptions.UI("run is terminal; use 'run restart' to re-run")
     if status != "configuring":
-        raise exceptions.UI(f"abort: unexpected run status '{status}'")
+        raise exceptions.UI(f"unexpected run status '{status}'")
 
     # Reconcile (no-op if status is configuring)
     attempt_n = dbmod.latest_attempt(run_id, session)
@@ -435,10 +371,10 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
         sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="running")
     )
 
-    print_run_row(run_id, session)
+    return run_id
 
 
-def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
+def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
@@ -446,9 +382,8 @@ def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
     if status != "running":
         # Idempotent
         if status == "stopped":
-            print_run_row(run_id, session)
-            return
-        raise exceptions.UI(f"abort: run is not running (status: {status})")
+            return run_id
+        raise exceptions.UI(f"run is not running (status: {status})")
 
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
@@ -458,7 +393,7 @@ def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> None:
         sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="stopped")
     )
 
-    print_run_row(run_id, session)
+    return run_id
 
 
 def _stop_attempt(run_id: str, attempt_n: int, session: sqlalchemy.orm.Session) -> None:
@@ -510,13 +445,13 @@ def restart_run(
     run_id_prefix: str,
     from_phase: str | None,
     session: sqlalchemy.orm.Session,
-) -> None:
+) -> str:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
     status = str(row["status"])
     if status == "configuring":
-        raise exceptions.UI("abort: run has not started yet; use 'run start'")
+        raise exceptions.UI("run has not started yet; use 'run start'")
 
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
@@ -537,7 +472,7 @@ def restart_run(
 
     if from_phase is not None:
         if from_phase not in describe.phase_order:
-            raise exceptions.UI(f"abort: phase '{from_phase}' not found in image")
+            raise exceptions.UI(f"phase '{from_phase}' not found in image")
         from_phase_order = describe.phase_order.index(from_phase)
 
     new_attempt = (attempt_n or 0) + 1
@@ -628,10 +563,10 @@ def restart_run(
         sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="running")
     )
 
-    print_run_row(run_id, session)
+    return run_id
 
 
-def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session) -> None:
+def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session) -> str:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
@@ -642,7 +577,7 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
 
     if str(row["status"]) == "running":
         if not force:
-            raise exceptions.UI("abort: run is running; use --force or stop it first")
+            raise exceptions.UI("run is running; use --force or stop it first")
         if attempt_n is not None:
             _stop_attempt(run_id, attempt_n, session)
 
@@ -655,17 +590,17 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
     )
     session.execute(sqlalchemy.delete(dbmod.runs).where(dbmod.runs.c.id == run_id))
 
-    print(f"removed run {run_id}")
+    return run_id
 
 
-def logs_run(
+def read_log_tail(
     run_id_prefix: str,
     session: sqlalchemy.orm.Session,
     attempt: int | None = None,
     phase: str | None = None,
     stderr: bool = False,
     tail: int = 200,
-) -> None:
+) -> list[str]:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
     run_dir = pathlib.Path(str(row["run_dir"]))
@@ -673,7 +608,7 @@ def logs_run(
     if attempt is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
         if attempt_n is None:
-            raise exceptions.UI("abort: run has no attempts yet")
+            raise exceptions.UI("run has no attempts yet")
         attempt = attempt_n
 
     attempt_dir = run_dir / "attempt" / str(attempt)
@@ -685,8 +620,6 @@ def logs_run(
         log_file = attempt_dir / "orchestrator.log"
 
     if not log_file.exists():
-        raise exceptions.UI(f"abort: log file not found: {log_file}")
+        raise exceptions.UI(f"log file not found: {log_file}")
 
-    lines = log_file.read_text(errors="replace").splitlines()
-    for line in lines[-tail:]:
-        print(line)
+    return logs.tail_lines(log_file, tail)

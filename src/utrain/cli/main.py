@@ -1,14 +1,18 @@
 import argparse
+import datetime
 import importlib.metadata
+import json
+import os
 import signal
+import subprocess
 import sys
 import typing
 
 import sqlalchemy.orm
 
-from .. import config
-from . import attempts, compute, debug, exceptions, images, output, phases, runs, serve, store
-from . import db as dbmod
+from .. import attempts, compute, config, exceptions, images, orchestrator, phases, runs, store
+from .. import db as dbmod
+from . import chat, debug, output, render
 
 
 def db_command(
@@ -20,6 +24,15 @@ def db_command(
             return f(session, args)
 
     return inner
+
+
+# How much of a phase's stdout log `phase show` echoes.
+_PHASE_LOG_TAIL = 20
+
+
+def _print_run_row(run_id: str, session: sqlalchemy.orm.Session) -> None:
+    run = runs.get_run(run_id, session)
+    print(render.run_row(run, runs.list_run_ids(session)))
 
 
 def _cmd_compute_list(args: argparse.Namespace) -> None:
@@ -111,61 +124,85 @@ def _cmd_run_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
     if args.quiet:
         for run_id in runs.list_run_ids(session):
             print(run_id)
-    elif args.json:
-        runs.list_runs_json(session)
+        return
+
+    rows = runs.list_runs(session)
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": r.id,
+                        "name": r.name,
+                        "image": r.image,
+                        "compute": r.compute,
+                        "status": r.status,
+                        "created_at": datetime.datetime.fromtimestamp(r.created_at).isoformat(),
+                    }
+                    for r in rows
+                ]
+            )
+        )
     else:
-        runs.list_runs(session, short=getattr(args, "short", False))
+        print(render.run_table(rows))
 
 
 @db_command
 def _cmd_run_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.show_run(
-        args.id,
-        session,
-        wait=args.wait,
-        timeout=args.timeout,
-        edit=args.edit,
-    )
+    if args.edit:
+        config_path = runs.config_path(args.id, session)
+        os.chmod(config_path, 0o644)
+        editor = os.environ.get("EDITOR", "vi")
+        subprocess.run([editor, str(config_path)])
+        os.chmod(config_path, 0o444)
+        return
+
+    detail = runs.get_run_detail(args.id, session, wait=args.wait, timeout=args.timeout)
+    print(render.run_detail(detail))
 
 
 @db_command
 def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     settings = config.Settings()
-    runs.create_run(
+    run_id = runs.create_run(
         name=args.name,
         image=args.image,
         compute_spec=args.compute,
         settings=settings,
         session=session,
-        print_id=args.print_id,
     )
+    if args.print_id:
+        print(run_id)
+    else:
+        _print_run_row(run_id, session)
 
 
 @db_command
 def _cmd_run_start(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.start_run(args.id, session)
+    _print_run_row(runs.start_run(args.id, session), session)
 
 
 @db_command
 def _cmd_run_stop(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.stop_run(args.id, session)
+    _print_run_row(runs.stop_run(args.id, session), session)
 
 
 @db_command
 def _cmd_run_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.restart_run(args.id, getattr(args, "from_phase", None), session)
+    _print_run_row(runs.restart_run(args.id, getattr(args, "from_phase", None), session), session)
 
 
 def _cmd_run_delete(args: argparse.Namespace) -> None:
     for run_id_prefix in args.ids:
         settings = config.Settings()
         with dbmod.with_db(settings) as session:
-            runs.delete_run(run_id_prefix, force=args.force, session=session)
+            run_id = runs.delete_run(run_id_prefix, force=args.force, session=session)
+            print(f"removed run {run_id}")
 
 
 @db_command
 def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    runs.logs_run(
+    lines = runs.read_log_tail(
         args.id,
         session,
         attempt=getattr(args, "attempt", None),
@@ -173,11 +210,13 @@ def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
         stderr=getattr(args, "stderr", False),
         tail=getattr(args, "tail", 200),
     )
+    for line in lines:
+        print(line)
 
 
 @db_command
 def _cmd_run_chat(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    serve.chat_run(
+    chat.chat_run(
         args.id,
         session,
         max_tokens=args.max_tokens,
@@ -191,7 +230,7 @@ def _cmd_attempt_list(session: sqlalchemy.orm.Session, args: argparse.Namespace)
         for addr in attempts.list_attempt_ids(args.run_id, session):
             print(addr)
     else:
-        attempts.list_attempts(args.run_id, session)
+        print(render.attempt_table(attempts.list_attempts(args.run_id, session)))
 
 
 @db_command
@@ -200,7 +239,7 @@ def _cmd_attempt_show(session: sqlalchemy.orm.Session, args: argparse.Namespace)
     if len(parts) != 2 or not parts[1].isdigit():
         print(f"abort: expected <RUN_ID>/<N>, got '{args.addr}'", file=sys.stderr)
         sys.exit(2)
-    attempts.show_attempt(parts[0], int(parts[1]), session)
+    print(render.attempt_detail(attempts.show_attempt(parts[0], int(parts[1]), session)))
 
 
 @db_command
@@ -209,27 +248,31 @@ def _cmd_phase_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
         for addr in phases.list_phase_ids(args.addr, session):
             print(addr)
     else:
-        phases.list_phases(args.addr, session)
+        print(render.phase_list_table(phases.list_phases(args.addr, session)))
 
 
 @db_command
 def _cmd_phase_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    phases.show_phase(
-        args.addr,
-        session,
-        metric=getattr(args, "metric", None),
-        since_step=getattr(args, "since_step", 0),
+    metric = getattr(args, "metric", None)
+    if metric is not None:
+        series = phases.read_metric(
+            args.addr, session, metric, since_step=getattr(args, "since_step", 0)
+        )
+        print(render.metric_series(series))
+        return
+
+    detail = phases.show_phase(args.addr, session)
+    print(
+        render.phase_detail(detail, phases.read_log_tail(detail, _PHASE_LOG_TAIL), _PHASE_LOG_TAIL)
     )
 
 
 def _cmd_store_gc(args: argparse.Namespace) -> None:
     settings = config.Settings()
-    store.gc(settings)
+    print(render.gc_result(store.gc(settings)))
 
 
 def _cmd_orchestrate(args: argparse.Namespace) -> None:
-    from . import orchestrator
-
     settings = config.Settings()
     orchestrator.run_orchestrator(
         run_id=args.run_id,
@@ -278,7 +321,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_list = run_sub.add_parser("list", help="List runs")
     run_list.add_argument("--json", action="store_true")
-    run_list.add_argument("--short", action="store_true")
     run_list.add_argument("-q", "--quiet", action="store_true")
     run_list.set_defaults(func=_cmd_run_list)
 
@@ -287,7 +329,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_show.add_argument("--wait", action="store_true")
     run_show.add_argument("--timeout", type=int, default=600)
     run_show.add_argument("--edit", action="store_true")
-    run_show.add_argument("--json", action="store_true")
     run_show.set_defaults(func=_cmd_run_show)
 
     run_create = run_sub.add_parser("create", help="Create a run")
@@ -394,7 +435,9 @@ def main() -> None:
     try:
         args.func(args)
     except exceptions.UI as e:
-        print(e)
+        # The query layer raises plain messages; the "abort:" framing is this
+        # CLI's, so that another front end can present the same failure its way.
+        print(f"abort: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

@@ -1,7 +1,7 @@
 """The serve endpoint, container and client halves, without podman.
 
 `tests/cram/serve.t` covers `utrain run chat` end to end, but it needs podman and
-so skips in CI. This drives the same client code (`utrain.cli.serve`) against the
+so skips in CI. This drives the same client code (`utrain.serve`) against the
 same reference container (`tests/containers/fake/fake.py`), just spawned directly
 instead of inside an image -- which is exactly what the contract's "a container
 runs from a checkout too" rule makes possible. It runs everywhere.
@@ -21,13 +21,14 @@ import pytest
 import sqlalchemy
 import sqlalchemy.orm
 
-import utrain.cli.db
-import utrain.cli.exceptions
-import utrain.cli.orchestrator
-import utrain.cli.serve
+import utrain.cli.chat
 import utrain.config
 import utrain.container.podman
 import utrain.container.schema
+import utrain.db
+import utrain.exceptions
+import utrain.orchestrator
+import utrain.serve
 
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 _FAKE = _PROJECT_ROOT / "tests" / "containers" / "fake" / "fake.py"
@@ -58,7 +59,7 @@ def served(tmp_path: pathlib.Path) -> typing.Iterator[int]:
     """A running fake container; yields the port it published."""
     proc = _spawn(tmp_path)
     try:
-        yield utrain.cli.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
+        yield utrain.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
     finally:
         proc.terminate()
         proc.wait(timeout=10)
@@ -213,7 +214,7 @@ def _make_run(
     run_dir = tmp_path / "runs" / run_id
     run_dir.mkdir(parents=True)
     session.execute(
-        sqlalchemy.insert(utrain.cli.db.runs).values(
+        sqlalchemy.insert(utrain.db.runs).values(
             id=run_id,
             name="chat",
             image="utrain-fake",
@@ -224,13 +225,13 @@ def _make_run(
         )
     )
     session.execute(
-        sqlalchemy.insert(utrain.cli.db.run_attempts).values(
+        sqlalchemy.insert(utrain.db.run_attempts).values(
             run_id=run_id, attempt=1, status="done", started_at=0.0
         )
     )
     for order, (phase, status) in enumerate(phase_statuses.items()):
         session.execute(
-            sqlalchemy.insert(utrain.cli.db.run_phases).values(
+            sqlalchemy.insert(utrain.db.run_phases).values(
                 run_id=run_id, attempt=1, phase=phase, phase_order=order, status=status
             )
         )
@@ -272,7 +273,7 @@ def chat_env(
         # while the serve dir hangs off the attempt -- so a single root cannot
         # contain both; symlinks reproduce that faithfully. Getting this wrong
         # means the container publishes its port somewhere utrain never looks.
-        serve_host_dir = utrain.cli.orchestrator.serve_dir(attempt_dir)
+        serve_host_dir = utrain.orchestrator.serve_dir(attempt_dir)
         serve_host_dir.mkdir(parents=True, exist_ok=True)
         root = attempt_dir / "mount-root"
         root.mkdir(parents=True, exist_ok=True)
@@ -290,9 +291,9 @@ def chat_env(
             "0",
         ], env
 
-    monkeypatch.setattr(utrain.cli.orchestrator, "serve_argv", fake_serve_argv)
+    monkeypatch.setattr(utrain.orchestrator, "serve_argv", fake_serve_argv)
 
-    with utrain.cli.db.with_db(utrain.config.Settings()) as session:
+    with utrain.db.with_db(utrain.config.Settings()) as session:
         yield session
 
 
@@ -315,7 +316,7 @@ def test_chat_run_streams_turns(
     """
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
     _feed(monkeypatch, "hello\nagain\n/quit\n")
-    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
     lines = capsys.readouterr().out.splitlines()
     # Exact shape, because tests/cram/serve.t asserts the same output verbatim.
     # The *last* completed phase is the one holding the model.
@@ -337,7 +338,7 @@ def test_chat_run_reset_clears_the_client_side_history(
 ) -> None:
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
     _feed(monkeypatch, "one\n/reset\ntwo\n/quit\n")
-    utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
     out = capsys.readouterr().out
     assert "[fake model] turn 1: 'one'" in out
     assert "[fake model] turn 1: 'two'" in out
@@ -356,10 +357,10 @@ def test_chat_run_reports_a_container_that_fails_to_start(
     ) -> tuple[list[str], dict[str, str]]:
         return [sys.executable, "-c", "raise SystemExit('no model here')"], dict(os.environ)
 
-    monkeypatch.setattr(utrain.cli.orchestrator, "serve_argv", broken_argv)
+    monkeypatch.setattr(utrain.orchestrator, "serve_argv", broken_argv)
     _feed(monkeypatch, "")
-    with pytest.raises(utrain.cli.exceptions.UI, match="before it published a port"):
-        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    with pytest.raises(utrain.exceptions.UI, match="before it published a port"):
+        utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
     # The container's stderr is otherwise only in a log file, so it gets echoed.
     assert "no model here" in capsys.readouterr().err
 
@@ -369,8 +370,8 @@ def test_chat_run_refuses_a_run_with_no_completed_phase(
 ) -> None:
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "pending"})
     _feed(monkeypatch, "")
-    with pytest.raises(utrain.cli.exceptions.UI, match="no completed phase"):
-        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    with pytest.raises(utrain.exceptions.UI, match="no completed phase"):
+        utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
 
 
 def test_chat_run_refuses_an_image_that_cannot_serve(
@@ -379,5 +380,5 @@ def test_chat_run_refuses_an_image_that_cannot_serve(
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
     _patch_describe(monkeypatch, can_serve=False)
     _feed(monkeypatch, "")
-    with pytest.raises(utrain.cli.exceptions.UI, match="does not support serve"):
-        utrain.cli.serve.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+    with pytest.raises(utrain.exceptions.UI, match="does not support serve"):
+        utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)

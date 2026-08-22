@@ -1,12 +1,11 @@
-from .. import config
-from . import output
+from . import config, types
 
 
-def gc(settings: config.Settings) -> None:
+def gc(settings: config.Settings) -> types.GcResult:
+    """Drop store files no run still hardlinks, and report what was reclaimed."""
     store_dir = settings.data_dir / "store"
     if not store_dir.exists():
-        print("removed 0 file(s), 0.0 B reclaimed")
-        return
+        return types.GcResult(removed=0, reclaimed_bytes=0)
 
     removed = 0
     reclaimed = 0
@@ -19,4 +18,4 @@ def gc(settings: config.Settings) -> None:
             fpath.unlink()
             removed += 1
 
-    print(f"removed {removed} file(s), {output.human_size(reclaimed)} reclaimed")
+    return types.GcResult(removed=removed, reclaimed_bytes=reclaimed)

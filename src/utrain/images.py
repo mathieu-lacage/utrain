@@ -3,9 +3,8 @@ import subprocess
 import sqlalchemy
 import sqlalchemy.orm
 
-from .. import container
+from . import container, exceptions
 from . import db as dbmod
-from . import exceptions
 
 
 class ImageInfo:
@@ -80,7 +79,7 @@ def add_image(url: str) -> str:
     if not url.startswith("podman://") and not _image_exists(path_part):
         result = subprocess.run(["podman", "pull", url])
         if result.returncode != 0:
-            raise exceptions.UI(f"abort: podman pull failed (exit {result.returncode})")
+            raise exceptions.UI(f"podman pull failed (exit {result.returncode})")
 
     # Tag from the scheme-stripped ref: that is the name a pull stores locally,
     # and `podman tag` rejects a transport prefix.
@@ -90,14 +89,14 @@ def add_image(url: str) -> str:
         text=True,
     )
     if result.returncode != 0:
-        raise exceptions.UI(f"abort: podman tag failed: {result.stderr.strip()}")
+        raise exceptions.UI(f"podman tag failed: {result.stderr.strip()}")
 
     return name
 
 
 def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False) -> None:
     if name not in container.podman.list_presets():
-        raise exceptions.UI(f"abort: image '{name}' not found")
+        raise exceptions.UI(f"image '{name}' not found")
 
     run_count = session.execute(
         sqlalchemy.select(sqlalchemy.func.count()).where(
@@ -107,7 +106,7 @@ def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False
 
     if int(run_count) > 0 and not force:
         raise exceptions.UI(
-            f"abort: image '{name}' is used by {run_count} run(s); use --force to remove anyway"
+            f"image '{name}' is used by {run_count} run(s); use --force to remove anyway"
         )
 
     # Quiet: `podman rmi` reports every tag it drops ("Untagged: ..."), which is
@@ -118,4 +117,4 @@ def remove_image(name: str, session: sqlalchemy.orm.Session, force: bool = False
         text=True,
     )
     if result.returncode != 0:
-        raise exceptions.UI(f"abort: podman rmi failed: {result.stderr.strip()}")
+        raise exceptions.UI(f"podman rmi failed: {result.stderr.strip()}")
