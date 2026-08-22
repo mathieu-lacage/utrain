@@ -30,7 +30,6 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
 
 def run(p: paths.Paths, run_id: str, cfg: dict[str, object]) -> bool:
     run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(p.run_dir))
-    run.log({"_phase_event": "pretrain/started"})
 
     # Config
     n_layer = config.get_int(cfg, "n_layer", 4)
@@ -90,7 +89,6 @@ def run(p: paths.Paths, run_id: str, cfg: dict[str, object]) -> bool:
 
     for step in range(max_iters):
         if config.read_control(p) == "stop":
-            run.log({"_phase_event": "pretrain/failed"})
             run.finish(exit_code=1)
             return False
 
@@ -144,6 +142,5 @@ def run(p: paths.Paths, run_id: str, cfg: dict[str, object]) -> bool:
             run.log({"loss": loss.item()}, step=step, commit=True)
             last_metric_time = time.time()
 
-    run.log({"_phase_event": "pretrain/completed"})
     run.finish(exit_code=0)
     return True

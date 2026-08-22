@@ -14,7 +14,6 @@ SHAKESPEARE_URL = (
 
 def run(p: paths.Paths, run_id: str) -> bool:
     run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
-    run.log({"_phase_event": "tokenizer/started"})
     input_path = p.data_dir / "input.txt"
 
     print("Downloading Shakespeare dataset...", flush=True)
@@ -22,7 +21,6 @@ def run(p: paths.Paths, run_id: str) -> bool:
         urllib.request.urlretrieve(SHAKESPEARE_URL, str(input_path))
     except Exception as e:
         print(f"Download failed: {e}", flush=True)
-        run.log({"_phase_event": "tokenizer/failed"})
         run.finish(exit_code=1)
         return False
 
@@ -37,6 +35,5 @@ def run(p: paths.Paths, run_id: str) -> bool:
     vocab_size = len(chars)
     print(f"Vocab size: {vocab_size}, corpus length: {len(text):,} chars", flush=True)
     run.log({"vocab_size": float(vocab_size), "corpus_chars": float(len(text))})
-    run.log({"_phase_event": "tokenizer/completed"})
     run.finish(exit_code=0)
     return True

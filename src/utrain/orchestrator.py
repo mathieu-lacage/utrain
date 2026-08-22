@@ -11,7 +11,7 @@ import naw
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import config, container
+from . import config, container, lock
 from . import db as dbmod
 
 # Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy
@@ -405,6 +405,14 @@ def run_orchestrator(
         )
 
     attempt_dir = run_dir / "attempt" / str(attempt)
+
+    # Held for this process's whole life, and released by the kernel when it
+    # ends however it ends. reconcile reads a free lock as proof the
+    # orchestrator died, so letting go early would let a reader finalize a run
+    # that is still going. Underscore-prefixed because the name exists only to
+    # keep the file open -- closing it releases the lock.
+    _orchestrator_lock = lock.hold(attempt_dir)
+
     phases_to_run = [str(r["phase"]) for r in phase_rows]
     phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 

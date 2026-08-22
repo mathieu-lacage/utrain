@@ -192,12 +192,10 @@ def _wait_for_gate(p: Paths, cfg: dict[str, object], timeout: float = 120.0) -> 
 
 def _run_tokenizer(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 50) -> bool:
     run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
-    run.log({"_phase_event": "tokenizer/started"})
     _wait_for_gate(p, cfg)
     ok = True
     for step in range(total_steps):
         if _read_control(p) == "stop":
-            run.log({"_phase_event": "tokenizer/failed"})
             ok = False
             break
         vocab_coverage = 0.5 + 0.5 * (1 - math.exp(-step / 20))
@@ -205,14 +203,12 @@ def _run_tokenizer(p: Paths, run_id: str, cfg: dict[str, object], total_steps: i
         time.sleep(0.1)
     if ok:
         _write_phase_data(p, _TOKENIZER_FILES)
-        run.log({"_phase_event": "tokenizer/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 
 
 def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 200) -> bool:
     run = wandb.init(project="pretrain", id=run_id, dir=str(p.run_dir))
-    run.log({"_phase_event": "pretrain/started"})
     # Echo the effective config so the e2e suite can verify the utrain config
     # protocol: `num_layers` comes from `globals`, `batch_size` from this phase.
     num_layers = int(cfg.get("num_layers", 12))
@@ -221,7 +217,6 @@ def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: in
     ok = True
     for step in range(total_steps):
         if _read_control(p) == "stop":
-            run.log({"_phase_event": "pretrain/failed"})
             ok = False
             break
         t = step / total_steps
@@ -239,7 +234,6 @@ def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: in
         _write_phase_data(
             p, {"pretrain.txt": "pretrain output\n", "common2.txt": "shared payload\n"}
         )
-        run.log({"_phase_event": "pretrain/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 

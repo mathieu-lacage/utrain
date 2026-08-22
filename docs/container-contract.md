@@ -144,8 +144,7 @@ Inside `run`, your container must:
    use to hand off state to each other.
 3. Periodically read `<root>/control.json` and stop cleanly if
    `{"action": "stop"}` is set (see [Graceful stop](#graceful-stop)).
-4. Log progress through `wandb` and emit `_phase_event` markers (see
-   [Metrics and phase events](#metrics-and-phase-events)).
+4. Log progress through `wandb` (see [Metrics](#metrics)).
 5. Exit `0` on success, non-zero on failure or stop.
 
 ## `serve`
@@ -269,7 +268,7 @@ every few seconds) and, on seeing `"stop"`, log a `<phase>/failed` event,
 finish the wandb run, and exit non-zero. Treat a missing or unparsable
 file as `"continue"`.
 
-## Metrics and phase events
+## Metrics
 
 Your container must `import wandb` and use the standard wandb API:
 `wandb.init(...)`, `run.log({...}, step=..., commit=True)`,
@@ -280,14 +279,8 @@ needed. This means your image should still declare and install `wandb` as
 a normal dependency (for the API surface / import to resolve at build
 time); what actually executes at run time is utrain's shim.
 
-Alongside your real metrics, log a `_phase_event` key at these points so
-utrain can track phase status independent of your process's exit code:
-
-| when | value |
-|---|---|
-| phase begins | `"<phase>/started"` |
-| phase finishes successfully | `"<phase>/completed"` |
-| phase fails or is stopped | `"<phase>/failed"` |
+Phase status comes from your process's exit code, not from anything you log:
+zero is success, non-zero is failure.
 
 ## Filesystem contract
 

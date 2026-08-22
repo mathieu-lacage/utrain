@@ -92,12 +92,10 @@ def cmd_check_compat():
 
 def _run_train(root: pathlib.Path, cfg: dict) -> bool:
     run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(root))
-    run.log({"_phase_event": "train/started"})
     steps = int(cfg.get("steps", 50))
     ok = True
     for step in range(steps):
         if _read_control(root) == "stop":
-            run.log({"_phase_event": "train/failed"})
             ok = False
             break
         loss = 3.0 * (0.95 ** step) + random.gauss(0, 0.02)
@@ -106,7 +104,6 @@ def _run_train(root: pathlib.Path, cfg: dict) -> bool:
     if ok:
         # Hand the result to later phases (and `serve`) through the data dir.
         (root / "data" / "model.txt").write_text(f"trained for {steps} steps\n")
-        run.log({"_phase_event": "train/completed"})
     run.finish(exit_code=0 if ok else 1)
     return ok
 
@@ -154,9 +151,9 @@ if __name__ == "__main__":
 This is the minimum viable version of the contract: one phase, one config
 field, `describe`/`check-compat`/`run` but no `serve`. It reads
 `<root>/config.yaml`, checks `<root>/control.json` for a stop request,
-writes its output to `<root>/data`, and logs a `loss` metric plus
-`_phase_event` markers through `wandb` — utrain will capture those
-transparently, no wandb account needed. The *layout* under the root is a
+writes its output to `<root>/data`, and logs a `loss` metric through
+`wandb` — utrain will capture that transparently, no wandb account needed.
+Phase status comes from the exit code. The *layout* under the root is a
 fixed part of the contract, and only `data/` and the metrics dir are
 writable; the root itself is whatever `--utrain-root` says, which is
 `/utrain` under utrain and `./run` when you run the script yourself. See the

@@ -50,6 +50,10 @@ def test_image(fake_image_url: str, fake_gpu_image_url: str) -> None:
     )
 
 
+def test_orchestrator_crash(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "orchestrator-crash.t", fake_image)
+
+
 def test_serve(fake_image_url: str, fake_gpu_image_url: str) -> None:
     # Two image URLs: fake implements serve, fake-gpu does not, which is how
     # serve.t exercises utrain's refusal on `can_serve: false`.

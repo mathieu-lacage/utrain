@@ -1,39 +1,33 @@
-import os
+"""Repair for an attempt whose orchestrator died without recording it.
+
+Nothing here runs on the happy path. The orchestrator writes every status
+transition itself, in-process, at the moment it happens: a phase going
+`running`, a phase finishing `done` or `failed`, and the attempt and run going
+terminal once the last phase lands. Even a requested stop is its own write --
+`runs._stop_attempt` sends SIGTERM and the orchestrator records `stopped` on
+its way out.
+
+The one thing it cannot do is record its own death. SIGKILL, an OOM kill or a
+reboot leaves the database saying `running` with nobody left to correct it.
+That is the whole job of this module, and why it is gated on `lock.is_held`:
+while an orchestrator is alive, reading a run writes nothing at all.
+
+Finalizing needs no evidence beyond what the orchestrator already committed.
+Phases it recorded as terminal keep their status; anything still `pending` or
+`running` was interrupted, so it becomes `stopped`, and the attempt and run
+follow from the resulting set.
+"""
+
 import pathlib
 import time
 
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import container
 from . import db as dbmod
+from . import lock
 
-
-def _phase_status_from_events(
-    events: list[container.run_data.PhaseEvent],
-    finalize: bool,
-) -> str:
-    if not events:
-        return "stopped" if finalize else "pending"
-    last = events[-1]
-    if last.event == "completed":
-        return "done"
-    if last.event == "failed":
-        return "failed"
-    return "running"
-
-
-def _phase_boundaries(
-    events: list[container.run_data.PhaseEvent],
-) -> tuple[float | None, float | None]:
-    started_at: float | None = None
-    ended_at: float | None = None
-    for e in events:
-        if e.event == "started":
-            started_at = e.timestamp
-        elif e.event in ("completed", "failed"):
-            ended_at = e.timestamp
-    return started_at, ended_at
+_TERMINAL = ("done", "failed", "stopped")
 
 
 def _compute_run_status(statuses: dict[str, str]) -> str:
@@ -46,20 +40,12 @@ def _compute_run_status(statuses: dict[str, str]) -> str:
     return "stopped"
 
 
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
 def reconcile_attempt(
     run_id: str,
     attempt: int,
     session: sqlalchemy.orm.Session,
 ) -> None:
-    """Reconcile one attempt's phase statuses from rtsdb events on disk."""
+    """Finalize one attempt if its orchestrator is gone; otherwise do nothing."""
     run_row = (
         session.execute(sqlalchemy.select(dbmod.runs).where(dbmod.runs.c.id == run_id))
         .mappings()
@@ -80,12 +66,14 @@ def reconcile_attempt(
     if attempt_row is None:
         return
 
-    # Skip reconciliation if attempt is already terminal
-    if attempt_row["status"] in ("done", "failed", "stopped"):
+    if attempt_row["status"] in _TERMINAL:
         return
 
     run_dir = pathlib.Path(str(run_row["run_dir"]))
     attempt_dir = run_dir / "attempt" / str(attempt)
+    pid = attempt_row["pid"]
+    if lock.is_held(attempt_dir, int(pid) if pid is not None else None):
+        return
 
     phase_rows = (
         session.execute(
@@ -97,24 +85,18 @@ def reconcile_attempt(
         .fetchall()
     )
 
-    pid = attempt_row["pid"]
-    alive = pid is not None and _is_pid_alive(int(pid))
-    finalize = not alive
-
+    now = time.time()
     statuses: dict[str, str] = {}
     for phase_row in phase_rows:
         phase = str(phase_row["phase"])
-        events = container.run_data.read_phase_events(attempt_dir, phase)
-        current_status = str(phase_row["status"])
-        if not events and (not finalize or current_status in ("done", "failed", "stopped")):
-            # A cache-served phase (see orchestrator._try_serve_from_cache) never
-            # launches a container, so it never writes rtsdb events -- don't let
-            # a dead-orchestrator finalize downgrade its already-terminal status.
-            statuses[phase] = current_status
+        status = str(phase_row["status"])
+        if status in _TERMINAL:
+            # Includes phases served from cache, which the orchestrator marks
+            # `done` without ever launching a container.
+            statuses[phase] = status
             continue
-        status = _phase_status_from_events(events, finalize)
-        started_at, ended_at = _phase_boundaries(events)
-        statuses[phase] = status
+
+        statuses[phase] = "stopped"
         session.execute(
             sqlalchemy.update(dbmod.run_phases)
             .where(
@@ -122,27 +104,25 @@ def reconcile_attempt(
                 & (dbmod.run_phases.c.attempt == attempt)
                 & (dbmod.run_phases.c.phase == phase)
             )
-            .values(status=status, started_at=started_at, ended_at=ended_at)
+            # A phase that never started has no end: leave ended_at null rather
+            # than dating it to the moment someone noticed the orchestrator was
+            # gone.
+            .values(
+                status="stopped",
+                ended_at=phase_row["ended_at"]
+                or (now if phase_row["started_at"] is not None else None),
+            )
         )
 
-    if finalize:
-        all_terminal = all(s in ("done", "failed", "stopped") for s in statuses.values())
-        if all_terminal:
-            final_status = _compute_run_status(statuses)
-            now = time.time()
-            session.execute(
-                sqlalchemy.update(dbmod.run_attempts)
-                .where(
-                    (dbmod.run_attempts.c.run_id == run_id)
-                    & (dbmod.run_attempts.c.attempt == attempt)
-                )
-                .values(
-                    status=final_status,
-                    ended_at=attempt_row["ended_at"] if attempt_row["ended_at"] else now,
-                )
-            )
-            session.execute(
-                sqlalchemy.update(dbmod.runs)
-                .where(dbmod.runs.c.id == run_id)
-                .values(status=final_status)
-            )
+    final_status = _compute_run_status(statuses)
+    session.execute(
+        sqlalchemy.update(dbmod.run_attempts)
+        .where((dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt))
+        .values(
+            status=final_status,
+            ended_at=attempt_row["ended_at"] if attempt_row["ended_at"] else now,
+        )
+    )
+    session.execute(
+        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status=final_status)
+    )

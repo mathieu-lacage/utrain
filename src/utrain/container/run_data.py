@@ -4,12 +4,6 @@ import naw.rtsdb
 import pydantic
 
 
-class PhaseEvent(pydantic.BaseModel):
-    phase: str
-    event: str  # started | completed | failed
-    timestamp: float
-
-
 class Metric(pydantic.BaseModel):
     rowid: int
     step: int
@@ -25,33 +19,6 @@ def _find_rtsdb(run_dir: pathlib.Path, phase: str) -> pathlib.Path | None:
         return None
     files = list(phase_dir.glob("*.rtsdb"))
     return files[0] if files else None
-
-
-def read_phase_events(run_dir: pathlib.Path, phase: str) -> list[PhaseEvent]:
-    path = _find_rtsdb(run_dir, phase)
-    if path is None or not path.exists():
-        return []
-    try:
-        reader = naw.rtsdb.Reader(str(path))
-        try:
-            events: list[PhaseEvent] = []
-            for row in reader.read_rows(0):
-                col_names = [c.name for c in row.schema.columns]
-                if "_phase_event" not in col_names or "_timestamp" not in col_names:
-                    continue
-                event_raw = row.values[col_names.index("_phase_event")]
-                ts_raw = row.values[col_names.index("_timestamp")]
-                if not isinstance(event_raw, str) or not isinstance(ts_raw, (int, float)):
-                    continue
-                phase_part, _, event = event_raw.partition("/")
-                if not event:
-                    continue
-                events.append(PhaseEvent(phase=phase_part, event=event, timestamp=float(ts_raw)))
-            return events
-        finally:
-            reader.close()
-    except Exception:
-        return []
 
 
 def read_metrics(

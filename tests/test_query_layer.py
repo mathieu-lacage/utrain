@@ -6,8 +6,11 @@ through captured stdout. Nothing here needs podman, so unlike the cram suite
 these do run in CI.
 """
 
+import os
 import pathlib
 import random
+import subprocess
+import sys
 import tempfile
 import typing
 
@@ -18,6 +21,8 @@ import sqlalchemy.orm
 import utrain.cli.render
 import utrain.config
 import utrain.db
+import utrain.exceptions
+import utrain.lock
 import utrain.logs
 import utrain.runs
 import utrain.types
@@ -145,3 +150,76 @@ def test_tail_lines_matches_a_naive_slice(n: int) -> None:
 
             expected = path.read_text(errors="replace").splitlines()[-n:]
             assert utrain.logs.tail_lines(path, n) == expected
+
+
+def _hold_lock_forever(attempt_dir: str) -> subprocess.Popen[bytes]:
+    """A child process that takes the lock and then blocks until killed."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, sys, utrain.lock;"
+            " f = utrain.lock.hold(pathlib.Path(sys.argv[1]));"
+            " print('held', flush=True);"
+            " __import__('time').sleep(300)",
+            attempt_dir,
+        ],
+        stdout=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline().strip() == b"held"
+    return proc
+
+
+def test_lock_is_held_while_holder_lives_and_free_once_killed(tmp_path: pathlib.Path) -> None:
+    """SIGKILL is the case reconciliation exists for, so it is the case to test."""
+    proc = _hold_lock_forever(str(tmp_path))
+    try:
+        assert utrain.lock.is_held(tmp_path, fallback_pid=None) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+    # The kernel drops the lock when the process dies, with no chance for it to
+    # clean up -- which is what makes a free lock proof the holder is gone.
+    assert utrain.lock.is_held(tmp_path, fallback_pid=None) is False
+
+
+def test_lock_refuses_a_second_holder(tmp_path: pathlib.Path) -> None:
+    proc = _hold_lock_forever(str(tmp_path))
+    try:
+        with pytest.raises(utrain.exceptions.UI):
+            utrain.lock.hold(tmp_path)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_lock_probe_does_not_block_the_holder(tmp_path: pathlib.Path) -> None:
+    """A read must never cost the orchestrator its lock.
+
+    Readers take a shared lock, so several can probe at once and none of them
+    excludes the exclusive holder.
+    """
+    proc = _hold_lock_forever(str(tmp_path))
+    try:
+        for _ in range(20):
+            assert utrain.lock.is_held(tmp_path, fallback_pid=None) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_lock_falls_back_to_pid_when_there_is_no_lock_file(tmp_path: pathlib.Path) -> None:
+    """Attempts started before the lock existed must not read as dead."""
+    assert not utrain.lock.path(tmp_path).exists()
+
+    assert utrain.lock.is_held(tmp_path, fallback_pid=os.getpid()) is True
+    assert utrain.lock.is_held(tmp_path, fallback_pid=None) is False
+
+
+def test_lock_falls_back_to_pid_while_the_file_is_still_empty(tmp_path: pathlib.Path) -> None:
+    """The gap between creating the lock file and locking it reads as alive."""
+    utrain.lock.path(tmp_path).touch()
+
+    assert utrain.lock.is_held(tmp_path, fallback_pid=os.getpid()) is True
