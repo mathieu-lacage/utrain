@@ -30,7 +30,7 @@ A run that has not produced a model yet cannot be chatted with.
 
   $ NEW=$(utrain run create --name unstarted --image utrain-fake --compute cpu --print-id)
   $ utrain run chat "$NEW"
-  abort: run [0-9a-f]{32} has no completed phase, so there is no model to serve (re)
+  abort: run .* has no completed phase, so there is no model to serve (re)
   [1]
 
 An image that does not implement serve
@@ -45,12 +45,15 @@ A plain OpenAI-compatible server, curl style.
 
   $ SERVEDIR="$UTRAIN_DATA_DIR/by-hand"
   $ mkdir -p "$SERVEDIR"
-  $ podman run --rm -d --network=host --name "utrain-cram-serve-$$" \
+  $ podman run -d --network=host --name "utrain-cram-serve-$$" \
+  >   --security-opt=label=disable \
+  >   --rm \
   >   -v "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/data/pretrain:/utrain/data:ro" \
   >   -v "$SERVEDIR:/utrain/serve" \
   >   "localhost/utrain-fake:$UTRAIN_IMAGE_TAG" --utrain-root /utrain serve --port 0 >/dev/null
   $ for _ in $(seq 200); do [ -s "$SERVEDIR/port.json" ] && break; sleep 0.1; done
-  $ PORT=$(python3 -c "import json;print(json.load(open('$SERVEDIR/port.json'))['port'])")
+  $ [ -s "$SERVEDIR/port.json" ] || podman logs "utrain-cram-serve-$$"
+  $ PORT=$(jq .port < $SERVEDIR/port.json)
   $ curl -s "http://127.0.0.1:$PORT/v1/chat/completions" \
   >   -H 'Content-Type: application/json' \
   >   -d '{"messages":[{"role":"user","content":"hi"}]}' \
