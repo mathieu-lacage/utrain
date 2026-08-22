@@ -91,7 +91,10 @@ def cmd_check_compat():
 
 
 def _run_train(root: pathlib.Path, cfg: dict) -> bool:
-    run = wandb.init(project="demo", id=str(cfg.get("run_id", "")), dir=str(root))
+    # The wandb project name is the directory utrain files this phase's metrics
+    # under, so name it after the phase. utrain puts the run id in the config;
+    # standalone there is none, so let wandb pick one.
+    run = wandb.init(project="train", id=str(cfg.get("run_id", "")) or None, dir=str(root))
     steps = int(cfg.get("steps", 50))
     ok = True
     for step in range(steps):

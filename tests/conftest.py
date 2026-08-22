@@ -117,6 +117,23 @@ def fake_gpu_image(fake_gpu_image_url: str) -> dict[str, str]:
 
 
 @pytest.fixture()
+def tutorial_image() -> typing.Iterator[None]:
+    """Sweep the image docs/building-a-container.md tells the reader to build.
+
+    That tutorial is exercised end to end by building it exactly as written, so
+    unlike the images above it is not built here -- the cram script does it. It
+    does need cleaning up though: the doc's tag is `localhost/utrain-demo:utrain`,
+    which `utrain image list` would pick up as a preset in the developer's own
+    store. Removing it drops the tag only; podman's build cache survives, so the
+    next run rebuilds in under a second.
+    """
+    if shutil.which("podman") is None:
+        pytest.skip("podman not installed")
+    yield
+    subprocess.run(["podman", "rmi", "localhost/utrain-demo:utrain"], capture_output=True)
+
+
+@pytest.fixture()
 def gpu_passthrough() -> None:
     if shutil.which("nvidia-ctk") is None:
         pytest.skip("nvidia-ctk not installed; cannot generate a CDI spec for GPU passthrough")
