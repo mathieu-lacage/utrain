@@ -19,10 +19,6 @@ class ImageInfo:
 
 
 def _image_exists(ref: str) -> bool:
-    # Captured, not because anything reads it -- only the exit code is the
-    # answer -- but so that podman cannot write to the caller's terminal. A TUI
-    # is in the alternate screen buffer, and a subprocess printing into it
-    # scribbles over the display.
     result = subprocess.run(["podman", "image", "exists", ref], capture_output=True)
     return result.returncode == 0
 
