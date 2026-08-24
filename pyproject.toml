@@ -35,6 +35,21 @@ dependencies = [
     "naw>=0.0.4",
 ]
 
+[project.optional-dependencies]
+# The TUI only. Kept out of the base install because `utrain` is useful without
+# it and these pull numpy in transitively; `utrain tui` raises a UI error
+# pointing here when they are missing, the way naw does for its own plotting.
+tui = [
+    "textual>=0.80",
+    "uniplot[rich]>=0.23.2",
+    # Only for exporting a plot: uniplot draws the dashboard, and matplotlib is
+    # what turns one of its curves into a png, an svg or a pdf. In this extra
+    # rather than one of its own because it pulls nothing uniplot has not
+    # already pulled -- numpy -- and an export key that is dark unless you
+    # guessed at a second extra is worse than a slightly larger install.
+    "matplotlib>=3.8",
+]
+
 [project.urls]
 Homepage = "https://mlacage.gitlabpages.inria.fr/utrain"
 Documentation = "https://mlacage.gitlabpages.inria.fr/utrain"
@@ -172,12 +187,19 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6",
     "ruff>=0.15.18",
+    # Restated from the `tui` extra rather than pulled in as one: uv has no
+    # default-extras, and the dev env needs all three regardless -- the TUI
+    # tests import textual, the export tests import matplotlib, and the
+    # building-a-container cram test shells out to `naw plot`, which needs
+    # uniplot.
+    "textual>=0.80",
+    "uniplot[rich]>=0.23.2",
+    "matplotlib>=3.8",
     "towncrier>=24.8",
     "licensecheck>=2025.1.0",
     "uv-audit>=0.1.9",
     "zensical>=0.0.55",
     "mike",
-    "uniplot>=0.23.2",
     "tox>=4.21",
     "tox-uv>=1.13",
 ]

@@ -134,9 +134,10 @@ def phase_list_table(entries: list[types.PhaseListEntry]) -> str:
         [
             e.address,
             str(e.phase_order),
-            e.status
-            if e.status is not None
-            else (f"-- (att.{e.inherited_from})" if e.inherited_from is not None else "--"),
+            # A `--from-phase` restart does not re-run the phases before it,
+            # and those keep the status they finished with in the attempt that
+            # did -- which is the attempt their address names.
+            e.status if e.status is not None else "--",
             output.format_time(e.started_at),
             output.format_time(e.ended_at),
         ]

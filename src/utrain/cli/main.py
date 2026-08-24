@@ -151,10 +151,9 @@ def _cmd_run_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 def _cmd_run_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     if args.edit:
         config_path = runs.config_path(args.id, session)
-        os.chmod(config_path, 0o644)
         editor = os.environ.get("EDITOR", "vi")
-        subprocess.run([editor, str(config_path)])
-        os.chmod(config_path, 0o444)
+        with runs.writable(config_path):
+            subprocess.run([editor, str(config_path)])
         return
 
     detail = runs.get_run_detail(args.id, session, wait=args.wait, timeout=args.timeout)
@@ -272,6 +271,19 @@ def _cmd_store_gc(args: argparse.Namespace) -> None:
     print(render.gc_result(store.gc(settings)))
 
 
+def _cmd_tui(args: argparse.Namespace) -> None:
+    # Imported here, not at module scope, so that every other command keeps
+    # working when the optional `tui` extra is not installed.
+    try:
+        from .. import tui
+    except ImportError as e:
+        raise exceptions.UI(
+            "the tui needs textual and uniplot. Run: pip install 'utrain[tui]'"
+        ) from e
+
+    tui.app.run()
+
+
 def _cmd_orchestrate(args: argparse.Namespace) -> None:
     settings = config.Settings()
     orchestrator.run_orchestrator(
@@ -295,14 +307,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # compute
     compute_p = sub.add_parser("compute", help="CPU/GPU on host")
-    compute_sub = compute_p.add_subparsers(dest="compute_command")
+    compute_sub = compute_p.add_subparsers(dest="compute_command", required=True)
     compute_sub.add_parser("list", help="List compute resources on host").set_defaults(
         func=_cmd_compute_list
     )
 
     # image
     image_p = sub.add_parser("image", help="Container images")
-    image_sub = image_p.add_subparsers(dest="image_command")
+    image_sub = image_p.add_subparsers(dest="image_command", required=True)
     img_list = image_sub.add_parser("list", help="List images from local store")
     img_list.add_argument("-q", "--quiet", action="store_true")
     img_list.set_defaults(func=_cmd_image_list)
@@ -317,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # run
     run_p = sub.add_parser("run", help="Experiment runs")
-    run_sub = run_p.add_subparsers(dest="run_command")
+    run_sub = run_p.add_subparsers(dest="run_command", required=True)
 
     run_list = run_sub.add_parser("list", help="List runs")
     run_list.add_argument("--json", action="store_true")
@@ -374,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # attempt
     attempt_p = sub.add_parser("attempt")
-    attempt_sub = attempt_p.add_subparsers(dest="attempt_command")
+    attempt_sub = attempt_p.add_subparsers(dest="attempt_command", required=True)
     att_list = attempt_sub.add_parser("list")
     att_list.add_argument("run_id")
     att_list.add_argument("-q", "--quiet", action="store_true")
@@ -385,7 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # phase
     phase_p = sub.add_parser("phase", help="Individual phases of a run")
-    phase_sub = phase_p.add_subparsers(dest="phase_command")
+    phase_sub = phase_p.add_subparsers(dest="phase_command", required=True)
     ph_list = phase_sub.add_parser("list", help="List all phases of a run")
     ph_list.add_argument("addr", help="Run id")
     ph_list.add_argument("-q", "--quiet", action="store_true")
@@ -398,9 +410,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # store
     store_p = sub.add_parser("store", help="Data store")
-    store_sub = store_p.add_subparsers(dest="store_command")
+    store_sub = store_p.add_subparsers(dest="store_command", required=True)
     store_gc = store_sub.add_parser("gc")
     store_gc.set_defaults(func=_cmd_store_gc)
+
+    sub.add_parser("tui", help="Browse runs, phases and metrics interactively").set_defaults(
+        func=_cmd_tui
+    )
 
     # hidden _orchestrate subcommand
     orch = sub.add_parser("_orchestrate")
@@ -409,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--from-phase", dest="from_phase", default=None)
     orch.set_defaults(func=_cmd_orchestrate)
 
-    sub.metavar = "{compute,image,run,attempt,phase,store}"
+    sub.metavar = "{compute,image,run,attempt,phase,store,tui}"
 
     return parser
 

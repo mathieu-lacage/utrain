@@ -3,7 +3,7 @@ import pathlib
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import container, exceptions, logs, reconcile, types
+from . import container, exceptions, logs, metrics, reconcile, types
 from . import db as dbmod
 
 
@@ -39,7 +39,28 @@ def _parse_phase_addr(
     return run_id, attempt, phase
 
 
-def list_phases(addr: str, session: sqlalchemy.orm.Session) -> list[types.PhaseListEntry]:
+def describe_image(
+    image: str,
+    described: container.schema.DescribeOutput | None = None,
+) -> container.schema.DescribeOutput:
+    """An image's description, fetching it unless the caller already has one.
+
+    `podman.describe` starts a container. That is fine once per CLI invocation
+    and ruinous for a view that refreshes every second, so a long-lived caller
+    can pass in a cached description instead -- an image's phase list does not
+    change while it is being watched. Passing nothing keeps the CLI's
+    behaviour, which is to ask podman every time.
+    """
+    if described is not None:
+        return described
+    return container.podman.describe(container.podman.list_presets()[image])
+
+
+def list_phases(
+    addr: str,
+    session: sqlalchemy.orm.Session,
+    described: container.schema.DescribeOutput | None = None,
+) -> list[types.PhaseListEntry]:
     run_id, attempt_n, _ = _parse_phase_addr(addr, session)
 
     if attempt_n is None:
@@ -64,9 +85,7 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> list[types.PhaseL
     # Get all phases from the image to show pre-from_phase entries
     run_row = dbmod.get_run(run_id, session)
     image_key = str(run_row["image"])
-    presets = container.podman.list_presets()
-    describe = container.podman.describe(presets[image_key])
-    all_phases = describe.phase_order
+    all_phases = describe_image(image_key, described).phase_order
 
     from_phase_order = 0
     if from_phase and from_phase in all_phases:
@@ -88,32 +107,44 @@ def list_phases(addr: str, session: sqlalchemy.orm.Session) -> list[types.PhaseL
         )
     }
 
-    # Find the last attempt where each pre-from_phase phase ran
-    def _last_attempt_for_phase(phase: str) -> int | None:
-        result = session.execute(
-            sqlalchemy.select(sqlalchemy.func.max(dbmod.run_phases.c.attempt)).where(
-                (dbmod.run_phases.c.run_id == run_id)
-                & (dbmod.run_phases.c.phase == phase)
-                & (dbmod.run_phases.c.attempt < attempt_n)
+    # The last attempt that actually ran each pre-from_phase phase, and what
+    # came of it there. The whole row rather than just the attempt number: a
+    # phase this attempt skipped still has a status, and it is the one it
+    # finished with -- reporting nothing would say "unknown" about a phase
+    # whose output the current attempt is built on.
+    def _inherited(phase: str) -> sqlalchemy.RowMapping | None:
+        return (
+            session.execute(
+                sqlalchemy.select(dbmod.run_phases)
+                .where(
+                    (dbmod.run_phases.c.run_id == run_id)
+                    & (dbmod.run_phases.c.phase == phase)
+                    & (dbmod.run_phases.c.attempt < attempt_n)
+                )
+                .order_by(dbmod.run_phases.c.attempt.desc())
+                .limit(1)
             )
-        ).scalar_one_or_none()
-        return int(result) if result is not None else None
+            .mappings()
+            .fetchone()
+        )
 
     rid = dbmod.short_run_id(run_id, session)
 
     entries: list[types.PhaseListEntry] = []
     for i, phase in enumerate(all_phases):
         if i < from_phase_order:
-            # Not re-run by this attempt: report where it last ran instead.
-            last_att = _last_attempt_for_phase(phase)
+            # Not re-run by this attempt: report where it last ran, and how it
+            # went there.
+            previous = _inherited(phase)
+            last_att = None if previous is None else int(previous["attempt"])
             entries.append(
                 types.PhaseListEntry(
                     phase=phase,
                     phase_order=i,
                     address=f"{rid}/{last_att}/{phase}" if last_att is not None else phase,
-                    status=None,
-                    started_at=None,
-                    ended_at=None,
+                    status=None if previous is None else str(previous["status"]),
+                    started_at=None if previous is None else previous["started_at"],
+                    ended_at=None if previous is None else previous["ended_at"],
                     inherited_from=last_att,
                 )
             )
@@ -164,6 +195,17 @@ def read_metric(
     return [types.Metric(name=m.name, step=m.step, value=m.value) for m in series]
 
 
+def metrics_path(addr: str, session: sqlalchemy.orm.Session) -> pathlib.Path | None:
+    """The metrics file a phase logs to, or None before it has written one.
+
+    A caller following a live phase wants to hold one `metrics.Tail` open over
+    this rather than re-read the series each refresh, so it gets the path rather
+    than the points.
+    """
+    _, _, phase, attempt_dir = _resolve_phase(addr, session)
+    return metrics.find_rtsdb(attempt_dir, phase)
+
+
 def _resolve_phase(
     addr: str,
     session: sqlalchemy.orm.Session,
@@ -186,7 +228,11 @@ def _resolve_phase(
     return run_id, attempt_n, phase, run_dir / "attempt" / str(attempt_n)
 
 
-def show_phase(addr: str, session: sqlalchemy.orm.Session) -> types.PhaseDetail:
+def show_phase(
+    addr: str,
+    session: sqlalchemy.orm.Session,
+    described: container.schema.DescribeOutput | None = None,
+) -> types.PhaseDetail:
     run_id, attempt_n, phase, attempt_dir = _resolve_phase(addr, session)
     run_row = dbmod.get_run(run_id, session)
 
@@ -206,10 +252,8 @@ def show_phase(addr: str, session: sqlalchemy.orm.Session) -> types.PhaseDetail:
 
     # Resolve phase label from image describe
     image_key = str(run_row["image"])
-    presets = container.podman.list_presets()
-    describe = container.podman.describe(presets[image_key])
     phase_label = phase
-    for pi in describe.phases:
+    for pi in describe_image(image_key, described).phases:
         if pi.name == phase:
             phase_label = f"{phase} ({pi.label})"
             break

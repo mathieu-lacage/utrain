@@ -1,3 +1,5 @@
+import collections.abc
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -6,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import typing
 import uuid
 
 import sqlalchemy
@@ -140,6 +143,168 @@ def config_path(run_id_prefix: str, session: sqlalchemy.orm.Session) -> pathlib.
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
     return pathlib.Path(str(row["run_dir"])) / "config.yaml"
+
+
+@contextlib.contextmanager
+def writable(path: pathlib.Path) -> collections.abc.Generator[None]:
+    """Make `config.yaml` writable for the duration of an edit.
+
+    `start_run` chmods the file to 0o444 once its hash has been recorded, so
+    that an edit after the fact cannot silently diverge from `runs.config_hash`.
+    Every deliberate edit -- `run show --edit`, the TUI's config form -- has to
+    lift that and put it back, so the pair lives in one place.
+
+    A file that is not there yet has nothing to lift and nothing to put back:
+    `write_config` writes the first `config.yaml` of a run that has none.
+    """
+    if not path.exists():
+        yield
+        return
+    mode = path.stat().st_mode
+    os.chmod(path, 0o644)
+    try:
+        yield
+    finally:
+        os.chmod(path, mode)
+
+
+def _mapping(value: object) -> dict[str, object]:
+    """`value` as a mapping, or an empty one.
+
+    Config comes off disk as `yaml.safe_load`'s `Any` and out of a form as
+    `object`; every place that indexes into it wants the same guard, and wants
+    the result typed rather than `Any`.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return typing.cast(dict[str, object], value)
+
+
+def read_config(run_id_prefix: str, session: sqlalchemy.orm.Session) -> dict[str, object]:
+    """A run's config.yaml, parsed. Empty when the file is missing."""
+    path = config_path(run_id_prefix, session)
+    if not path.exists():
+        return {}
+    return _mapping(yaml.safe_load(path.read_text()))
+
+
+def _coerce(field: container.schema.FieldSchema, value: object) -> int | float | str | bool | None:
+    """One form value, checked against the field that declared it.
+
+    The TUI edits through widgets that already restrict what can be typed, but
+    the check belongs here rather than there: a validated write is a property of
+    the query layer, not of one client that happens to be careful.
+    """
+    if value is None or value == "":
+        if field.required:
+            raise exceptions.UI(f"'{field.key}' is required")
+        return None
+
+    if field.type == "bool":
+        if isinstance(value, bool):
+            return value
+        raise exceptions.UI(f"'{field.key}' must be true or false, got '{value}'")
+
+    if field.type == "enum":
+        text = str(value)
+        if field.options and text not in field.options:
+            raise exceptions.UI(
+                f"'{field.key}' must be one of {', '.join(field.options)}, got '{text}'"
+            )
+        return text
+
+    if field.type == "str":
+        return str(value)
+
+    kind = "an int" if field.type == "int" else "a float"
+    # `bool` is an `int` subclass, so it would otherwise coerce silently to 0/1.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise exceptions.UI(f"'{field.key}' must be {kind}, got '{value}'")
+    try:
+        number: int | float = int(value) if field.type == "int" else float(value)
+    except ValueError:
+        raise exceptions.UI(f"'{field.key}' must be {kind}, got '{value}'")
+    if field.min is not None and number < field.min:
+        raise exceptions.UI(f"'{field.key}' must be at least {field.min}, got {number}")
+    if field.max is not None and number > field.max:
+        raise exceptions.UI(f"'{field.key}' must be at most {field.max}, got {number}")
+    return number
+
+
+def _validated_section(
+    groups: list[container.schema.FieldGroup],
+    values: dict[str, object],
+    flat: bool,
+) -> dict[str, object]:
+    """The fields `groups` declares, coerced out of `values`.
+
+    Globals nest one level per group; phases are flat, mirroring what
+    `_write_config` lays out. Unknown keys are dropped rather than rejected: the
+    schema is what the image will read, so anything else could not have any
+    effect anyway.
+    """
+    out: dict[str, object] = {}
+    for group in groups:
+        source = values if flat else _mapping(values.get(group.name))
+        section = {f.key: _coerce(f, source.get(f.key, f.default)) for f in group.fields}
+        if not section:
+            continue
+        if flat:
+            out.update(section)
+        else:
+            out[group.name] = section
+    return out
+
+
+def write_config(
+    run_id_prefix: str,
+    values: dict[str, object],
+    session: sqlalchemy.orm.Session,
+    described: container.schema.DescribeOutput | None = None,
+) -> None:
+    """Replace a run's config.yaml with `values`, validated against its schema.
+
+    Only a `configuring` run can be edited: once started, `runs.config_hash`
+    records what the attempt actually ran with, and a later edit would make that
+    a lie.
+
+    `run_id` and `compute` are carried over from the file rather than taken from
+    the caller. Neither is a config field -- `compute` was validated against the
+    host at creation -- so neither is the form's to change.
+    """
+    run_id = dbmod.resolve_run_id(run_id_prefix, session)
+    row = dbmod.get_run(run_id, session)
+    status = str(row["status"])
+    if status != "configuring":
+        raise exceptions.UI(f"run '{run_id}' is {status}; only a configuring run can be edited")
+
+    if described is None:
+        described = container.podman.describe(container.podman.list_presets()[str(row["image"])])
+    schema = described.config_schema
+
+    path = pathlib.Path(str(row["run_dir"])) / "config.yaml"
+    current = _mapping(yaml.safe_load(path.read_text())) if path.exists() else {}
+
+    cfg: dict[str, object] = {"run_id": run_id, "compute": current.get("compute")}
+    globals_out = _validated_section(
+        schema.globals.groups, _mapping(values.get("globals")), flat=False
+    )
+    if globals_out:
+        cfg["globals"] = globals_out
+
+    phase_values = _mapping(values.get("phases"))
+    phases_out: dict[str, object] = {}
+    for phase_name, phase_schema in schema.phases.items():
+        section = _validated_section(
+            phase_schema.groups, _mapping(phase_values.get(phase_name)), flat=True
+        )
+        if section:
+            phases_out[phase_name] = section
+    if phases_out:
+        cfg["phases"] = phases_out
+
+    with writable(path):
+        path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
 
 
 def get_run_detail(

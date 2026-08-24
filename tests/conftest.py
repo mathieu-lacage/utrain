@@ -1,7 +1,10 @@
+import collections.abc
 import fcntl
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import typing
 import uuid
 
@@ -140,3 +143,44 @@ def gpu_passthrough() -> None:
     result = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True)
     if result.returncode != 0:
         pytest.skip("no GPU on host (nvidia-smi -L failed)")
+
+
+# The reference container's serve command, run from the checkout rather than
+# from an image. The contract says a container must be runnable that way, and
+# it is what lets the serve tests -- and the TUI's chat screen tests -- run on
+# CI, which has no podman at all.
+_FAKE = _CONTAINERS_DIR / "fake" / "fake.py"
+# The wandb shim, so fake.py's module-level `import wandb` resolves without the
+# real package installed -- the same substitution utrain does inside a container.
+_SHIM = _PROJECT_ROOT / "src" / "utrain" / "container" / "wandb_shim"
+
+
+@pytest.fixture()
+def spawn_serve() -> typing.Iterator[
+    collections.abc.Callable[[pathlib.Path], subprocess.Popen[bytes]]
+]:
+    """Start the fake container's `serve` under a utrain root, and clean it up.
+
+    stdout and stderr are left alone: the port arrives through
+    `<root>/serve/port.json`, so the container's output is not a protocol and
+    nothing here has to consume it.
+    """
+    started: list[subprocess.Popen[bytes]] = []
+
+    def spawn(root: pathlib.Path) -> subprocess.Popen[bytes]:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([str(_SHIM), env.get("PYTHONPATH", "")])
+        proc = subprocess.Popen(
+            [sys.executable, str(_FAKE), "--utrain-root", str(root), "serve", "--port", "0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        started.append(proc)
+        return proc
+
+    yield spawn
+    for proc in started:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)

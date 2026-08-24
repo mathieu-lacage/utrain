@@ -7,13 +7,16 @@ instead of inside an image -- which is exactly what the contract's "a container
 runs from a checkout too" rule makes possible. It runs everywhere.
 """
 
+import collections.abc
 import http.client
+import http.server
 import io
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import threading
 import typing
 import uuid
 
@@ -21,6 +24,7 @@ import pytest
 import sqlalchemy
 import sqlalchemy.orm
 
+import utrain.chat
 import utrain.cli.chat
 import utrain.config
 import utrain.container.podman
@@ -37,32 +41,19 @@ _FAKE = _PROJECT_ROOT / "tests" / "containers" / "fake" / "fake.py"
 _SHIM = _PROJECT_ROOT / "src" / "utrain" / "container" / "wandb_shim"
 
 
-def _spawn(root: pathlib.Path) -> subprocess.Popen[bytes]:
-    """Run the fake container's `serve`, with its output going nowhere in particular.
-
-    stdout and stderr are deliberately left alone: the port arrives through
-    `<root>/serve/port.json`, so the container's output is not a protocol and
-    nothing here has to consume it.
-    """
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(_SHIM), env.get("PYTHONPATH", "")])
-    return subprocess.Popen(
-        [sys.executable, str(_FAKE), "--utrain-root", str(root), "serve", "--port", "0"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-
-
 @pytest.fixture()
-def served(tmp_path: pathlib.Path) -> typing.Iterator[int]:
-    """A running fake container; yields the port it published."""
-    proc = _spawn(tmp_path)
-    try:
-        yield utrain.serve._wait_for_port(proc, tmp_path / "serve" / "port.json")
-    finally:
-        proc.terminate()
-        proc.wait(timeout=10)
+def served(
+    tmp_path: pathlib.Path,
+    spawn_serve: collections.abc.Callable[[pathlib.Path], subprocess.Popen[bytes]],
+) -> int:
+    """A running fake container; the port it published.
+
+    The container is spawned directly rather than through podman, which the
+    contract's "a container runs from a checkout too" rule makes possible and
+    which is what lets this file run in CI. `spawn_serve` lives in conftest
+    because the TUI's chat tests need the same container.
+    """
+    return utrain.serve._wait_for_port(spawn_serve(tmp_path), tmp_path / "serve" / "port.json")
 
 
 def _post(port: int, path: str, payload: dict[str, object]) -> http.client.HTTPResponse:
@@ -197,6 +188,102 @@ def test_empty_messages_is_rejected(served: int) -> None:
     response = _post(served, "/v1/chat/completions", {"messages": []})
     assert response.status == 400
     assert "messages" in json.loads(response.read())["error"]["message"]
+
+
+# The client half, `utrain.chat`, which prints nothing and which both the CLI's
+# REPL and the TUI's chat screen are built on.
+
+
+def test_client_streams_a_reply_in_pieces(served: int) -> None:
+    client = utrain.chat.Client(served, max_tokens=10, temperature=0.8)
+    deltas = list(client.stream("hello"))
+    assert len(deltas) > 1, "the reply should arrive in pieces, not whole"
+    assert "".join(deltas) == "[fake model] turn 1: 'hello'"
+
+
+def test_client_carries_the_history_the_server_does_not(served: int) -> None:
+    """Turn 2 is turn 2 only because the client resent turn 1."""
+    client = utrain.chat.Client(served, max_tokens=10, temperature=0.8)
+    assert "".join(client.stream("one")) == "[fake model] turn 1: 'one'"
+    assert "".join(client.stream("two")) == "[fake model] turn 2: 'two'"
+    assert [(m.role, m.content) for m in client.messages] == [
+        ("user", "one"),
+        ("assistant", "[fake model] turn 1: 'one'"),
+        ("user", "two"),
+        ("assistant", "[fake model] turn 2: 'two'"),
+    ]
+
+
+def test_client_reset_starts_the_conversation_over(served: int) -> None:
+    client = utrain.chat.Client(served, max_tokens=10, temperature=0.8)
+    list(client.stream("one"))
+    client.reset()
+    assert not client.messages
+    assert "".join(client.stream("two")) == "[fake model] turn 1: 'two'"
+
+
+def test_client_abandoned_part_way_keeps_what_arrived(served: int) -> None:
+    """What a Ctrl-C at the REPL and an escape in the TUI both come down to.
+
+    Closing the generator closes the connection, which is how a stop is said
+    over HTTP; the partial reply is still the model's turn, so the next one is
+    not sent with a user message that has no answer.
+    """
+    client = utrain.chat.Client(served, max_tokens=10, temperature=0.8)
+    stream = client.stream("hello")
+    first = next(stream)
+    stream.close()
+    assert [m.role for m in client.messages] == ["user", "assistant"]
+    assert client.messages[-1].content == first
+    assert first and not client.messages[-1].content.endswith("'hello'")
+
+
+@pytest.fixture()
+def refusing() -> typing.Iterator[int]:
+    """A server that answers every turn with OpenAI's error envelope.
+
+    The reference container refuses only an empty `messages`, which a `Client`
+    cannot send -- it always has the turn it was just given. So the refusal
+    path gets a server of its own rather than a contrived request.
+    """
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = json.dumps({"error": {"message": "context length exceeded"}}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: typing.Any) -> None:
+            """Silence: the default writes a line to stderr per request."""
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+
+
+def test_client_raises_on_a_refused_turn_and_drops_it(refusing: int) -> None:
+    """The message comes out of OpenAI's envelope, and the turn is not kept.
+
+    Dropping it matters: the next turn would otherwise be sent with a user
+    message the model never answered.
+    """
+    client = utrain.chat.Client(refusing, max_tokens=10, temperature=0.8)
+    with pytest.raises(utrain.exceptions.UI, match="context length exceeded"):
+        list(client.stream("hello"))
+    assert not client.messages
+
+
+def test_client_model_info_is_never_fatal() -> None:
+    """It decorates a banner; a port with nothing on it is not a session ender."""
+    assert utrain.chat.Client(1, max_tokens=10, temperature=0.8).model_info() == {}
 
 
 # `utrain run chat` itself. Same trick as above -- the container is spawned

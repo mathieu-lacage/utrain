@@ -91,8 +91,10 @@ class PhaseListEntry:
     """A phase of an attempt, including ones inherited from an earlier attempt.
 
     A ``--from-phase`` restart does not re-run the phases before it, so those
-    are shown with the attempt they last ran in (``inherited_from``) rather
-    than a status of their own.
+    carry the status they finished with in the attempt that did run them, and
+    ``inherited_from`` names that attempt. It is what a caller reading the
+    phase's log or metrics has to address them under: this attempt's directory
+    has nothing in it for a phase it skipped.
     """
 
     phase: str
@@ -131,3 +133,17 @@ class PhaseDetail:
 class GcResult:
     removed: int
     reclaimed_bytes: int
+
+
+@dataclasses.dataclass(frozen=True)
+class ChatMessage:
+    """One turn of a chat conversation.
+
+    The wire format is OpenAI's ``{"role": ..., "content": ...}``; this exists
+    so that a caller holding a conversation is holding typed turns rather than
+    dicts whose every subscript is ``Any``. ``utrain.chat.Client`` is what
+    converts between the two.
+    """
+
+    role: str
+    content: str
