@@ -201,6 +201,10 @@ class MetricList(textual.widgets.OptionList):
 
     BINDINGS = [
         textual.binding.Binding("space", "screen.toggle_metric", "plot metric"),
+        # One footer entry for the pair: they are the same key with two
+        # directions, and the pane has four other keys to write down.
+        textual.binding.Binding("shift+down", "extend_down", "range", key_display="shift+up/down"),
+        textual.binding.Binding("shift+up", "extend_up", "range", show=False),
         textual.binding.Binding("y", "screen.solo_metric", "y axis"),
         textual.binding.Binding("x", "screen.cycle_x", "x axis"),
         # The same key `PlotPane` offers: which metric is exported is decided by
@@ -224,6 +228,14 @@ class MetricList(textual.widgets.OptionList):
         self._columns: list[str] = []
         self._selected: set[str] = set()
         self._rows: list[render.MetricRow] = []
+        # Where a `shift+arrow` range started. None means the range is just the
+        # row under the cursor, which is what `space` acted on before there
+        # were ranges and what it still acts on until one is extended.
+        self._anchor: int | None = None
+        # Set only while an extend key is moving the cursor, because the
+        # anchor's rule is "any other way of moving the cursor drops it" and
+        # `watch_highlighted` is the one place every way of moving it meets.
+        self._extending = False
 
     @property
     def columns(self) -> list[str]:
@@ -251,6 +263,7 @@ class MetricList(textual.widgets.OptionList):
         self._columns = []
         self._selected = set()
         self._rows = []
+        self._anchor = None
         self.clear_options()
 
     def sync(self, columns: list[str]) -> bool:
@@ -267,25 +280,111 @@ class MetricList(textual.widgets.OptionList):
         return True
 
     def show(self, rows: list[render.MetricRow]) -> None:
-        """Redraw, keeping the cursor where the viewer left it.
+        """Bring the listed values up to date, in place.
 
-        A no-op when nothing changed: the pane is rebuilt every refresh, and an
-        unchanged rebuild would fight the viewer for the cursor once a second.
+        Deliberately not clear-and-refill, for the reason `screens._fill` is
+        not either. `clear_options` puts the scroll back to the top and drops
+        the highlight, and restoring the highlight scrolls it into view again
+        -- so a viewer who has scrolled the list or parked the cursor on a
+        metric would lose both once a second, since a live phase's values
+        change on every refresh. Replacing the prompts that changed leaves the
+        cursor and the scroll where the viewer put them.
+
+        A no-op when nothing changed, which is the case a finished phase is in.
         """
         if rows == self._rows:
             return
         self._rows = list(rows)
-        index = self.highlighted
-        self.clear_options()
-        for row in rows:
-            self.add_option(self._line(row))
-        if rows:
+        self._paint()
+
+    def _paint(self) -> None:
+        """Write `self._rows` into the list without disturbing it.
+
+        Also what the extend keys call: which rows are in the range is drawn
+        rather than merely remembered, and the range moves on a keypress rather
+        than on a fetch.
+        """
+        # The cursor is an end of the range and already has the cursor bar, so
+        # reversing it too would only cancel that out.
+        marked = set(self.range_indices) - {self.highlighted}
+        for index, row in enumerate(self._rows):
+            line = self._line(row)
+            if index in marked:
+                line.stylize("reverse")
+            if index < self.option_count:
+                self.replace_option_prompt_at_index(index, line)
+            else:
+                self.add_option(line)
+        while self.option_count > len(self._rows):
+            # Removing re-validates `highlighted`, so a cursor past the new end
+            # is clamped rather than left pointing at nothing.
+            self.remove_option_at_index(self.option_count - 1)
+        if self._rows and self.highlighted is None:
             # `highlighted` is None until the viewer moves the cursor, which
             # leaves the pane with no visible cursor and `enter` -- the list's
             # own binding, which needs one -- doing nothing. The keys that read
             # the cursor already default to the first row, so this only makes
             # that visible.
-            self.highlighted = 0 if index is None else min(index, len(rows) - 1)
+            self.highlighted = 0
+
+    @property
+    def range_indices(self) -> list[int]:
+        """The rows `space` acts on: the cursor's, or the extended range.
+
+        Clamped, because a phase that stops logging a metric shortens the list
+        under an anchor that was set when it was longer.
+        """
+        if self.highlighted is None or not self._columns:
+            return []
+        if self._anchor is None:
+            return [self.highlighted]
+        anchor = min(max(self._anchor, 0), len(self._columns) - 1)
+        low, high = sorted((anchor, self.highlighted))
+        return list(range(low, high + 1))
+
+    def watch_highlighted(self, highlighted: int | None) -> None:
+        """Drop the range unless an extend key is what moved the cursor.
+
+        Every way the cursor moves -- the arrows, home, end, the mouse, a row
+        going away under it -- ends up here, which is why the rule lives here
+        rather than in an override per key.
+
+        Repaints, because the range is drawn into the prompts: nothing else
+        rubs the marks out until the values next change, which for a finished
+        phase is never. `_anchor` goes first, so the repaint draws the range
+        gone and the assignments it makes find nothing left to drop.
+        """
+        if not self._extending and self._anchor is not None:
+            self._anchor = None
+            self._paint()
+        super().watch_highlighted(highlighted)
+
+    def _extend(self, direction: int) -> None:
+        """Grow or shrink the range by a row, anchoring it where it starts.
+
+        Stops at the ends rather than wrapping the way the plain arrows do: a
+        range that came back round to the far end of the list would cover
+        everything the viewer had just stepped past.
+        """
+        if self.highlighted is None:
+            return
+        target = self.highlighted + direction
+        if not 0 <= target < self.option_count:
+            return
+        if self._anchor is None:
+            self._anchor = self.highlighted
+        self._extending = True
+        try:
+            self.highlighted = target
+        finally:
+            self._extending = False
+        self._paint()
+
+    def action_extend_up(self) -> None:
+        self._extend(-1)
+
+    def action_extend_down(self) -> None:
+        self._extend(1)
 
     def _line(self, row: render.MetricRow) -> rich.text.Text:
         """`mark name value`, with the value pushed to the right margin.
@@ -303,16 +402,21 @@ class MetricList(textual.widgets.OptionList):
         line.append(row.value, style="bold")
         return line
 
-    def toggle_highlighted(self) -> str | None:
-        """Draw or stop drawing the metric under the cursor."""
-        name = self.highlighted_name
-        if name is None:
-            return None
-        if name in self._selected:
-            self._selected.discard(name)
+    def toggle_range(self) -> list[str]:
+        """Draw or stop drawing every metric in the range. The names it changed.
+
+        The whole range goes the same way -- checked unless all of it already
+        is, in which case unchecked -- rather than each row flipping on its
+        own, which would leave a mixed range mixed the other way round.
+        """
+        names = [self._columns[index] for index in self.range_indices]
+        if not names:
+            return []
+        if all(name in self._selected for name in names):
+            self._selected.difference_update(names)
         else:
-            self._selected.add(name)
-        return name
+            self._selected.update(names)
+        return names
 
 
 class LogTail(textual.widgets.RichLog):

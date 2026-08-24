@@ -964,7 +964,8 @@ class MainScreen(_Screen):
         self.action_focus_pane(column[(index + 1) % len(column)])
 
     def action_toggle_metric(self) -> None:
-        if self.query_one("#metrics", widgets.MetricList).toggle_highlighted() is None:
+        """`space`: draw or stop drawing the metric, or the extended range."""
+        if not self.query_one("#metrics", widgets.MetricList).toggle_range():
             return
         # Checking a metric is a statement about the stacked view, so it also
         # says the viewer is done looking at one metric on its own.

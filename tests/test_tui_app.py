@@ -649,6 +649,161 @@ async def test_the_metrics_pane_shows_each_metric_s_last_value(
         assert any("loss" in str(line) and "1.1" in str(line) for line in lines)
 
 
+def _marked_rows(metrics: utrain.tui.widgets.MetricList) -> list[int]:
+    """The rows drawn as part of the range, read back off the prompts."""
+    marked: list[int] = []
+    for index in range(metrics.option_count):
+        prompt = metrics.get_option_at_index(index).prompt
+        spans = getattr(prompt, "spans", [])
+        if any("reverse" in str(span.style) for span in spans):
+            marked.append(index)
+    return marked
+
+
+async def test_shift_arrows_extend_the_range_space_acts_on(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Both metrics start checked, so one `space` over both unchecks both."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        await pilot.press("3")
+        await _settle(app, pilot)
+        assert sorted(metrics.selected) == ["loss", "mfu"]
+
+        await pilot.press("shift+down")
+        await _settle(app, pilot)
+        assert metrics.range_indices == [0, 1]
+
+        await pilot.press("space")
+        await _settle(app, pilot)
+
+        assert metrics.selected == []
+        assert not [name for name, p in _main(app).plots.items() if p.display]
+
+
+async def test_space_checks_a_range_that_is_not_all_checked(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A mixed range goes one way, rather than each row flipping on its own."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        await pilot.press("3")
+        await pilot.press("space")
+        await _settle(app, pilot)
+        assert len(metrics.selected) == 1
+
+        await pilot.press("shift+down")
+        await pilot.press("space")
+        await _settle(app, pilot)
+
+        assert sorted(metrics.selected) == ["loss", "mfu"]
+
+
+async def test_a_plain_arrow_rubs_out_the_range_it_drops(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The marks are drawn into the prompts, so dropping the range has to redraw.
+
+    Asserted on the prompts rather than on `range_indices`: what went wrong
+    before was that the range was gone and still on screen.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        await pilot.press("3")
+        await pilot.press("shift+down")
+        await _settle(app, pilot)
+        # The cursor's own row wears the cursor bar instead, so the range shows
+        # as the one row it has grown past.
+        assert _marked_rows(metrics) == [0]
+
+        await pilot.press("up")
+        await _settle(app, pilot)
+
+        assert metrics.range_indices == [0]
+        assert _marked_rows(metrics) == []
+
+
+async def test_a_plain_arrow_drops_the_range(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        await pilot.press("3")
+        await pilot.press("shift+down")
+        await _settle(app, pilot)
+        assert metrics.range_indices == [0, 1]
+
+        await pilot.press("up")
+        await _settle(app, pilot)
+        assert metrics.range_indices == [0]
+
+        await pilot.press("space")
+        await _settle(app, pilot)
+
+        # Only the row the cursor is on, so the other metric is still drawn.
+        assert len(metrics.selected) == 1
+
+
+async def test_extending_stops_at_the_end_of_the_list(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Rather than wrapping the way the plain arrows do."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        await pilot.press("3")
+        for _ in range(4):
+            await pilot.press("shift+down")
+        await _settle(app, pilot)
+
+        assert metrics.highlighted == 1
+        assert metrics.range_indices == [0, 1]
+
+
+async def test_a_refresh_leaves_the_metrics_cursor_and_scroll_alone(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A live phase relogs every value each tick; the viewer's place must hold.
+
+    Driven through the widget rather than through a fetch, because the pane has
+    to be longer than the sidebar for a scroll offset to exist at all, and the
+    seeded run logs two metrics.
+    """
+
+    def _rows(offset: float) -> list[utrain.tui.render.MetricRow]:
+        return [
+            utrain.tui.render.MetricRow(mark="*", name=f"m{i:02d}", value=f"{i + offset:g}")
+            for i in range(40)
+        ]
+
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        # The tick would otherwise repaint the pane with the run's own two
+        # metrics halfway through.
+        _main(app).timer.stop()
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        metrics.show(_rows(0.0))
+        await pilot.pause()
+        metrics.highlighted = 30
+        await pilot.pause()
+        assert metrics.scroll_y > 0
+        # Scrolled away from the cursor, which is what reading further up the
+        # list looks like and what a rebuild cannot put back: restoring the
+        # highlight scrolls it into view, and that is not where this is.
+        metrics.scroll_to(y=0, animate=False, immediate=True)
+        await pilot.pause()
+        assert metrics.scroll_y == 0
+
+        metrics.show(_rows(0.5))
+        await pilot.pause()
+
+        assert metrics.highlighted == 30
+        assert metrics.scroll_y == 0
+        assert "30.5" in str(metrics.get_option_at_index(30).prompt)
+
+
 async def test_the_dashboard_reads_the_metric_points(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
