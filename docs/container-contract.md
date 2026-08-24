@@ -32,6 +32,9 @@ phases:                   # every phase the container knows about
   - name: str
     label: str             # human-readable, shown in the UI/CLI
     cacheable: bool        # defaults to false; see `check-cache` below
+    plots:                 # defaults to []; see `Metrics` below
+      - x: str              # defaults to "step"
+        y: str
 phase_order: [str, ...]   # the subset (and order) of `phases` to run
 config_schema:
   globals:
@@ -282,6 +285,36 @@ time); what actually executes at run time is utrain's shim.
 
 Phase status comes from your process's exit code, not from anything you log:
 zero is success, non-zero is failure.
+
+### Default plots
+
+A phase's `plots` in `describe` name the curves worth opening on. Each entry is
+one plot: `y` is the metric drawn, `x` is what it is drawn against — `step`,
+`elapsed`, or the name of another logged metric, the same three things the TUI's
+`x` key cycles through.
+
+```yaml
+phases:
+  - name: pretrain
+    label: Pre-Training
+    plots:
+      - {x: step, y: loss}
+      - {x: step, y: bpb}
+```
+
+A phase that names plots gets exactly those in the TUI, in the order it lists
+them, instead of the default dashboard of one plot per metric it has logged. A
+phase that names none — the default — keeps that dashboard, so this changes
+nothing for an image that ignores it.
+
+Neither metric has to exist: nothing is validated against what the phase has
+actually logged, because a live phase may not have reached the metric yet. A
+plot with nothing to draw simply draws empty.
+
+It is a default, not a lock. The metrics pane still lists every metric the phase
+logged, and the first time the viewer checks one (`space`) or cycles the x axis
+(`x`) the pane goes back to the ordinary dashboard, with the metrics you named
+already checked. Moving to another phase starts over from that phase's `plots`.
 
 ## Filesystem contract
 

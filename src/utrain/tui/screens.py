@@ -394,6 +394,11 @@ class MainScreen(_Screen):
         self._pending_run: str | None = None
         self.x_axis = render.X_STEP
         self.solo: str | None = None
+        # The plots the image asks for on the selected phase, and whether the
+        # viewer has taken the dashboard back off it. Both per-phase, and both
+        # reset by `reset_phase_view`.
+        self.pinned: list[render.PlotKey] = []
+        self.overridden = False
         self.log_y = False
         self.charset = render.CHARSET_BLOCK
         # Both keyed by phase address, so returning to a phase shows the series
@@ -401,7 +406,7 @@ class MainScreen(_Screen):
         self.points: dict[str, dict[str, list[metrics.MetricPoint]]] = {}
         self.columns: dict[str, list[str]] = {}
         self._tails: dict[str, metrics.Tail] = {}
-        self.plots: dict[str, widgets.MetricPlot] = {}
+        self.plots: dict[render.PlotKey, widgets.MetricPlot] = {}
         # What the footer was last built for; see `sync_bindings`.
         self._binding_state: tuple[str, str | None, bool, bool] | None = None
         # The pending fetch for a cursor that is still moving; see `refresh_soon`.
@@ -619,17 +624,17 @@ class MainScreen(_Screen):
         seen = self.columns.setdefault(addr, [])
         seen.extend(c for c in snapshot.update.columns if c not in seen)
 
-        if metric_list.sync(seen):
-            self.mount_plots(metric_list.columns)
-        if snapshot.update.points:
+        pinned = [] if self.overridden else [(spec.y, spec.x) for spec in snapshot.phase_plots]
+        changed = pinned != self.pinned
+        self.pinned = pinned
+        if metric_list.sync(seen, self.default_checked()) or snapshot.update.points or changed:
             self.update_plots()
         metric_list.show(
             render.metric_rows(
                 metric_list.columns,
                 {name: points[-1].value for name, points in series.items() if points},
-                self.x_axis,
+                self.plotted(),
                 self.solo,
-                metric_list.selected,
             )
         )
 
@@ -770,10 +775,24 @@ class MainScreen(_Screen):
         """Start the metrics panes over for a different phase.
 
         The x axis goes back to step because a metric axis chosen for one phase
-        need not exist in the next, and the solo goes with it.
+        need not exist in the next, and the solo goes with it. So does the
+        override: which plots a phase names is the phase's answer, and leaving
+        one phase's plots says nothing about the next phase's.
         """
         self.x_axis = render.X_STEP
         self.solo = None
+        self.overridden = False
+        # Read off the describe cache rather than waited for from the next
+        # snapshot: the metrics already read are re-adopted below, and a phase
+        # whose plots arrived a tick later would check every one of them first
+        # and still have them checked once the viewer left its plots.
+        run = self.selected_run_row()
+        self.pinned = [
+            (spec.y, spec.x)
+            for spec in data.phase_plots(
+                None if run is None else self.data.described(run.image), self.selected_phase
+            )
+        ]
         self.query_one("#metrics", widgets.MetricList).reset()
         for plot in self.plots.values():
             plot.remove()
@@ -783,8 +802,7 @@ class MainScreen(_Screen):
             # Re-adopt what an earlier visit read: the Tail has already handed
             # those column names over and will not repeat them.
             metric_list = self.query_one("#metrics", widgets.MetricList)
-            if metric_list.sync(self.columns.get(addr, [])):
-                self.mount_plots(metric_list.columns)
+            if metric_list.sync(self.columns.get(addr, []), self.default_checked()):
                 self.update_plots()
 
     # Two handlers with selectors rather than one that asks the event which
@@ -842,39 +860,62 @@ class MainScreen(_Screen):
             self.points.pop(oldest, None)
             self.columns.pop(oldest, None)
 
-    def mount_plots(self, names: list[str]) -> None:
-        """Give each newly seen metric a plot of its own.
+    def mount_plots(self, keys: list[render.PlotKey]) -> None:
+        """Give each plot not on screen yet a widget of its own.
 
         One plot per metric rather than one shared pair of axes: `loss` sits
         around 2, `mfu` around 0.3 and `gpu_power_w` around 250, so overlaying
         them would flatten all but the largest into the baseline. Soloing one
         metric is what `y` is for.
 
-        The widgets are held by reference rather than looked up by id: a metric
-        is named by the image and `train/loss` is not a Textual id.
+        The widgets are held by reference rather than looked up by id: a plot is
+        named by the metrics it draws and `train/loss` is not a Textual id.
         """
         container = self.query_one("#plots", widgets.PlotPane)
-        for name in names:
-            if name in self.plots:
+        for key in keys:
+            if key in self.plots:
                 continue
             plot = widgets.MetricPlot()
             plot.log_y = self.log_y
             plot.charset = self.charset
-            self.plots[name] = plot
+            self.plots[key] = plot
             container.mount(plot)
-        self.apply_selection()
 
-    def plotted(self) -> list[str]:
-        """The metrics drawn right now: the soloed one, or every checked one."""
-        metric_list = self.query_one("#metrics", widgets.MetricList)
+    def default_checked(self) -> set[str] | None:
+        """Which metrics a newly seen name may check itself, or None for any.
+
+        A phase that names its own plots checks only those, so that a viewer who
+        steps off them with `space` or `x` lands on the metrics the phase cared
+        about rather than on everything it logs.
+        """
+        if not self.pinned:
+            return None
+        return {y for y, _ in self.pinned}
+
+    def plotted(self) -> list[render.PlotKey]:
+        """The plots drawn right now.
+
+        The soloed metric when there is one, then the phase's own plots, and
+        otherwise every checked metric against the screen's x axis. Soloing
+        deliberately does not count as taking the dashboard back: `y` twice
+        returns to the phase's plots.
+        """
         if self.solo is not None:
-            return [self.solo]
-        return metric_list.selected
+            return [(self.solo, self.x_axis)]
+        if self.pinned:
+            return list(self.pinned)
+        metric_list = self.query_one("#metrics", widgets.MetricList)
+        return [(name, self.x_axis) for name in metric_list.selected]
+
+    def take_over_plots(self) -> None:
+        """The viewer has asked for something the phase's plots cannot show."""
+        self.overridden = True
+        self.pinned = []
 
     def apply_selection(self) -> None:
         drawn = set(self.plotted())
-        for name, plot in self.plots.items():
-            plot.display = name in drawn
+        for key, plot in self.plots.items():
+            plot.display = key in drawn
         empty = self.query_one("#empty", textual.widgets.Static)
         empty.display = not drawn
         if not drawn and self.plots:
@@ -883,13 +924,18 @@ class MainScreen(_Screen):
     def update_plots(self) -> None:
         addr = self.address()
         series = self.points.get(addr or "", {})
-        for name in self.plotted():
-            plot = self.plots.get(name)
+        drawn = self.plotted()
+        # Mounted here rather than up front: which plots exist follows what is
+        # drawn now that a plot is a pair of metrics, and the pairs a viewer
+        # never asks for are ones nothing would ever show.
+        self.mount_plots(drawn)
+        self.apply_selection()
+        for name, x_axis in drawn:
+            plot = self.plots.get((name, x_axis))
             if plot is not None:
-                plot.plot = render.build_plot(name, series, self.x_axis)
+                plot.plot = render.build_plot(name, series, x_axis)
 
     def redraw_metrics(self) -> None:
-        self.apply_selection()
         self.update_plots()
         # Checking, unchecking and soloing all change whether `E` has anything
         # to write, and the footer is the only place that key is written down.
@@ -900,9 +946,8 @@ class MainScreen(_Screen):
             render.metric_rows(
                 metric_list.columns,
                 {name: points[-1].value for name, points in series.items() if points},
-                self.x_axis,
+                self.plotted(),
                 self.solo,
-                metric_list.selected,
             )
         )
 
@@ -968,8 +1013,10 @@ class MainScreen(_Screen):
         if not self.query_one("#metrics", widgets.MetricList).toggle_range():
             return
         # Checking a metric is a statement about the stacked view, so it also
-        # says the viewer is done looking at one metric on its own.
+        # says the viewer is done looking at one metric on its own -- and that
+        # they want the dashboard rather than the plots the phase named.
         self.solo = None
+        self.take_over_plots()
         self.redraw_metrics()
 
     def on_option_list_option_selected(self) -> None:
@@ -988,6 +1035,10 @@ class MainScreen(_Screen):
         choices = render.x_axis_choices(self.query_one("#metrics", widgets.MetricList).columns)
         index = choices.index(self.x_axis) if self.x_axis in choices else 0
         self.x_axis = choices[(index + 1) % len(choices)]
+        # A phase's own plots carry their own x axes, so one screen-wide x is
+        # not something they can be shown under: cycling it asks for the
+        # dashboard.
+        self.take_over_plots()
         self.redraw_metrics()
 
     def action_log_y(self) -> None:
@@ -1007,23 +1058,28 @@ class MainScreen(_Screen):
         for plot in self.plots.values():
             plot.charset = self.charset
 
-    def export_metric(self) -> str | None:
-        """The metric an export would write.
+    def export_metric(self) -> render.PlotKey | None:
+        """The plot an export would write.
 
         The soloed one when there is one -- soloing is the viewer saying "this
         is the curve I am looking at" -- and otherwise the one the metrics pane
         has the cursor on, provided it is actually drawn. Falling back to the
-        first drawn metric matters for a viewer who never left the plot pane:
-        the metrics cursor sits on row zero, which may be a metric they
-        unchecked.
+        first drawn plot matters for a viewer who never left the plot pane: the
+        metrics cursor sits on row zero, which may be a metric they unchecked.
+
+        A plot rather than a metric name, so that `E` on one of a phase's own
+        plots writes it against the x axis it is drawn against.
         """
         drawn = self.plotted()
         if not drawn:
             return None
         if self.solo is not None:
-            return self.solo
+            return (self.solo, self.x_axis)
         highlighted = self.query_one("#metrics", widgets.MetricList).highlighted_name
-        return highlighted if highlighted in drawn else drawn[0]
+        for key in drawn:
+            if key[0] == highlighted:
+                return key
+        return drawn[0]
 
     def action_export_plot(self) -> None:
         """`E`: write the current curve out as a csv, png, svg or pdf.
@@ -1034,12 +1090,13 @@ class MainScreen(_Screen):
         file someone will zoom into or load into a notebook. `limit=0` is
         `downsample`'s "leave it alone".
         """
-        name = self.export_metric()
+        key = self.export_metric()
         addr = self.address()
-        if name is None or addr is None:
+        if key is None or addr is None:
             self.show_error("nothing to export; check a metric first", hold=True)
             return
-        plot = render.build_plot(name, self.points.get(addr, {}), self.x_axis, limit=0)
+        name, x_axis = key
+        plot = render.build_plot(name, self.points.get(addr, {}), x_axis, limit=0)
         if plot is None:
             self.show_error(f"no points to export for {name}", hold=True)
             return

@@ -69,7 +69,13 @@ DESCRIBE = {
     "version": "1.0.0",
     "phases": [
         {"name": "tokenizer", "label": "Tokenizer Training", "cacheable": True},
-        {"name": "pretrain", "label": "Pre-Training"},
+        # Named plots: the TUI shows these two instead of one plot per metric.
+        # `tokenizer` deliberately names none, so both paths are exercised.
+        {
+            "name": "pretrain",
+            "label": "Pre-Training",
+            "plots": [{"x": "step", "y": "loss"}, {"x": "step", "y": "mfu"}],
+        },
     ],
     "phase_order": ["tokenizer", "pretrain"],
     "config_schema": {

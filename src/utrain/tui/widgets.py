@@ -266,17 +266,25 @@ class MetricList(textual.widgets.OptionList):
         self._anchor = None
         self.clear_options()
 
-    def sync(self, columns: list[str]) -> bool:
+    def sync(self, columns: list[str], default_checked: set[str] | None = None) -> bool:
         """Adopt any newly seen metric names. True when the list changed.
 
         New metrics arrive checked: a phase that starts logging a metric
         mid-run should show it without the viewer having to notice and opt in.
+
+        `default_checked` narrows that to the metrics a phase named as its own
+        plots, so that a viewer who leaves those plots lands on them rather than
+        on everything the phase logs. It applies to a metric first seen mid-run
+        too, which is why it is a rule here rather than a one-off seeding.
         """
         fresh = [c for c in columns if c not in self._columns]
         if not fresh:
             return False
         self._columns.extend(fresh)
-        self._selected.update(fresh)
+        if default_checked is None:
+            self._selected.update(fresh)
+        else:
+            self._selected.update(c for c in fresh if c in default_checked)
         return True
 
     def show(self, rows: list[render.MetricRow]) -> None:

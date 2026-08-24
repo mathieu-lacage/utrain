@@ -13,7 +13,17 @@ DESCRIBE = {
         # store instead of re-fetching it for every run.
         {"name": "download", "label": "Download Corpus", "cacheable": True},
         {"name": "tokenizer", "label": "Build Vocabulary"},
-        {"name": "pretrain", "label": "Train Character LM"},
+        # `pretrain` logs three metrics but only two say whether training is
+        # going well, so it names them: utrain's TUI opens on those instead of
+        # stacking a plot per metric.
+        {
+            "name": "pretrain",
+            "label": "Train Character LM",
+            "plots": [
+                {"x": "step", "y": "loss"},
+                {"x": "step", "y": "bpb"},
+            ],
+        },
     ],
     "phase_order": ["download", "tokenizer", "pretrain"],
     "config_schema": {

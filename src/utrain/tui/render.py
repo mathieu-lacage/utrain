@@ -52,6 +52,11 @@ X_ELAPSED = "elapsed"
 CHARSET_BLOCK = "block"
 CHARSET_BRAILLE = "braille"
 
+# What a plot is: the metric on the y axis, and what it is drawn against. A pair
+# rather than the metric alone, because a phase can name two default plots of the
+# same metric against different x axes, and the two are different plots.
+PlotKey = tuple[str, str]
+
 
 @dataclasses.dataclass(frozen=True)
 class Plot:
@@ -367,24 +372,27 @@ def format_value(value: float | None) -> str:
 def metric_rows(
     columns: list[str],
     last: dict[str, float],
-    x_axis: str,
+    plotted: list[PlotKey],
     solo: str | None,
-    selected: list[str],
 ) -> list[MetricRow]:
     """The metrics pane, in the order the phase first logged each metric.
 
     A metric is at most one thing at a time, so the marks are ranked rather than
-    combined: being the x axis is what a viewer most needs to see, then being
+    combined: being an x axis is what a viewer most needs to see, then being
     the soloed y axis, then merely being drawn.
+
+    The x mark can land on more than one row: the plots drawn need not share an
+    x axis, since a phase naming its own plots gives each one its own.
     """
-    plotted = set(selected)
+    x_axes = {x for _, x in plotted}
+    y_axes = {y for y, _ in plotted}
     rows: list[MetricRow] = []
     for name in columns:
-        if name == x_axis:
+        if name in x_axes:
             mark = MARK_X
         elif name == solo:
             mark = MARK_Y
-        elif solo is None and name in plotted:
+        elif solo is None and name in y_axes:
             mark = MARK_PLOTTED
         else:
             mark = " "

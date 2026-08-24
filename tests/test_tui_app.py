@@ -494,10 +494,27 @@ def _recording(app: utrain.tui.app.UtrainApp) -> _RecordingData:
     return source
 
 
-def _app(data_dir: pathlib.Path) -> utrain.tui.app.UtrainApp:
+def _described_with_plots() -> utrain.container.schema.DescribeOutput:
+    """The same image, but `pretrain` names the plot it wants opened on.
+
+    `tokenizer` names none, so one image covers both paths -- and `_describe`
+    stays plotless, which is what keeps every dashboard test above about the
+    dashboard.
+    """
+    described = _describe()
+    for info in described.phases:
+        if info.name == "pretrain":
+            info.plots = [utrain.container.schema.PlotSpec(x="step", y="loss")]
+    return described
+
+
+def _app(
+    data_dir: pathlib.Path,
+    described: utrain.container.schema.DescribeOutput | None = None,
+) -> utrain.tui.app.UtrainApp:
     source = _RecordingData(
         settings=utrain.config.Settings(data_dir=data_dir),
-        describe_cache={IMAGE: _describe()},
+        describe_cache={IMAGE: described if described is not None else _describe()},
     )
     return utrain.tui.app.UtrainApp(source)
 
@@ -506,6 +523,13 @@ def _app(data_dir: pathlib.Path) -> utrain.tui.app.UtrainApp:
 def app(tmp_path: pathlib.Path) -> utrain.tui.app.UtrainApp:
     _seed(tmp_path)
     return _app(tmp_path)
+
+
+@pytest.fixture()
+def plotted_app(tmp_path: pathlib.Path) -> utrain.tui.app.UtrainApp:
+    """The same run, against an image whose `pretrain` names its own plot."""
+    _seed(tmp_path)
+    return _app(tmp_path, _described_with_plots())
 
 
 @pytest.fixture()
@@ -818,9 +842,9 @@ async def test_every_selected_metric_gets_its_own_plot(app: utrain.tui.app.Utrai
         await _select_pretrain(app, pilot)
         screen = _main(app)
 
-        assert sorted(screen.plots) == ["loss", "mfu"]
+        assert sorted(screen.plots) == [("loss", "step"), ("mfu", "step")]
         assert all(p.display for p in screen.plots.values())
-        loss = screen.plots["loss"].plot
+        loss = screen.plots[("loss", "step")].plot
         assert loss is not None and loss.title == "loss"
 
 
@@ -834,7 +858,7 @@ async def test_toggling_a_metric_hides_its_plot(app: utrain.tui.app.UtrainApp) -
 
         metrics = screen.query_one("#metrics", utrain.tui.widgets.MetricList)
         assert metrics.selected == ["mfu"]
-        assert {name for name, p in screen.plots.items() if p.display} == {"mfu"}
+        assert {key for key, p in screen.plots.items() if p.display} == {("mfu", "step")}
 
 
 async def test_toggling_a_metric_back_shows_it_again(app: utrain.tui.app.UtrainApp) -> None:
@@ -859,7 +883,7 @@ async def test_y_solos_one_metric(app: utrain.tui.app.UtrainApp) -> None:
         await _settle(app, pilot)
 
         assert screen.solo == "loss"
-        assert {name for name, p in screen.plots.items() if p.display} == {"loss"}
+        assert {key for key, p in screen.plots.items() if p.display} == {("loss", "step")}
 
 
 async def test_y_again_stops_soloing(app: utrain.tui.app.UtrainApp) -> None:
@@ -873,7 +897,10 @@ async def test_y_again_stops_soloing(app: utrain.tui.app.UtrainApp) -> None:
         await _settle(app, pilot)
 
         assert screen.solo is None
-        assert {name for name, p in screen.plots.items() if p.display} == {"loss", "mfu"}
+        assert {key for key, p in screen.plots.items() if p.display} == {
+            ("loss", "step"),
+            ("mfu", "step"),
+        }
 
 
 async def test_x_cycles_the_x_axis(app: utrain.tui.app.UtrainApp) -> None:
@@ -900,7 +927,7 @@ async def test_the_x_axis_reaches_the_plots(app: utrain.tui.app.UtrainApp) -> No
         await pilot.press("x")
         await _settle(app, pilot)
 
-        plot = _main(app).plots["loss"].plot
+        plot = _main(app).plots[("loss", utrain.tui.render.X_ELAPSED)].plot
         assert plot is not None
         assert plot.x_label == "elapsed (s)"
 
@@ -932,7 +959,128 @@ async def test_coming_back_to_a_phase_still_shows_its_metrics(
 
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
         assert sorted(metrics.columns) == ["loss", "mfu"]
-        assert sorted(_main(app).plots) == ["loss", "mfu"]
+        assert sorted(_main(app).plots) == [("loss", "step"), ("mfu", "step")]
+
+
+# -- plots the container asked for ----------------------------------------
+
+
+async def test_a_phase_that_names_a_plot_gets_that_one_only(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+
+        assert screen.pinned == [("loss", "step")]
+        assert {key for key, p in screen.plots.items() if p.display} == {("loss", "step")}
+
+
+async def test_a_phase_that_names_no_plot_still_gets_the_dashboard(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """`tokenizer` names none, and it is the phase the app opens on."""
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+
+        assert _main(app).pinned == []
+
+
+async def test_only_the_named_metrics_start_checked(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        assert sorted(metrics.columns) == ["loss", "mfu"]
+        assert metrics.selected == ["loss"]
+
+
+async def test_checking_a_metric_takes_the_dashboard_back(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("3")
+        await pilot.press("down")
+        await pilot.press("space")
+        await _settle(app, pilot)
+
+        assert screen.pinned == []
+        assert {key for key, p in screen.plots.items() if p.display} == {
+            ("loss", "step"),
+            ("mfu", "step"),
+        }
+
+
+async def test_cycling_the_x_axis_takes_the_dashboard_back(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A named plot carries its own x, so one screen-wide x cannot show it."""
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("3")
+        await pilot.press("x")
+        await _settle(app, pilot)
+
+        assert screen.pinned == []
+        assert {key for key, p in screen.plots.items() if p.display} == {
+            ("loss", utrain.tui.render.X_ELAPSED)
+        }
+
+
+async def test_soloing_and_back_returns_to_the_named_plot(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """`y` says "this curve for a moment", not "give me the dashboard"."""
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("3")
+        await pilot.press("down")
+        await pilot.press("y")
+        await _settle(app, pilot)
+        assert {key for key, p in screen.plots.items() if p.display} == {("mfu", "step")}
+
+        await pilot.press("y")
+        await _settle(app, pilot)
+        assert screen.pinned == [("loss", "step")]
+        assert {key for key, p in screen.plots.items() if p.display} == {("loss", "step")}
+
+
+async def test_leaving_the_phase_forgets_that_the_dashboard_was_asked_for(
+    plotted_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Which plots a phase names is the phase's answer, not the run's."""
+    app = plotted_app
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("3")
+        await pilot.press("down")
+        await pilot.press("space")
+        await _settle(app, pilot)
+        assert screen.pinned == []
+
+        await pilot.press("2")
+        await pilot.press("up")
+        await _settle(app, pilot)
+        await pilot.press("down")
+        await _settle(app, pilot)
+        await _settle(app, pilot)
+
+        assert screen.pinned == [("loss", "step")]
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        assert metrics.selected == ["loss"]
 
 
 async def test_the_log_pane_shows_the_tail(app: utrain.tui.app.UtrainApp) -> None:

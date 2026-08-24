@@ -73,6 +73,9 @@ class Snapshot:
     # Tail.
     phase: types.PhaseListEntry | None
     phase_label: str
+    # The plots the selected phase declares in `describe`, in the order it
+    # names them. Empty when it names none, which is the all-metrics dashboard.
+    phase_plots: list[containermod.schema.PlotSpec]
     log: list[str]
     update: metrics.MetricUpdate
     # Opened by the fetch when the phase had not logged anything yet, so the
@@ -92,6 +95,28 @@ def _address(run_id: str, phase: str | None, attempt: int | None) -> str | None:
     if attempt is None:
         return f"{run_id}/{phase}"
     return f"{run_id}/{attempt}/{phase}"
+
+
+def phase_plots(
+    described: containermod.schema.DescribeOutput | None, phase: str | None
+) -> list[containermod.schema.PlotSpec]:
+    """The plots an image asks for on one phase, or none.
+
+    Takes the `DescribeOutput` rather than an image name so that the caller says
+    where it came from: the snapshot has just fetched one, and the screen has
+    only what `Data.described` already knows -- and must not start a container
+    on the message loop to learn more.
+
+    Not checked against what the phase has actually logged: a live phase may not
+    have reached the metric yet, and a plot with nothing in it draws as empty
+    rather than as an error.
+    """
+    if described is None or phase is None:
+        return []
+    for info in described.phases:
+        if info.name == phase:
+            return list(info.plots)
+    return []
 
 
 def _snapshot_phase(
@@ -304,6 +329,7 @@ class Data:
                     phase_order=[],
                     phase=None,
                     phase_label="",
+                    phase_plots=[],
                     log=[],
                     update=metrics.MetricUpdate(columns=[], points={}),
                     tail=tail,
@@ -347,6 +373,7 @@ class Data:
             phase_order=list(described.phase_order),
             phase=_snapshot_phase(entries, phase),
             phase_label="" if phase is None else self.phase_label(detail.run.image, phase),
+            phase_plots=phase_plots(described, phase),
             log=log,
             update=update,
             tail=tail,

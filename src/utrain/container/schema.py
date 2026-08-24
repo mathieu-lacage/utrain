@@ -34,10 +34,25 @@ class ConfigSchema(pydantic.BaseModel):
     phases: dict[str, PhaseConfigSchema] = {}
 
 
+class PlotSpec(pydantic.BaseModel):
+    """One plot a phase wants shown by default: `y` against `x`.
+
+    `x` is `"step"`, `"elapsed"`, or the name of another logged metric -- the
+    same three things the TUI's `x` key cycles through.
+    """
+
+    x: str = "step"
+    y: str
+
+
 class PhaseInfo(pydantic.BaseModel):
     name: str
     label: str
     cacheable: bool = False
+    # Empty means the viewer gets every metric the phase logs, each against
+    # step. A phase that names its plots gets those instead, until the viewer
+    # says otherwise.
+    plots: list[PlotSpec] = []
 
 
 class DescribeOutput(pydantic.BaseModel):

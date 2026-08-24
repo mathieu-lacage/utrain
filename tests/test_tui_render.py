@@ -266,9 +266,8 @@ def test_metric_rows_mark_the_axes() -> None:
     rows = render.metric_rows(
         ["loss", "mfu", "lr"],
         {"loss": 1.834, "mfu": 0.4123, "lr": 0.0003},
-        x_axis="lr",
+        plotted=[("loss", "lr"), ("mfu", "lr"), ("lr", "lr")],
         solo="loss",
-        selected=["loss", "mfu", "lr"],
     )
 
     assert [(r.mark, r.name, r.value) for r in rows] == [
@@ -282,16 +281,37 @@ def test_metric_rows_mark_every_drawn_metric_when_nothing_is_soloed() -> None:
     rows = render.metric_rows(
         ["loss", "mfu"],
         {"loss": 1.0, "mfu": 0.5},
-        x_axis=render.X_STEP,
+        plotted=[("loss", render.X_STEP)],
         solo=None,
-        selected=["loss"],
     )
 
     assert [r.mark for r in rows] == ["*", " "]
 
 
+def test_metric_rows_mark_every_x_axis_in_use() -> None:
+    rows = render.metric_rows(
+        ["loss", "mfu", "lr"],
+        {},
+        plotted=[("loss", "lr"), ("loss", "mfu")],
+        solo=None,
+    )
+
+    assert [r.mark for r in rows] == ["*", "x", "x"]
+
+
+def test_metric_rows_mark_a_metric_drawn_against_two_x_axes_once() -> None:
+    rows = render.metric_rows(
+        ["loss", "mfu"],
+        {},
+        plotted=[("loss", render.X_STEP), ("loss", "mfu")],
+        solo=None,
+    )
+
+    assert [r.mark for r in rows] == ["*", "x"]
+
+
 def test_metric_rows_of_a_metric_with_no_value_yet() -> None:
-    rows = render.metric_rows(["loss"], {}, x_axis=render.X_STEP, solo=None, selected=[])
+    rows = render.metric_rows(["loss"], {}, plotted=[], solo=None)
     assert rows[0].value == "--"
 
 
