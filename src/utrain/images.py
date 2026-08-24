@@ -19,7 +19,11 @@ class ImageInfo:
 
 
 def _image_exists(ref: str) -> bool:
-    result = subprocess.run(["podman", "image", "exists", ref])
+    # Captured, not because anything reads it -- only the exit code is the
+    # answer -- but so that podman cannot write to the caller's terminal. A TUI
+    # is in the alternate screen buffer, and a subprocess printing into it
+    # scribbles over the display.
+    result = subprocess.run(["podman", "image", "exists", ref], capture_output=True)
     return result.returncode == 0
 
 
@@ -67,7 +71,16 @@ def list_images(session: sqlalchemy.orm.Session) -> list[ImageInfo]:
     return images
 
 
-def add_image(url: str) -> str:
+def add_image(url: str, quiet: bool = False) -> str:
+    """Pull an image into the local store and tag it as a utrain preset.
+
+    `quiet` decides where podman's pull progress goes. The CLI lets it through
+    to the terminal, which is the whole feedback there is during a pull of
+    several gigabytes. A TUI cannot: it is in the alternate screen buffer, and
+    a subprocess writing there draws over the display. So the caller that has a
+    screen asks for the output to be captured, and gets it back on the error
+    instead.
+    """
     # Derive <name> from the last path component of the URL (strip scheme and tag).
     path_part = url.split("://", 1)[-1]
     base = path_part.split("/")[-1].split(":")[0]
@@ -77,9 +90,13 @@ def add_image(url: str) -> str:
     # the local store", so there is nothing to pull. Everything else goes to
     # `podman pull` with its scheme intact (docker://, or a bare registry ref).
     if not url.startswith("podman://") and not _image_exists(path_part):
-        result = subprocess.run(["podman", "pull", url])
+        result = subprocess.run(["podman", "pull", url], capture_output=quiet, text=True)
         if result.returncode != 0:
-            raise exceptions.UI(f"podman pull failed (exit {result.returncode})")
+            # The stderr is there to be quoted only when it was captured;
+            # otherwise the viewer has already watched podman print it.
+            detail = (result.stderr or "").strip().splitlines()
+            reason = f": {detail[-1]}" if quiet and detail else ""
+            raise exceptions.UI(f"podman pull failed (exit {result.returncode}){reason}")
 
     # Tag from the scheme-stripped ref: that is the name a pull stores locally,
     # and `podman tag` rejects a transport prefix.
