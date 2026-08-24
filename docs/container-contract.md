@@ -470,3 +470,9 @@ $ podman run --rm localhost/utrain-<name>:utrain describe
   next to it. Its `schemas.py` holds the chat-completions models on their own,
   free of anything model-specific, which makes it the file to lift wholesale
   into a container of your own.
+- `containers/nanochat/` — a published container that *wraps* an existing
+  training project ([nanochat](https://github.com/karpathy/nanochat)) rather
+  than owning the training code. Worth reading if that is your situation: its
+  phases shell out to the upstream scripts, and `wandb_bridge/sitecustomize.py`
+  shows how to let a project that already logs through wandb keep its own metric
+  names while landing them in the right phase's file.

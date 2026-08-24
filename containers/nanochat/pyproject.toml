@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "utrain-nanochat"
+version = "1.0.0"
+description = "karpathy/nanochat, packaged as a utrain container"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyyaml>=6.0",
+    "wandb>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+utrain-nanochat = "utrain_nanochat.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/utrain_nanochat"]
+
+# `wandb_bridge` is not a package and must never become importable as one: it
+# holds a top-level `sitecustomize` that every nanochat child interpreter picks
+# up off PYTHONPATH. Shipping it inside the wheel keeps it beside the installed
+# package, which is where `upstream._BRIDGE_DIR` looks for it.
+[tool.hatch.build.targets.wheel.force-include]
+"wandb_bridge" = "wandb_bridge"

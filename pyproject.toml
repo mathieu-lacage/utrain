@@ -82,6 +82,12 @@ addopts = "--tb=short -n auto --dist worksteal"
 # The reference container is a project of its own (its own pyproject.toml, its
 # own deps) but is checked with the same settings as the orchestrator. Its
 # imports come from the `containers` dependency group below.
+#
+# containers/nanochat is deliberately absent: it imports `nanochat.*` and
+# `tasks.*`, which exist only inside its image (the Containerfile clones them),
+# so type checking it here would mean vendoring or stubbing upstream. ruff,
+# ruff-format, codespell and check-imports still cover it, since those run on
+# every python file.
 include = ["src", "containers/shakespeare-char/src"]
 pythonVersion = "3.11"
 venvPath = "."

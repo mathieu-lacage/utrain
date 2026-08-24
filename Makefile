@@ -2,7 +2,7 @@
 
 all: containers
 
-containers: containers/shakespeare-char
+containers: containers/shakespeare-char containers/nanochat
 
 containers/%: FORCE
 	podman build -t utrain-$*:utrain -f containers/$*/Containerfile .

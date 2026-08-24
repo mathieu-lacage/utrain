@@ -1,0 +1,38 @@
+# nanochat is a checkout, not a library, so the image is that checkout plus a
+# thin wrapper: `uv sync` resolves nanochat's own pinned dependencies (torch
+# 2.9.1 from the cu128 index, rustbpe, tiktoken), and the wrapper is installed
+# into the same venv so `import nanochat` resolves for `serve`.
+FROM docker.io/python:3.11-slim
+
+# git to fetch nanochat, curl to fetch uv. g++ is not optional: nanochat trains
+# under `torch.compile`, whose inductor backend shells out to a C++ compiler at
+# runtime and fails the first step without one. nanochat's tokenizer trainer
+# ships as a `rustbpe` wheel, so no Rust toolchain is needed.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates curl g++ \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Pinned like a lockfile entry: the wrapper's phase arguments track this exact
+# revision of nanochat's scripts, so an unpinned clone would silently drift.
+ARG NANOCHAT_REV=92d63d4e8bb4df75c3b71618f31ddde2378b2bcd
+RUN git clone https://github.com/karpathy/nanochat.git /app/nanochat \
+    && git -C /app/nanochat checkout "${NANOCHAT_REV}" \
+    && rm -rf /app/nanochat/.git
+
+WORKDIR /app/nanochat
+# Before the COPY below, so that editing wrapper source does not re-resolve torch.
+RUN uv sync --extra gpu
+# setuptools is for torch's inductor, not the wrapper: its C++ backend -- what
+# `torch.compile` falls back to when there is no GPU -- imports it to build the
+# extension. nanochat declares it under its `cpu` extra only.
+RUN uv pip install --no-cache-dir setuptools pyyaml wandb fastapi uvicorn pydantic
+
+COPY containers/nanochat /app/wrapper
+# --no-deps: everything the wrapper declares came from the layer above, and
+# resolving them again would disturb nanochat's pinned torch.
+RUN uv pip install --no-cache-dir --no-deps /app/wrapper
+
+ENV PATH="/app/nanochat/.venv/bin:${PATH}"
+ENTRYPOINT ["utrain-nanochat"]
