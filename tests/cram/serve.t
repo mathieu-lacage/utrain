@@ -80,7 +80,7 @@ default it, so a hand-run serve needs nothing but the mount and a port.
 
   $ for _ in $(seq 200); do [ -s "$SERVEDIR/port.json" ] && break; sleep 0.1; done
   $ [ -s "$SERVEDIR/port.json" ] || podman logs "utrain-cram-serve-$$"
-  $ PORT=$(jq .port < $SERVEDIR/port.json)
+  $ PORT=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["port"])' < "$SERVEDIR/port.json")
   $ curl -s "http://127.0.0.1:$PORT/v1/chat/completions" \
   >   -H 'Content-Type: application/json' \
   >   -d '{"messages":[{"role":"user","content":"hi"}]}' \

@@ -13,12 +13,12 @@ The run is under way and the orchestrator holds the attempt's lock.
   $ utrain run list | tail -1 | grep -c running
   1
 
-Kill it outright -- SIGKILL runs no handler, so nothing writes a final status.
-The orchestrator is spawned with start_new_session, making it a process group
-leader, so the negative pid takes its podman child down with it: a crash, not a
-stop.
+Kill
 
-  $ OPID=$(pgrep -f "_orchestrate $RID")
+  $ OPID=$(python3 -c 'import sqlite3, sys
+  > db = sqlite3.connect(sys.argv[1])
+  > print(db.execute("select pid from run_attempts where run_id = ?", sys.argv[2:]).fetchone()[0])
+  > ' "$UTRAIN_DATA_DIR/utrain.db" "$RID")
   $ kill -9 -"$OPID"
   $ sleep 1
 
