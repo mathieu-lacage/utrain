@@ -79,6 +79,9 @@ def main() -> None:
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("--port", type=int, default=0)
+    # utrain always passes --phase. `pretrain` is the only phase here that
+    # leaves a model behind, so it is also the default for a hand-run serve.
+    serve_p.add_argument("--phase", default=serve.SERVABLE_PHASE)
 
     args = parser.parse_args()
     if args.cmd == "describe":
@@ -93,7 +96,7 @@ def main() -> None:
             p.ensure()
             cmd_run(p, args.phase)
         elif args.cmd == "serve":
-            serve.serve(p, args.port)
+            serve.serve(p, args.port, args.phase)
 
 
 if __name__ == "__main__":

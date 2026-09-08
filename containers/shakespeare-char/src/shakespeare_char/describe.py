@@ -19,6 +19,7 @@ DESCRIBE = {
         {
             "name": "pretrain",
             "label": "Train Character LM",
+            "can_serve": True,
             "plots": [
                 {"x": "step", "y": "loss"},
                 {"x": "step", "y": "bpb"},
@@ -123,5 +124,4 @@ DESCRIBE = {
             }
         },
     },
-    "can_serve": True,
 }

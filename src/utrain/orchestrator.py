@@ -102,14 +102,19 @@ def mount_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
     return attempt_dir / "mnt"
 
 
-def serve_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
-    """Host dir bind-mounted read-write at `_SERVE_MOUNT`, holding `port.json`."""
-    return attempt_dir / "serve"
+def serve_dir(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    """Host dir bind-mounted read-write at `_SERVE_MOUNT`, holding `port.json`.
+
+    Per phase, because each phase's snapshot is separately chattable and two of
+    them can be up at once. The container still sees the mount at the one fixed
+    `_SERVE_MOUNT`; it learns which phase it is serving from `--phase`.
+    """
+    return attempt_dir / "serve" / phase
 
 
-def port_file(attempt_dir: pathlib.Path) -> pathlib.Path:
+def port_file(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
     """Host path of the port file the container writes once it is listening."""
-    return serve_dir(attempt_dir) / "port.json"
+    return serve_dir(attempt_dir, phase) / "port.json"
 
 
 def write_control(attempt_dir: pathlib.Path, action: str) -> None:
@@ -244,6 +249,7 @@ def serve_argv(
     image_key: str,
     attempt_dir: pathlib.Path,
     data_dir: pathlib.Path,
+    phase: str,
     compute: str,
 ) -> tuple[list[str], dict[str, str]]:
     """podman argv + env to serve `data_dir` over an OpenAI-compatible endpoint.
@@ -254,6 +260,10 @@ def serve_argv(
     `--port 0` tells the container to let the kernel pick a free port, and it
     publishes the one it bound to `_PORT_FILE` inside the writable `serve` mount.
 
+    `--phase` names whose snapshot is under the mount. The container could infer
+    it from what is there, but only well enough to serve *something*: a phase
+    that saved no model would otherwise be served silently by an earlier one.
+
     `data_ro=True` because serving is a read of a finished run: by the time a run
     is servable its data files are hardlinked into the content-addressed store,
     so a write here would corrupt every other run sharing them. And no wandb
@@ -262,14 +272,14 @@ def serve_argv(
     `compute` comes from the run, so a model trained on a GPU is served on one.
     """
     gpu_args, env = _gpu_args(compute, attempt_dir)
-    host_serve_dir = serve_dir(attempt_dir)
+    host_serve_dir = serve_dir(attempt_dir, phase)
     host_serve_dir.mkdir(parents=True, exist_ok=True)
     # Created lazily here as well as in init_mount_dir, so a run started before
     # `serve` existed can still be chatted with.
     (mount_dir(attempt_dir) / "serve").mkdir(parents=True, exist_ok=True)
     # A port file left by an earlier session would be read as this one's answer,
     # pointing the client at a dead port.
-    port_file(attempt_dir).unlink(missing_ok=True)
+    port_file(attempt_dir, phase).unlink(missing_ok=True)
     return [
         "podman",
         "run",
@@ -286,6 +296,8 @@ def serve_argv(
         "serve",
         "--port",
         "0",
+        "--phase",
+        phase,
     ], env
 
 

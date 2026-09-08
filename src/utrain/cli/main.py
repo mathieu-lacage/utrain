@@ -218,6 +218,7 @@ def _cmd_run_chat(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
     chat.chat_run(
         args.id,
         session,
+        phase=args.phase,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
     )
@@ -380,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_chat = run_sub.add_parser("chat", help="Chat interactively with a run's trained model")
     run_chat.add_argument("id")
+    run_chat.add_argument(
+        "--phase",
+        default=None,
+        help="which phase's snapshot to talk to (default: the newest servable one)",
+    )
     run_chat.add_argument("--max-tokens", type=int, default=200, dest="max_tokens")
     run_chat.add_argument("--temperature", type=float, default=0.8)
     run_chat.set_defaults(func=_cmd_run_chat)

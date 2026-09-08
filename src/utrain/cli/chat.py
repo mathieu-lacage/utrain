@@ -80,10 +80,11 @@ def chat_run(
     run_id_prefix: str,
     session: sqlalchemy.orm.Session,
     *,
+    phase: str | None = None,
     max_tokens: int,
     temperature: float,
 ) -> None:
-    server = serve.start(run_id_prefix, session)
+    server = serve.start(run_id_prefix, session, phase)
     try:
         port = server.wait_for_port()
     except exceptions.UI:

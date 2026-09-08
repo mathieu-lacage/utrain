@@ -32,6 +32,7 @@ phases:                   # every phase the container knows about
   - name: str
     label: str             # human-readable, shown in the UI/CLI
     cacheable: bool        # defaults to false; see `check-cache` below
+    can_serve: bool        # defaults to false; see `serve` below
     plots:                 # defaults to []; see `Metrics` below
       - x: str              # defaults to "step"
         y: str
@@ -45,7 +46,6 @@ config_schema:
   phases:
     <phase_name>:
       groups: [FieldGroup, ...]
-can_serve: bool            # defaults to false
 ```
 
 A `FieldSchema` describes one configurable value:
@@ -153,15 +153,58 @@ Inside `run`, your container must:
 ## `serve`
 
 ```console
-$ podman run ... <image> --utrain-root <root> serve --port 0
+$ podman run ... <image> --utrain-root <root> serve --port 0 --phase <name>
 ```
 
-Optional — only required if `describe` reports `can_serve: true`. Starts an HTTP
-server exposing the trained model, and runs until it is terminated. This is what
-`utrain run chat <RUN_ID>` launches.
+Optional — only required if `describe` marks a phase `can_serve: true`. Starts
+an HTTP server exposing the trained model, and runs until it is terminated. This
+is what `utrain run chat <RUN_ID>` launches.
 
 The wire format is **not utrain's own**: it is the OpenAI
 `/v1/chat/completions` API.
+
+### Which phases are servable
+
+Every phase's data dir is a complete snapshot of the run as it stood when that
+phase ended, so a container with several training phases has several different
+models to talk to. `can_serve` on a phase says that phase's snapshot is one of
+them, and `utrain run chat <RUN_ID> --phase <name>` serves it: utrain mounts
+that phase's data dir at `<root>/data` and starts the image exactly as below.
+
+```yaml
+phases:
+  - name: tokenizer
+    label: Train BPE Tokenizer
+  - name: pretrain
+    label: Pretrain Base Model
+    can_serve: true
+  - name: sft
+    label: Supervised Fine-Tuning
+    can_serve: true
+```
+
+An image whose phases all leave `can_serve` unset serves nothing, and `utrain
+run chat` refuses it. Naming the phases that do leave a model behind is what
+makes the rest greyed out in the TUI and refused by name on the CLI, instead of
+starting a container that fails to find a checkpoint.
+
+utrain always passes `--phase`, naming whose snapshot is under `<root>/data`.
+Make it **required** if more than one of your phases can serve; a container with
+a single servable phase may default it instead, so that a hand-run `serve`
+needs nothing but a mount and a port.
+
+The phase is what tells you which model to load, and the reason to load it by
+name rather than by search: `containers/nanochat` maps `pretrain`, `sft` and
+`rl` onto its `base_`, `chatsft_` and `chatrl_checkpoints` dirs. Searching for
+the newest checkpoint present would look equivalent — a phase's data dir is
+frozen when the phase ends, so it cannot hold a later phase's model — but it
+answers the wrong question when a phase saved nothing: a stopped `rl` phase
+would be served silently by its SFT checkpoint. Being told the phase turns that
+into an error.
+
+Chat is offered only once a run has reached a terminal state. A run still
+training holds the GPU, and a `serve` container started beside it would be
+competing with the phase that is running.
 
 ### The port
 

@@ -21,6 +21,10 @@ _MIN_TEMPERATURE = 1e-3
 
 _MODEL_ID = "shakespeare-char"
 
+# The one phase whose data dir holds a model.pt, and so the only phase this
+# image can be asked to serve -- see `describe.py`.
+SERVABLE_PHASE = "pretrain"
+
 
 class _Model:
     """The loaded checkpoint, hung off `app.state` rather than a global."""
@@ -176,7 +180,9 @@ def _stream(tokens: collections.abc.Iterator[int], loaded: _Model) -> collection
     yield "data: [DONE]\n\n"
 
 
-def serve(p: paths.Paths, port: int) -> None:
+def serve(p: paths.Paths, port: int, phase: str) -> None:
+    if phase != SERVABLE_PHASE:
+        raise RuntimeError(f"phase '{phase}' leaves no model to serve, only '{SERVABLE_PHASE}'")
     cfg = config.flatten(config.load(p), "pretrain")
     model, stoi, itos, block_size = _load_model(p)
     app = create_app(

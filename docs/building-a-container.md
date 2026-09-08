@@ -52,7 +52,6 @@ DESCRIBE = {
             }
         }
     },
-    "can_serve": False,
 }
 
 

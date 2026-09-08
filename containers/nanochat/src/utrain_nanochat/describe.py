@@ -25,6 +25,7 @@ DESCRIBE = {
         {
             "name": "pretrain",
             "label": "Pretrain Base Model",
+            "can_serve": True,
             "plots": [
                 {"x": "step", "y": "train/loss"},
                 {"x": "step", "y": "val/bpb"},
@@ -33,6 +34,7 @@ DESCRIBE = {
         {
             "name": "sft",
             "label": "Supervised Fine-Tuning",
+            "can_serve": True,
             "plots": [
                 {"x": "step", "y": "train/loss"},
                 {"x": "step", "y": "chatcore_metric"},
@@ -41,6 +43,7 @@ DESCRIBE = {
         {
             "name": "rl",
             "label": "Reinforcement Learning (GRPO on GSM8K)",
+            "can_serve": True,
             "plots": [
                 {"x": "step", "y": "reward"},
                 {"x": "step", "y": "pass@1"},
@@ -432,5 +435,4 @@ DESCRIBE = {
             },
         },
     },
-    "can_serve": True,
 }

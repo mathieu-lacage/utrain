@@ -71,9 +71,14 @@ DESCRIBE = {
         {"name": "tokenizer", "label": "Tokenizer Training", "cacheable": True},
         # Named plots: the TUI shows these two instead of one plot per metric.
         # `tokenizer` deliberately names none, so both paths are exercised.
+        #
+        # `can_serve` likewise: only `pretrain` leaves a model behind, so it is
+        # the one phase chat is offered on. `fake-gpu`, which names none, is
+        # the image utrain refuses to serve at all.
         {
             "name": "pretrain",
             "label": "Pre-Training",
+            "can_serve": True,
             "plots": [{"x": "step", "y": "loss"}, {"x": "step", "y": "mfu"}],
         },
     ],
@@ -123,7 +128,6 @@ DESCRIBE = {
             }
         },
     },
-    "can_serve": True,
 }
 
 
@@ -332,9 +336,10 @@ class ModelCard(pydantic.BaseModel):
     object: str = "model"
     created: int = 0
     owned_by: str = "utrain"
-    # Not part of the OpenAI schema; the tests read it back to prove utrain's
-    # filesystem contract reached `serve`.
+    # Neither is part of the OpenAI schema; the tests read them back to prove
+    # utrain's filesystem contract and its `--phase` reached `serve`.
     data_dir: str
+    phase: str
 
 
 class ModelList(pydantic.BaseModel):
@@ -368,7 +373,9 @@ def _validation_error(request: fastapi.Request, exc: Exception) -> fastapi.respo
 
 @router.get("/v1/models", response_model=ModelList)
 def list_models(request: fastapi.Request) -> ModelList:
-    return ModelList(data=[ModelCard(data_dir=request.app.state.data_dir)])
+    return ModelList(
+        data=[ModelCard(data_dir=request.app.state.data_dir, phase=request.app.state.phase)]
+    )
 
 
 @router.post("/v1/chat/completions")
@@ -402,9 +409,13 @@ def chat_completions(req: ChatCompletionRequest) -> fastapi.Response:
     return fastapi.responses.StreamingResponse(events(), media_type="text/event-stream")
 
 
-def cmd_serve(p: Paths, port: int) -> None:
+def cmd_serve(p: Paths, port: int, phase: str) -> None:
+    # Whatever utrain says, unchecked: a real container maps the phase to a
+    # checkpoint, but this one has no model, and the tests serve phases the
+    # image does not declare to prove the flag is passed through verbatim.
     app = fastapi.FastAPI(title="fake")
     app.state.data_dir = str(p.data_dir)
+    app.state.phase = phase
     app.add_exception_handler(fastapi.exceptions.RequestValidationError, _validation_error)
     app.include_router(router)
 
@@ -438,6 +449,9 @@ def main() -> None:
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("--port", type=int, default=0)
+    # Defaulted rather than required: only `pretrain` is servable here, so a
+    # hand-run `serve` has nothing else it could mean.
+    serve_p.add_argument("--phase", default="pretrain")
 
     args = parser.parse_args()
     if args.cmd == "describe":
@@ -452,7 +466,7 @@ def main() -> None:
         cmd_run(p, args.phase)
     elif args.cmd == "serve":
         # No ensure(): <root>/data is mounted read-only for serve.
-        cmd_serve(Paths(args.utrain_root), args.port)
+        cmd_serve(Paths(args.utrain_root), args.port, args.phase)
 
 
 if __name__ == "__main__":

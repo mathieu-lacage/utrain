@@ -261,8 +261,8 @@ class Data:
         with dbmod.with_db(self._settings) as session:
             runs.delete_run(run_id, force=False, session=session)
 
-    def start_server(self, run_id: str) -> serve.Server:
-        """Bring up a serve container for the run's newest completed phase.
+    def start_server(self, run_id: str, phase: str | None = None) -> serve.Server:
+        """Bring up a serve container for one phase's snapshot of a run.
 
         The session is closed on the way out, and `serve.start` commits before
         it returns: a chat lasts as long as the viewer keeps typing, and
@@ -273,7 +273,7 @@ class Data:
         is the second half, and is the caller's to wait on.
         """
         with dbmod.with_db(self._settings) as session:
-            return serve.start(run_id, session)
+            return serve.start(run_id, session, phase)
 
     def create_run(self, name: str, image: str, compute_spec: str) -> str:
         with dbmod.with_db(self._settings) as session:

@@ -38,7 +38,7 @@ import textual.widget
 import textual.widgets
 
 from .. import chat as chatmod
-from .. import exceptions, metrics, serve, types
+from .. import exceptions, metrics, reconcile, serve, types
 from . import data, export, render, widgets
 
 # The screen's actions that a single key reaches, and which are therefore
@@ -408,7 +408,7 @@ class MainScreen(_Screen):
         self._tails: dict[str, metrics.Tail] = {}
         self.plots: dict[render.PlotKey, widgets.MetricPlot] = {}
         # What the footer was last built for; see `sync_bindings`.
-        self._binding_state: tuple[str, str | None, bool, bool] | None = None
+        self._binding_state: tuple[str, str | None, bool, bool, str | None] | None = None
         # The pending fetch for a cursor that is still moving; see `refresh_soon`.
         self._settle: textual.timer.Timer | None = None
         # Whether a fetch is running, and whether another was asked for while
@@ -741,6 +741,9 @@ class MainScreen(_Screen):
             None if run is None else run.status,
             self.export_metric() is not None,
             self.chattable() is None,
+            # `t` greys per phase now, so moving down the phases pane has to
+            # rebuild the footer even though the pane and run have not changed.
+            self.chat_phase(),
         )
         if state != self._binding_state:
             self._binding_state = state
@@ -1182,11 +1185,10 @@ class MainScreen(_Screen):
             # exactly when you want to hear what the thing it trained sounds
             # like, and going back up a pane to ask is a step for nothing.
             #
-            # It means the same in both. `t` talks to the run's newest
-            # completed phase, not to the phase under the cursor -- that is the
-            # only one whose data dir holds everything the run produced, so it
-            # is where the model is. There is no chatting with an earlier
-            # phase, the way there is no stopping a single one.
+            # What it talks to follows the cursor. On the phases pane that is
+            # the phase under it, whose data dir is a frozen snapshot of the run
+            # as it stood when that phase ended; on the runs pane, where no
+            # phase is in view, the run's newest servable one.
             if self.pane not in ("runs", "phases"):
                 return False
             return True if self.chattable() is None else None
@@ -1442,24 +1444,44 @@ class MainScreen(_Screen):
         else:
             self.host.from_thread(self.refresh_data)
 
-    def chattable(self) -> str | None:
-        """Why the selected run cannot be chatted with, or None if it can.
+    def chat_phase(self) -> str | None:
+        """The phase `t` would talk to, or None to mean the newest servable one.
 
-        The three things `serve.start` refuses, asked before the key rather
-        than reported after it. The image is looked up in the describe cache
-        only -- `described`, not `describe` -- because this runs on the message
-        loop, both to grey the key and to answer it.
+        From the phases pane it is the phase under the cursor; from the runs
+        pane nothing is in view to name one, so the default stands.
+        """
+        return self.selected_phase if self.pane == "phases" else None
+
+    def chattable(self) -> str | None:
+        """Why `t` cannot talk to the selection, or None if it can.
+
+        Everything `serve.start` refuses, asked before the key rather than
+        reported after it. The image is looked up in the describe cache only --
+        `described`, not `describe` -- because this runs on the message loop,
+        both to grey the key and to answer it.
         """
         run = self.selected_run_row()
         if run is None:
             return "no run selected"
-        if not any(entry.status == "done" for entry in self.phases):
-            return f"run '{run.name}' has no completed phase, so there is no model to serve"
         described = self.data.described(run.image)
         if described is None:
             return f"still reading image '{run.image}'"
-        if not described.can_serve:
+        # The image's answer first, and in the same order `serve.start` asks:
+        # what it can do is true whatever state the run is in.
+        servable = serve.servable_phases(described)
+        if not servable:
             return f"image '{run.image}' does not support serve"
+        phase = self.chat_phase()
+        if phase is not None and phase not in servable:
+            return f"image '{run.image}' does not serve phase '{phase}'"
+        if run.status not in reconcile.TERMINAL:
+            return f"run '{run.name}' is still {run.status}; chat needs a finished run"
+        if phase is None:
+            if not any(e.status == "done" and e.phase in servable for e in self.phases):
+                return f"run '{run.name}' has no completed phase, so there is no model to serve"
+            return None
+        if not any(e.phase == phase and e.status == "done" for e in self.phases):
+            return f"phase '{phase}' has not completed"
         return None
 
     def action_chat_run(self) -> None:
@@ -1474,7 +1496,7 @@ class MainScreen(_Screen):
         if run is None or refusal is not None:
             self.show_error(refusal or "no run selected", hold=True)
             return
-        self.host.open(ChatScreen(self.host, self.data, run.id, run.name))
+        self.host.open(ChatScreen(self.host, self.data, run.id, run.name, self.chat_phase()))
 
     def action_images(self) -> None:
         self.host.open(ImagesScreen(self.host, self.data))
@@ -1844,10 +1866,18 @@ class ChatScreen(_Screen):
         textual.binding.Binding("escape", "app.pop_screen", "back"),
     ]
 
-    def __init__(self, host: Host, source: data.Data, run_id: str, run_name: str) -> None:
+    def __init__(
+        self,
+        host: Host,
+        source: data.Data,
+        run_id: str,
+        run_name: str,
+        phase: str | None = None,
+    ) -> None:
         super().__init__(host, source)
         self.run_id = run_id
         self.run_name = run_name
+        self.phase = phase
         self.server: serve.Server | None = None
         self.client: chatmod.Client | None = None
         # Set when the screen is left, under `_lock`; see `adopt_server`.
@@ -1890,7 +1920,7 @@ class ChatScreen(_Screen):
         and a container that outlived it is stopped here.
         """
         try:
-            server = self.data.start_server(self.run_id)
+            server = self.data.start_server(self.run_id, self.phase)
         except exceptions.UI as e:
             self.report(self.failed, str(e), None)
             return

@@ -119,9 +119,23 @@ browsable schema of exactly what the endpoint accepts, or fetch
 `/openapi.json` for the machine-readable version.
 
 You can also start the server without utrain in the loop at all — run the image
-directly with `serve --port 0` and read the port it prints. See the
+directly with `serve --port 0` and read the port it prints (an image with more
+than one servable phase wants a `--phase <name>` too). See the
 [`serve` contract](container-contract.md#serve) for that, and for what to
 implement if you are building your own container.
 
-Only images whose `describe` reports `can_serve: true` can be chatted with, and
-the run needs at least one completed phase.
+Only images whose `describe` marks a phase `can_serve: true` can be chatted
+with, and only once the run has finished.
+
+A run with more than one training phase produces more than one model, and each
+is reachable by name — every phase's data dir is a snapshot of the run as it
+stood when that phase ended:
+
+```console
+$ utrain run chat "$RID" --phase pretrain    # the base model
+$ utrain run chat "$RID" --phase sft         # after fine-tuning
+```
+
+Without `--phase` you get the newest servable phase that completed, which for a
+one-model run like this one is the only one there is. In the TUI, `t` from the
+phases pane talks to the phase under the cursor.

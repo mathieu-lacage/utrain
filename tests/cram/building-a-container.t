@@ -20,8 +20,8 @@ wandb.
 Steps 3-4: build it and check `describe` parses.
   $ podman build -t localhost/utrain-demo:utrain -f Containerfile . >/dev/null 2>&1
   $ podman run --rm localhost/utrain-demo:utrain describe | \
-  >   python -c 'import json,sys; d=json.load(sys.stdin); print(d["name"], d["phase_order"], d["can_serve"])'
-  demo ['train'] False
+  >   python -c 'import json,sys; d=json.load(sys.stdin); print(d["name"], d["phase_order"])'
+  demo ['train']
 
 Step 5: register it. `podman://` tags the local image as a preset instead of
 pulling.

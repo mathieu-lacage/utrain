@@ -78,6 +78,9 @@ def main() -> None:
     run_p.add_argument("--phase", required=True)
     serve_p = sub.add_parser("serve")
     serve_p.add_argument("--port", type=int, default=0)
+    # Required: three phases here leave a model behind, so there is no phase
+    # this image could sensibly default to.
+    serve_p.add_argument("--phase", required=True)
 
     args = parser.parse_args()
     if args.cmd == "describe":
@@ -92,7 +95,7 @@ def main() -> None:
             p.ensure()
             cmd_run(p, args.phase)
         elif args.cmd == "serve":
-            serve.serve(p, args.port)
+            serve.serve(p, args.port, args.phase)
 
 
 if __name__ == "__main__":

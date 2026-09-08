@@ -296,6 +296,7 @@ def _make_run(
     tmp_path: pathlib.Path,
     *,
     phase_statuses: dict[str, str],
+    run_status: str = "done",
 ) -> str:
     run_id = uuid.uuid4().hex
     run_dir = tmp_path / "runs" / run_id
@@ -307,7 +308,7 @@ def _make_run(
             image="utrain-fake",
             compute="cpu",
             run_dir=str(run_dir),
-            status="done",
+            status=run_status,
             created_at=0.0,
         )
     )
@@ -328,11 +329,20 @@ def _make_run(
 
 
 def _patch_describe(monkeypatch: pytest.MonkeyPatch, *, can_serve: bool) -> None:
+    """The image the chat tests talk to: two phases, one of them chattable.
+
+    `tokenizer` is deliberately left unservable, so a run of this image has a
+    completed phase that chat must still refuse to serve.
+    """
     described = utrain.container.schema.DescribeOutput(
         name="fake",
-        phases=[utrain.container.schema.PhaseInfo(name="pretrain", label="Pretrain")],
-        phase_order=["pretrain"],
-        can_serve=can_serve,
+        phases=[
+            utrain.container.schema.PhaseInfo(name="tokenizer", label="Tokenizer"),
+            utrain.container.schema.PhaseInfo(
+                name="pretrain", label="Pretrain", can_serve=can_serve
+            ),
+        ],
+        phase_order=["tokenizer", "pretrain"],
     )
     monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: described)
 
@@ -351,7 +361,11 @@ def chat_env(
     _patch_describe(monkeypatch, can_serve=True)
 
     def fake_serve_argv(
-        image_key: str, attempt_dir: pathlib.Path, data_dir: pathlib.Path, compute: str
+        image_key: str,
+        attempt_dir: pathlib.Path,
+        data_dir: pathlib.Path,
+        phase: str,
+        compute: str,
     ) -> tuple[list[str], dict[str, str]]:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join([str(_SHIM), env.get("PYTHONPATH", "")])
@@ -360,7 +374,7 @@ def chat_env(
         # while the serve dir hangs off the attempt -- so a single root cannot
         # contain both; symlinks reproduce that faithfully. Getting this wrong
         # means the container publishes its port somewhere utrain never looks.
-        serve_host_dir = utrain.orchestrator.serve_dir(attempt_dir)
+        serve_host_dir = utrain.orchestrator.serve_dir(attempt_dir, phase)
         serve_host_dir.mkdir(parents=True, exist_ok=True)
         root = attempt_dir / "mount-root"
         root.mkdir(parents=True, exist_ok=True)
@@ -376,6 +390,8 @@ def chat_env(
             "serve",
             "--port",
             "0",
+            "--phase",
+            phase,
         ], env
 
     monkeypatch.setattr(utrain.orchestrator, "serve_argv", fake_serve_argv)
@@ -406,7 +422,7 @@ def test_chat_run_streams_turns(
     utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
     lines = capsys.readouterr().out.splitlines()
     # Exact shape, because tests/cram/serve.t asserts the same output verbatim.
-    # The *last* completed phase is the one holding the model.
+    # With no --phase, the newest servable completed phase is what answers.
     assert lines[0] == "serving chat (utrain-fake, phase 'pretrain')"
     assert lines[1].startswith("endpoint: http://127.0.0.1:")
     assert lines[2].startswith("model: data_dir=")
@@ -440,7 +456,11 @@ def test_chat_run_reports_a_container_that_fails_to_start(
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
 
     def broken_argv(
-        image_key: str, attempt_dir: pathlib.Path, data_dir: pathlib.Path, compute: str
+        image_key: str,
+        attempt_dir: pathlib.Path,
+        data_dir: pathlib.Path,
+        phase: str,
+        compute: str,
     ) -> tuple[list[str], dict[str, str]]:
         return [sys.executable, "-c", "raise SystemExit('no model here')"], dict(os.environ)
 
@@ -468,4 +488,85 @@ def test_chat_run_refuses_an_image_that_cannot_serve(
     _patch_describe(monkeypatch, can_serve=False)
     _feed(monkeypatch, "")
     with pytest.raises(utrain.exceptions.UI, match="does not support serve"):
+        utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
+
+
+def test_chat_run_serves_the_phase_it_is_asked_for(
+    chat_env: sqlalchemy.orm.Session,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--phase` reaches back past the newest one.
+
+    Each phase's data dir is frozen when the phase ends, so an earlier one is a
+    snapshot of the run as it stood then -- which is the whole point of being
+    able to ask for it. The banner names which one answered.
+    """
+    _patch_describe(monkeypatch, can_serve=True)
+    # Both phases servable here, so the choice is the caller's rather than
+    # the only one on offer.
+    described = utrain.container.schema.DescribeOutput(
+        name="fake",
+        phases=[
+            utrain.container.schema.PhaseInfo(name="tokenizer", label="Tokenizer", can_serve=True),
+            utrain.container.schema.PhaseInfo(name="pretrain", label="Pretrain", can_serve=True),
+        ],
+        phase_order=["tokenizer", "pretrain"],
+    )
+    monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: described)
+
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
+    _feed(monkeypatch, "hello\n/quit\n")
+    utrain.cli.chat.chat_run(run_id, chat_env, phase="tokenizer", max_tokens=10, temperature=0.8)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "serving chat (utrain-fake, phase 'tokenizer')"
+    # The mount followed the choice, not just the label: the harness stands in
+    # for the bind mount with a symlink, so its target is what was served.
+    mount = tmp_path / "runs" / run_id / "attempt" / "1" / "mount-root" / "data"
+    assert mount.resolve().name == "tokenizer"
+    # And the container was told, rather than left to work it out from the
+    # mount: the fake echoes the `--phase` it was started with.
+    assert lines[2].endswith("phase=tokenizer")
+
+
+def test_chat_run_refuses_a_phase_the_image_does_not_serve(
+    chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A phase that leaves no model behind is not on offer, even though it ran."""
+    run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.exceptions.UI, match="does not serve phase 'tokenizer'"):
+        utrain.cli.chat.chat_run(
+            run_id, chat_env, phase="tokenizer", max_tokens=10, temperature=0.8
+        )
+
+
+def test_chat_run_refuses_a_phase_that_has_not_completed(
+    chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _make_run(
+        chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "failed"}
+    )
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.exceptions.UI, match="phase 'pretrain' .* has not completed"):
+        utrain.cli.chat.chat_run(run_id, chat_env, phase="pretrain", max_tokens=10, temperature=0.8)
+
+
+def test_chat_run_refuses_a_run_that_is_still_going(
+    chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chat waits for the run to finish, even though the phase's data is ready.
+
+    One GPU per run: a serve container started now would be competing with the
+    training one for it.
+    """
+    run_id = _make_run(
+        chat_env,
+        tmp_path,
+        phase_statuses={"tokenizer": "done", "pretrain": "running"},
+        run_status="running",
+    )
+    _feed(monkeypatch, "")
+    with pytest.raises(utrain.exceptions.UI, match="is still running"):
         utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)

@@ -82,8 +82,24 @@ class Server:
         self._log.close()
 
 
-def start(run_id_prefix: str, session: sqlalchemy.orm.Session) -> Server:
-    """Spawn a serve container for a run's newest completed phase.
+def servable_phases(describe: container.schema.DescribeOutput) -> list[str]:
+    """The phases of an image whose snapshot is worth chatting with.
+
+    Only a phase that says so is one, so an image that names none serves
+    nothing and `utrain run chat` refuses it outright.
+    """
+    return [phase.name for phase in describe.phases if phase.can_serve]
+
+
+def start(
+    run_id_prefix: str,
+    session: sqlalchemy.orm.Session,
+    phase: str | None = None,
+) -> Server:
+    """Spawn a serve container for one phase's snapshot of a finished run.
+
+    `phase` names which snapshot to talk to; the default is the newest servable
+    phase that completed, which for a run of one model is the only one there is.
 
     Returns as soon as the process exists; call `Server.wait_for_port` to wait
     for it to become reachable.
@@ -94,18 +110,34 @@ def start(run_id_prefix: str, session: sqlalchemy.orm.Session) -> Server:
     if attempt_n is not None:
         reconcile.reconcile_attempt(run_id, attempt_n, session)
 
+    # What the image can do comes first: it is a fact about the image, true
+    # whatever state the run is in, so an image that will never serve should say
+    # so rather than send the caller off to wait for a run to finish.
     image_key = str(row["image"])
     presets = container.podman.list_presets()
     if image_key not in presets:
         raise exceptions.UI(f"image '{image_key}' not found")
     describe = container.podman.describe(presets[image_key])
-    # The first real consumer of can_serve: until now the flag was parsed into
-    # DescribeOutput and never read.
-    if not describe.can_serve:
+    servable = servable_phases(describe)
+    if not servable:
         raise exceptions.UI(f"image '{image_key}' does not support serve")
+    if phase is not None and phase not in servable:
+        offered = ", ".join(servable)
+        raise exceptions.UI(
+            f"image '{image_key}' does not serve phase '{phase}'; it serves: {offered}"
+        )
+
+    # Re-read the status after reconciling: a run whose orchestrator died still
+    # says "running" in the row fetched above. Waiting for the run to end is
+    # about the GPU -- the phase's own data has been final since it ended.
+    status = str(dbmod.get_run(run_id, session)["status"])
+    if status not in reconcile.TERMINAL:
+        raise exceptions.UI(
+            f"run '{run_id}' is still {status}; chat is available once the run has finished"
+        )
 
     run_dir = pathlib.Path(str(row["run_dir"]))
-    attempt_dir, data_dir, phase = _model_location(run_id, run_dir, session)
+    attempt_dir, data_dir, phase = _model_location(run_id, run_dir, servable, phase, session)
     if not data_dir.exists():
         raise exceptions.UI(f"data dir for phase '{phase}' is missing: {data_dir}")
 
@@ -114,10 +146,12 @@ def start(run_id_prefix: str, session: sqlalchemy.orm.Session) -> Server:
     # run needs to write meanwhile.
     session.commit()
 
-    argv, env = orchestrator.serve_argv(image_key, attempt_dir, data_dir, str(row["compute"]))
+    argv, env = orchestrator.serve_argv(
+        image_key, attempt_dir, data_dir, phase, str(row["compute"])
+    )
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / "serve.log"
+    log_path = logs_dir / f"{phase}_serve.log"
 
     # Both streams straight to the log, no pipes. The container's output is
     # nobody's protocol -- the port arrives through a file instead -- so there is
@@ -138,7 +172,7 @@ def start(run_id_prefix: str, session: sqlalchemy.orm.Session) -> Server:
         proc=proc,
         log=log,
         log_path=log_path,
-        port_file=orchestrator.port_file(attempt_dir),
+        port_file=orchestrator.port_file(attempt_dir, phase),
         run_name=str(row["name"]),
         image=image_key,
         phase=phase,
@@ -148,22 +182,30 @@ def start(run_id_prefix: str, session: sqlalchemy.orm.Session) -> Server:
 def _model_location(
     run_id: str,
     run_dir: pathlib.Path,
+    servable: list[str],
+    phase: str | None,
     session: sqlalchemy.orm.Session,
 ) -> tuple[pathlib.Path, pathlib.Path, str]:
-    """Locate the data dir holding the trained model: attempt_dir, data_dir, phase.
+    """Locate the data dir holding one phase's model: attempt_dir, data_dir, phase.
 
-    Data dirs are per-phase, and each one starts as a hardlinked copy of its
-    predecessor's, so the *last* completed phase's dir is the only one holding
-    everything the run produced -- that is where the checkpoint is.
+    Each phase's data dir starts as a hardlinked copy of its predecessor's and
+    is never written again once the phase ends, so every one of them is a
+    complete snapshot of the run as it stood at that point. `phase` picks which;
+    the default is the newest servable phase that completed.
 
-    Ordering by phase_order then attempt mirrors _init_phase_data: after a
-    `--from-phase` restart the newest attempt may not have re-run the later
-    phases, so the highest-numbered phase can live in an older attempt.
+    Either way the attempt is the highest one that ran the chosen phase, not the
+    run's newest: a `--from-phase` restart leaves the phases before it in the
+    attempt that did run them, and `_init_phase_data` reads them from there too.
     """
+    where = (dbmod.run_phases.c.run_id == run_id) & (dbmod.run_phases.c.status == "done")
+    if phase is not None:
+        where = where & (dbmod.run_phases.c.phase == phase)
+    else:
+        where = where & dbmod.run_phases.c.phase.in_(servable)
     row = (
         session.execute(
             sqlalchemy.select(dbmod.run_phases.c.phase, dbmod.run_phases.c.attempt)
-            .where((dbmod.run_phases.c.run_id == run_id) & (dbmod.run_phases.c.status == "done"))
+            .where(where)
             .order_by(dbmod.run_phases.c.phase_order.desc(), dbmod.run_phases.c.attempt.desc())
             .limit(1)
         )
@@ -171,6 +213,8 @@ def _model_location(
         .fetchone()
     )
     if row is None:
+        if phase is not None:
+            raise exceptions.UI(f"phase '{phase}' of run '{run_id}' has not completed")
         raise exceptions.UI(f"run '{run_id}' has no completed phase, so there is no model to serve")
     attempt_dir = run_dir / "attempt" / str(row["attempt"])
     return attempt_dir, attempt_dir / "data" / str(row["phase"]), str(row["phase"])

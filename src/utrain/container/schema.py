@@ -53,6 +53,9 @@ class PhaseInfo(pydantic.BaseModel):
     # step. A phase that names its plots gets those instead, until the viewer
     # says otherwise.
     plots: list[PlotSpec] = []
+    # Whether this phase's snapshot is worth chatting with. It is the only
+    # thing that decides: an image none of whose phases set it serves nothing.
+    can_serve: bool = False
 
 
 class DescribeOutput(pydantic.BaseModel):
@@ -61,7 +64,6 @@ class DescribeOutput(pydantic.BaseModel):
     phases: list[PhaseInfo]
     phase_order: list[str]
     config_schema: ConfigSchema = ConfigSchema()
-    can_serve: bool = False
 
 
 class CompatResult(pydantic.BaseModel):

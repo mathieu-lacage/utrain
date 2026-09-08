@@ -27,7 +27,7 @@ import sqlalchemy.orm
 from . import db as dbmod
 from . import lock
 
-_TERMINAL = ("done", "failed", "stopped")
+TERMINAL = ("done", "failed", "stopped")
 
 
 def _compute_run_status(statuses: dict[str, str]) -> str:
@@ -66,7 +66,7 @@ def reconcile_attempt(
     if attempt_row is None:
         return
 
-    if attempt_row["status"] in _TERMINAL:
+    if attempt_row["status"] in TERMINAL:
         return
 
     run_dir = pathlib.Path(str(run_row["run_dir"]))
@@ -90,7 +90,7 @@ def reconcile_attempt(
     for phase_row in phase_rows:
         phase = str(phase_row["phase"])
         status = str(phase_row["status"])
-        if status in _TERMINAL:
+        if status in TERMINAL:
             # Includes phases served from cache, which the orchestrator marks
             # `done` without ever launching a container.
             statuses[phase] = status

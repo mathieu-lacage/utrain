@@ -86,13 +86,14 @@ def _describe() -> utrain.container.schema.DescribeOutput:
         name=IMAGE,
         phases=[
             utrain.container.schema.PhaseInfo(name="tokenizer", label="Build Vocabulary"),
-            utrain.container.schema.PhaseInfo(name="pretrain", label="Train Character LM"),
+            # `MainScreen.chattable` reads `can_serve` to decide whether `t` is
+            # a key at all. Only `pretrain` leaves a model behind, as in the
+            # real container, so `t` is greyed on `tokenizer`.
+            utrain.container.schema.PhaseInfo(
+                name="pretrain", label="Train Character LM", can_serve=True
+            ),
         ],
         phase_order=["tokenizer", "pretrain"],
-        # The reference container this file's chat tests actually talk to does
-        # serve, and `MainScreen.chattable` reads this to decide whether `t` is
-        # a key at all.
-        can_serve=True,
         config_schema=utrain.container.schema.ConfigSchema(
             globals=utrain.container.schema.GlobalConfigSchema(
                 groups=[
@@ -2886,12 +2887,16 @@ class _ServingData(_RecordingData):
         super().__init__(*args, **kwargs)
         self.spawn: collections.abc.Callable[[pathlib.Path], subprocess.Popen[bytes]] | None = None
         self.servers: list[utrain.serve.Server] = []
+        self.served_phases: list[str | None] = []
 
-    def start_server(self, run_id: str) -> utrain.serve.Server:
+    def start_server(self, run_id: str, phase: str | None = None) -> utrain.serve.Server:
         assert self.spawn is not None
         root = self.settings.data_dir / "serve" / run_id
         root.mkdir(parents=True, exist_ok=True)
         proc = self.spawn(root)
+        # None means "the newest servable phase", which for this image is
+        # `pretrain` -- the same resolution `serve.start` would do.
+        self.served_phases.append(phase)
         server = utrain.serve.Server(
             proc=proc,
             log=open(root / "serve.log", "wb"),
@@ -2899,7 +2904,7 @@ class _ServingData(_RecordingData):
             port_file=root / "serve" / "port.json",
             run_name="tiny-shakespeare",
             image=IMAGE,
-            phase="pretrain",
+            phase=phase or "pretrain",
         )
         self.servers.append(server)
         return server
@@ -3037,7 +3042,7 @@ async def test_leaving_the_screen_stops_the_container(
 async def test_t_is_greyed_on_a_run_with_nothing_to_talk_to(
     chat_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """The draft run has no completed phase, which is what `serve` refuses."""
+    """The draft run has never been started, which is what `serve` refuses."""
     async with chat_app.run_test(size=SIZE) as pilot:
         await _settle(chat_app, pilot)
         assert _main(chat_app).selected_run == DRAFT_ID
@@ -3045,7 +3050,7 @@ async def test_t_is_greyed_on_a_run_with_nothing_to_talk_to(
         # Greyed rather than hidden: the key is the answer to "why can I not
         # talk to this one", and the reason is the run, not the pane.
         assert _footer(chat_app)["t"] is False
-        assert "no completed phase" in (_main(chat_app).chattable() or "")
+        assert "is still configuring" in (_main(chat_app).chattable() or "")
         await pilot.press("t")
         await pilot.pause()
         assert isinstance(chat_app.screen, utrain.tui.screens.MainScreen)
@@ -3061,19 +3066,48 @@ async def test_t_is_offered_from_the_phases_pane_too(
         await _settle(chat_app, pilot)
         await pilot.press("2")
         await _settle(chat_app, pilot)
+        await pilot.press("down")  # onto `pretrain`, the phase with a model
+        await _settle(chat_app, pilot)
 
         assert _footer(chat_app)["t"] is True
 
 
-async def test_t_from_the_phases_pane_talks_to_the_run(
+async def test_t_from_the_phases_pane_talks_to_the_phase_under_the_cursor(
     chat_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """The newest completed phase, not the one under the cursor.
+    """Each phase's data dir is a snapshot, so each is its own thing to talk to.
 
-    The phases pane is where `t` is pressed from, not what it is about: only
-    the last phase's data dir holds everything the run produced, so that is the
-    only place a model can be. Standing on `tokenizer` and pressing `t` still
-    serves `pretrain`.
+    Standing on `pretrain` and pressing `t` asks for that phase by name rather
+    than falling back to whichever one the run finished on.
+    """
+    async with chat_app.run_test(size=SIZE) as pilot:
+        await _settle(chat_app, pilot)
+        await pilot.press("down")
+        await _settle(chat_app, pilot)
+        await pilot.press("2")
+        await _settle(chat_app, pilot)
+        await pilot.press("down")
+        await _settle(chat_app, pilot)
+        assert _main(chat_app).selected_phase == "pretrain"
+
+        await pilot.press("t")
+        await _settle(chat_app, pilot)
+        for _ in range(4):
+            await pilot.pause()
+
+        assert _chat(chat_app).run_id == RUN_ID
+        assert _recording(chat_app).served_phases == ["pretrain"]
+        await _say(chat_app, pilot, "hello")
+        assert _transcript(chat_app)[-1] == "[fake model] turn 1: 'hello'"
+
+
+async def test_t_is_greyed_on_a_phase_that_leaves_no_model(
+    chat_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """`tokenizer` ran and succeeded, but the image does not serve it.
+
+    The refusal names the phase: the run is fine and the key works one row
+    down, so "does not support serve" would be answering a different question.
     """
     async with chat_app.run_test(size=SIZE) as pilot:
         await _settle(chat_app, pilot)
@@ -3083,14 +3117,11 @@ async def test_t_from_the_phases_pane_talks_to_the_run(
         await _settle(chat_app, pilot)
         assert _main(chat_app).selected_phase == "tokenizer"
 
+        assert _footer(chat_app)["t"] is False
+        assert "does not serve phase 'tokenizer'" in (_main(chat_app).chattable() or "")
         await pilot.press("t")
-        await _settle(chat_app, pilot)
-        for _ in range(4):
-            await pilot.pause()
-
-        assert _chat(chat_app).run_id == RUN_ID
-        await _say(chat_app, pilot, "hello")
-        assert _transcript(chat_app)[-1] == "[fake model] turn 1: 'hello'"
+        await pilot.pause()
+        assert isinstance(chat_app.screen, utrain.tui.screens.MainScreen)
 
 
 async def test_t_is_not_offered_from_the_metrics_pane(

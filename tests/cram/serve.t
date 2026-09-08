@@ -10,7 +10,7 @@ A chat session against the finished run.
   $ printf 'hello\nagain\n/quit\n' | utrain run chat "$RID"
   serving chat (utrain-fake, phase 'pretrain')
   endpoint: http://127.0.0.1:[0-9]+/v1  \(OpenAI-compatible\) (re)
-  model: data_dir=/utrain/data, id=fake, owned_by=utrain
+  model: data_dir=/utrain/data, id=fake, owned_by=utrain, phase=pretrain
   [fake model] turn 1: 'hello'
   [fake model] turn 2: 'again'
 
@@ -26,11 +26,26 @@ Ctrl-D (an empty stdin) ends the session as cleanly as /quit
   $ printf '' | utrain run chat "$RID" >/dev/null 2>&1 && echo "clean exit"
   clean exit
 
-A run that has not produced a model yet cannot be chatted with.
+Naming a phase talks to that phase's snapshot instead of the newest one, and
+the name reaches the container: it reports back the `--phase` it was started
+with, which is how it knows which model the mounted dir is meant to hold.
+
+  $ printf 'hello\n/quit\n' | utrain run chat "$RID" --phase pretrain | head -3 | grep -v endpoint
+  serving chat (utrain-fake, phase 'pretrain')
+  model: data_dir=/utrain/data, id=fake, owned_by=utrain, phase=pretrain
+
+A phase the image does not serve is refused by name, even though it ran: only
+`pretrain` leaves a model behind.
+
+  $ utrain run chat "$RID" --phase tokenizer
+  abort: image 'utrain-fake' does not serve phase 'tokenizer'; it serves: pretrain
+  [1]
+
+A run that has not been started cannot be chatted with.
 
   $ NEW=$(utrain run create --name unstarted --image utrain-fake --compute cpu --print-id)
   $ utrain run chat "$NEW"
-  abort: run .* has no completed phase, so there is no model to serve (re)
+  abort: run .* is still configuring; chat is available once the run has finished (re)
   [1]
 
 An image that does not implement serve
@@ -51,6 +66,10 @@ A plain OpenAI-compatible server, curl style.
   >   -v "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/data/pretrain:/utrain/data:ro" \
   >   -v "$SERVEDIR:/utrain/serve" \
   >   "localhost/utrain-fake:$UTRAIN_IMAGE_TAG" --utrain-root /utrain serve --port 0 >/dev/null
+
+`--phase` is omitted here on purpose: an image with a single servable phase may
+default it, so a hand-run serve needs nothing but the mount and a port.
+
   $ for _ in $(seq 200); do [ -s "$SERVEDIR/port.json" ] && break; sleep 0.1; done
   $ [ -s "$SERVEDIR/port.json" ] || podman logs "utrain-cram-serve-$$"
   $ PORT=$(jq .port < $SERVEDIR/port.json)

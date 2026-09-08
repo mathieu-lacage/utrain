@@ -29,8 +29,11 @@ from . import config, paths, schemas, upstream
 # decoding by sending temperature 0.
 _MIN_TEMPERATURE = 1e-3
 
-# Best first: each is a fine-tune of the one after it.
-_SOURCES = ("rl", "sft", "base")
+# The checkpoint each servable phase writes, under `<base_dir>/<source>_checkpoints`
+# by nanochat's own naming. Serving is a lookup rather than a search: the phase
+# utrain names is the model the user asked for, and if that phase saved nothing
+# the honest answer is an error, not the fine-tune it was derived from.
+_SOURCE_BY_PHASE = {"pretrain": "base", "sft": "sft", "rl": "rl"}
 
 
 class _Model:
@@ -117,7 +120,7 @@ class _Model:
             yield self.decode(token)
 
 
-def _load(p: paths.Paths, cfg: dict[str, object]) -> _Model:
+def _load(p: paths.Paths, cfg: dict[str, object], phase: str) -> _Model:
     # nanochat resolves every path off this, and `serve` gets the data dir
     # read-only, which is all a checkpoint read needs.
     os.environ["NANOCHAT_BASE_DIR"] = str(upstream.base_dir(p))
@@ -134,25 +137,29 @@ def _load(p: paths.Paths, cfg: dict[str, object]) -> _Model:
     device_type = nanochat.common.autodetect_device_type()
     _ddp, _rank, _local_rank, _world, device = nanochat.common.compute_init(device_type)
 
-    last_error: Exception | None = None
-    for source in _SOURCES:
-        try:
-            model, tokenizer, _meta = nanochat.checkpoint_manager.load_model(
-                source, device, phase="eval"
-            )
-        except Exception as exc:
-            last_error = exc
-            continue
-        return _Model(
-            nanochat.engine.Engine(model, tokenizer),
-            tokenizer,
-            source,
-            int(model.config.sequence_len),
-            config.get_float(cfg, "temperature", 0.6),
-            config.get_int(cfg, "top_k", 50),
-            config.get_int(cfg, "max_new_tokens", 512),
+    source = _SOURCE_BY_PHASE.get(phase)
+    if source is None:
+        offered = "/".join(_SOURCE_BY_PHASE)
+        raise RuntimeError(f"phase '{phase}' leaves no model to serve; try {offered}")
+    try:
+        # `phase="eval"` is nanochat's own train/eval switch, unrelated to the
+        # utrain phase being served.
+        model, tokenizer, _meta = nanochat.checkpoint_manager.load_model(
+            source, device, phase="eval"
         )
-    raise RuntimeError(f"no {'/'.join(_SOURCES)} checkpoint in the data dir: {last_error}")
+    except Exception as exc:
+        raise RuntimeError(
+            f"no '{source}' checkpoint for phase '{phase}' in the data dir: {exc}"
+        ) from exc
+    return _Model(
+        nanochat.engine.Engine(model, tokenizer),
+        tokenizer,
+        source,
+        int(model.config.sequence_len),
+        config.get_float(cfg, "temperature", 0.6),
+        config.get_int(cfg, "top_k", 50),
+        config.get_int(cfg, "max_new_tokens", 512),
+    )
 
 
 router = fastapi.APIRouter()
@@ -251,11 +258,11 @@ def _stream(pieces: collections.abc.Iterator[str], model_id: str) -> collections
     yield "data: [DONE]\n\n"
 
 
-def serve(p: paths.Paths, port: int) -> None:
+def serve(p: paths.Paths, port: int, phase: str) -> None:
     # The chat knobs live on the `sft` phase, which is where a user configuring
-    # a run looks for them.
+    # a run looks for them, whichever phase's snapshot is being served.
     cfg = config.flatten(config.load(p), "sft")
-    app = create_app(_load(p, cfg))
+    app = create_app(_load(p, cfg, phase))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
