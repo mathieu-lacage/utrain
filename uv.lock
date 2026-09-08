@@ -2811,7 +2811,7 @@ wheels = [
 
 [[package]]
 name = "utrain"
-version = "0.0.6"
+version = "0.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
