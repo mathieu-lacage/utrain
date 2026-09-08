@@ -601,6 +601,23 @@ async def _settle(app: utrain.tui.app.UtrainApp, pilot: typing.Any) -> None:
         await pilot.pause()
 
 
+async def _pause_until(
+    pilot: typing.Any, predicate: collections.abc.Callable[[], bool], what: str
+) -> None:
+    """Pump the message loop until `predicate` holds.
+
+    One `pilot.pause()` is a single cycle of it, which is all an idle machine
+    needs. Scrolling to a highlight and rebuilding an option list are both
+    scheduled after a refresh, so on a loaded one an assertion placed after a
+    single pause can run while the widget is still catching up.
+    """
+    deadline = time.monotonic() + 5.0
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        await pilot.pause()
+
+
 async def _select_pretrain(app: utrain.tui.app.UtrainApp, pilot: typing.Any) -> None:
     """Move the phases cursor onto the phase that logged metrics."""
     await _settle(app, pilot)
@@ -810,23 +827,27 @@ async def test_a_refresh_leaves_the_metrics_cursor_and_scroll_alone(
         _main(app).timer.stop()
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
         metrics.show(_rows(0.0))
-        await pilot.pause()
+        await _pause_until(pilot, lambda: metrics.option_count == 40, "the rows to be listed")
         metrics.highlighted = 30
-        await pilot.pause()
-        assert metrics.scroll_y > 0
+        await _pause_until(pilot, lambda: metrics.scroll_y > 0, "the cursor to scroll into view")
         # Scrolled away from the cursor, which is what reading further up the
         # list looks like and what a rebuild cannot put back: restoring the
         # highlight scrolls it into view, and that is not where this is.
         metrics.scroll_to(y=0, animate=False, immediate=True)
-        await pilot.pause()
-        assert metrics.scroll_y == 0
+        await _pause_until(pilot, lambda: metrics.scroll_y == 0, "the pane to scroll back up")
 
         metrics.show(_rows(0.5))
-        await pilot.pause()
+        # Waiting on the new values rather than on a fixed number of cycles: the
+        # point of the test is where the cursor and the offset are once the
+        # rebuild has landed, so the rebuild has to be observably done first.
+        await _pause_until(
+            pilot,
+            lambda: "30.5" in str(metrics.get_option_at_index(30).prompt),
+            "the relogged values to land",
+        )
 
         assert metrics.highlighted == 30
         assert metrics.scroll_y == 0
-        assert "30.5" in str(metrics.get_option_at_index(30).prompt)
 
 
 async def test_the_dashboard_reads_the_metric_points(app: utrain.tui.app.UtrainApp) -> None:

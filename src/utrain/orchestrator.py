@@ -126,6 +126,16 @@ def cid_file(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
     return serve_dir(attempt_dir, phase) / "container.id"
 
 
+def _cache_cid_file(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    """Host path podman writes the check-cache container's id to.
+
+    Kept with the attempt's own bookkeeping rather than under `data/<phase>`:
+    that dir is the phase's output, hardlinked into the store once it is done,
+    and podman's scratch has no business in it.
+    """
+    return attempt_dir / ".cid" / f"check-cache-{phase}.id"
+
+
 def force_remove_container(cid_path: pathlib.Path) -> None:
     """Remove the container whose id is in `cid_path`, if it is still around.
 
@@ -345,6 +355,10 @@ def _check_cache(
     Returns None on any protocol violation (non-zero exit, timeout, unparsable
     output) -- the caller treats that exactly like a cache miss.
     """
+    cid_path = _cache_cid_file(attempt_dir, phase)
+    cid_path.parent.mkdir(parents=True, exist_ok=True)
+    # podman refuses to start at all if the cidfile is already there.
+    cid_path.unlink(missing_ok=True)
     try:
         result = subprocess.run(
             [
@@ -353,6 +367,8 @@ def _check_cache(
                 "--rm",
                 "--network=host",
                 "--security-opt=label=disable",
+                "--cidfile",
+                str(cid_path),
                 *_mount_args(attempt_dir, data_dir, data_ro=True),
                 container.podman.image_ref(image_key),
                 "--utrain-root",
@@ -366,7 +382,13 @@ def _check_cache(
             timeout=_MANIFEST_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
+        # The timeout kills the podman client, which stops nothing: the
+        # container it started keeps running, holding the data dir it was given
+        # read-only. The id podman recorded is what makes it findable.
+        force_remove_container(cid_path)
         return None
+    finally:
+        cid_path.unlink(missing_ok=True)
     if result.returncode != 0:
         return None
     try:

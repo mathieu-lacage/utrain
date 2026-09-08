@@ -248,10 +248,16 @@ def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: in
     return ok
 
 
-def cmd_check_cache(phase: str) -> None:
+def cmd_check_cache(p: Paths, phase: str) -> None:
     if phase != "tokenizer":
         print(f"phase not cacheable: {phase}", file=sys.stderr)
         sys.exit(1)
+    # `check_cache_hang: true` in the run config makes this never answer, which
+    # is what utrain's manifest timeout is for. A test uses it to prove the
+    # container does not outlive the timeout that killed the podman client.
+    cfg_path = p.run_dir / "config.yaml"
+    if cfg_path.exists() and (yaml.safe_load(cfg_path.read_text()) or {}).get("check_cache_hang"):
+        time.sleep(3600)
     files = [
         {"path": name, "sha256": hashlib.sha256(content.encode()).hexdigest()}
         for name, content in _TOKENIZER_FILES.items()
@@ -459,7 +465,9 @@ def main() -> None:
     elif args.cmd == "check-compat":
         cmd_check_compat()
     elif args.cmd == "check-cache":
-        cmd_check_cache(args.phase)
+        # No ensure(): check-cache gets <root>/data read-only, and writing to
+        # it is exactly what the contract forbids here.
+        cmd_check_cache(Paths(args.utrain_root), args.phase)
     elif args.cmd == "run":
         p = Paths(args.utrain_root)
         p.ensure()
