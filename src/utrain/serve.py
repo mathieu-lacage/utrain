@@ -41,6 +41,7 @@ class Server:
         log: typing.IO[bytes],
         log_path: pathlib.Path,
         port_file: pathlib.Path,
+        cid_file: pathlib.Path,
         run_name: str,
         image: str,
         phase: str,
@@ -52,6 +53,7 @@ class Server:
         self.phase = phase
         self._log = log
         self._port_file = port_file
+        self._cid_file = cid_file
 
     @property
     def returncode(self) -> int | None:
@@ -79,6 +81,10 @@ class Server:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
+        # Killing the client above stops nothing on its own, and even a clean
+        # exit is only evidence about the client. Removing by id is what makes
+        # "the server is stopped" true of the container as well.
+        orchestrator.force_remove_container(self._cid_file)
         self._log.close()
 
 
@@ -173,6 +179,7 @@ def start(
         log=log,
         log_path=log_path,
         port_file=orchestrator.port_file(attempt_dir, phase),
+        cid_file=orchestrator.cid_file(attempt_dir, phase),
         run_name=str(row["name"]),
         image=image_key,
         phase=phase,

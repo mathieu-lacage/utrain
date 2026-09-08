@@ -10,6 +10,13 @@ containers/%: FORCE
 cram:
 	uv run pytest tests/test_cram.py
 
+# End-to-end checks against the real containers rather than the fakes the cram
+# suite uses: `make e2e-shakespeare-char`, `make e2e-nanochat`. Slow, and they
+# need network access, so they are a pre-release check rather than part of
+# `make check`. Pass arguments with ARGS, e.g. ARGS=--no-build.
+e2e-%: FORCE
+	./scripts/e2e-$*.sh $(ARGS)
+
 test-matrix:
 	uv run tox
 

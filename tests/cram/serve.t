@@ -56,6 +56,14 @@ An image that does not implement serve
   abort: image 'utrain-fake-gpu' does not support serve
   [1]
 
+No container outlives a chat session. That includes the one piped to `head`
+above, which closes the pipe mid-banner: the BrokenPipeError still has to reach
+the shutdown, and the shutdown removes the container by the id podman wrote at
+startup rather than only signalling the client.
+
+  $ podman ps --format '{{.Image}}' | grep -c ":$UTRAIN_IMAGE_TAG" || true
+  0
+
 A plain OpenAI-compatible server, curl style.
 
   $ SERVEDIR="$UTRAIN_DATA_DIR/by-hand"

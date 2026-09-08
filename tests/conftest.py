@@ -85,26 +85,58 @@ def _image_namespace(monkeypatch: pytest.MonkeyPatch) -> typing.Iterator[None]:
     tag = f"utrain-t-{uuid.uuid4().hex[:12]}"
     monkeypatch.setenv("UTRAIN_IMAGE_TAG", tag)
     yield
-    _remove_tags(tag)
+    # One `podman images` for every test, as before; the container sweep costs a
+    # second call, so it is skipped for the many tests that never tagged
+    # anything. A container on this tag implies an image carrying it.
+    refs = _tagged_images(tag)
+    if refs:
+        _remove_containers(refs)
+        _remove_tags(refs)
 
 
-def _remove_tags(tag: str) -> None:
-    """Untag every image carrying `tag`.
-
-    `podman rmi` on a name an image shares with others only drops that name, and
-    every preset here is a tag of a build image that keeps its own `:utrain`
-    name, so this reclaims the namespace without touching image data.
-    """
+def _tagged_images(tag: str) -> list[str]:
     if shutil.which("podman") is None:
-        return
+        return []
     listed = subprocess.run(
         ["podman", "images", "--format", "{{.Repository}}:{{.Tag}}"],
         capture_output=True,
         text=True,
     )
-    for ref in listed.stdout.split():
-        if ref.endswith(f":{tag}"):
-            subprocess.run(["podman", "rmi", ref], capture_output=True)
+    return [ref for ref in listed.stdout.split() if ref.endswith(f":{tag}")]
+
+
+def _remove_containers(refs: list[str]) -> None:
+    """Remove any container still running one of this test's images.
+
+    Nothing should reach here with a container up: chat sessions stop theirs and
+    phase containers are waited on. But a test killed in between -- an xdist
+    worker torn down, a cram script that died -- would leave one running
+    forever, holding the tag `_remove_tags` is about to reclaim. A test's images
+    are private to it, so anything running on them is its own leak.
+    """
+    wanted = set(refs)
+    listed = subprocess.run(
+        ["podman", "ps", "--all", "--format", "{{.ID}} {{.Image}}"],
+        capture_output=True,
+        text=True,
+    )
+    for line in listed.stdout.splitlines():
+        container_id, _, image = line.partition(" ")
+        if image in wanted:
+            subprocess.run(
+                ["podman", "rm", "--force", "--time", "0", container_id], capture_output=True
+            )
+
+
+def _remove_tags(refs: list[str]) -> None:
+    """Untag every image carrying this test's tag.
+
+    `podman rmi` on a name an image shares with others only drops that name, and
+    every preset here is a tag of a build image that keeps its own `:utrain`
+    name, so this reclaims the namespace without touching image data.
+    """
+    for ref in refs:
+        subprocess.run(["podman", "rmi", ref], capture_output=True)
 
 
 @pytest.fixture()

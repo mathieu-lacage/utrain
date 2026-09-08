@@ -117,6 +117,35 @@ def port_file(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
     return serve_dir(attempt_dir, phase) / "port.json"
 
 
+def cid_file(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    """Host path podman writes the serve container's id to, at startup.
+
+    Kept beside the port file rather than in the container's view of the mount:
+    it is podman writing for us, not the container writing for the contract.
+    """
+    return serve_dir(attempt_dir, phase) / "container.id"
+
+
+def force_remove_container(cid_path: pathlib.Path) -> None:
+    """Remove the container whose id is in `cid_path`, if it is still around.
+
+    `podman run` proxies signals only while it is itself alive, so killing the
+    client leaves a container that ignored SIGTERM running with nothing attached
+    to it. The id podman wrote at startup is what makes it findable afterwards.
+
+    Silent about everything: the container is normally gone already (`--rm`),
+    which podman reports as an error, and a caller shutting a server down has
+    nothing to do about a failure here either way.
+    """
+    try:
+        cid = cid_path.read_text().strip()
+    except OSError:
+        return
+    if cid:
+        subprocess.run(["podman", "rm", "--force", "--time", "0", cid], capture_output=True)
+    cid_path.unlink(missing_ok=True)
+
+
 def write_control(attempt_dir: pathlib.Path, action: str) -> None:
     """Set the graceful-stop flag the running phase polls."""
     (mount_dir(attempt_dir) / "control.json").write_text(json.dumps({"action": action}))
@@ -278,14 +307,18 @@ def serve_argv(
     # `serve` existed can still be chatted with.
     (mount_dir(attempt_dir) / "serve").mkdir(parents=True, exist_ok=True)
     # A port file left by an earlier session would be read as this one's answer,
-    # pointing the client at a dead port.
+    # pointing the client at a dead port. podman refuses to start at all if the
+    # cidfile exists, so that one has to go too.
     port_file(attempt_dir, phase).unlink(missing_ok=True)
+    cid_file(attempt_dir, phase).unlink(missing_ok=True)
     return [
         "podman",
         "run",
         "--rm",
         "--network=host",
         "--security-opt=label=disable",
+        "--cidfile",
+        str(cid_file(attempt_dir, phase)),
         *gpu_args,
         *_mount_args(attempt_dir, data_dir, data_ro=True),
         "-v",

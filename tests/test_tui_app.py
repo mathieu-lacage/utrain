@@ -2902,6 +2902,9 @@ class _ServingData(_RecordingData):
             log=open(root / "serve.log", "wb"),
             log_path=root / "serve.log",
             port_file=root / "serve" / "port.json",
+            # Never written here: these servers are plain subprocesses, not
+            # podman, so `shutdown`'s force-remove finds nothing to do.
+            cid_file=root / "serve" / "container.id",
             run_name="tiny-shakespeare",
             image=IMAGE,
             phase=phase or "pretrain",

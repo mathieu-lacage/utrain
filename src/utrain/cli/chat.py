@@ -6,6 +6,8 @@ a prompt, deltas written as they arrive, and the handful of slash commands.
 """
 
 import importlib
+import os
+import signal
 import sys
 
 import sqlalchemy.orm
@@ -85,23 +87,47 @@ def chat_run(
     temperature: float,
 ) -> None:
     server = serve.start(run_id_prefix, session, phase)
+    # `cli.main` hands SIGPIPE back to SIG_DFL so `utrain run show | head` dies
+    # the way any Unix tool does. A chat session cannot afford that: killed
+    # mid-write it never reaches `_session`'s shutdown, and the container it
+    # started keeps running with nothing attached to it. Ignoring the signal
+    # for the session turns a closed pipe into a BrokenPipeError instead, which
+    # unwinds through the shutdown.
+    previous_sigpipe = signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    try:
+        _session(server, max_tokens=max_tokens, temperature=temperature)
+    except BrokenPipeError:
+        # Cleanup has run by now, so finish the way SIG_DFL would have: 128 plus
+        # SIGPIPE. stdout is pointed at /dev/null first because the interpreter
+        # flushes it on the way out, which would raise on the dead pipe again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(141)
+    finally:
+        signal.signal(signal.SIGPIPE, previous_sigpipe)
+
+
+def _session(server: serve.Server, *, max_tokens: int, temperature: float) -> None:
     try:
         port = server.wait_for_port()
     except exceptions.UI:
         _report_log(server)
         raise
 
-    client = chat.Client(port, max_tokens, temperature)
-    interactive = sys.stdin.isatty()
-    print(f"serving {server.run_name} ({server.image}, phase '{server.phase}')")
-    print(f"endpoint: http://127.0.0.1:{port}/v1  (OpenAI-compatible)")
-    info = client.model_info()
-    if info:
-        shown = {k: v for k, v in sorted(info.items()) if k not in ("object", "created")}
-        print(f"model: {', '.join(f'{k}={v}' for k, v in shown.items())}")
-    if interactive:
-        print(_HELP)
+    # Everything from here on is inside the try: a `utrain run chat | head -1`
+    # closes the pipe under us, and the BrokenPipeError that raises on the next
+    # print has to reach the finally rather than end the process beside a
+    # container nothing will stop.
     try:
+        client = chat.Client(port, max_tokens, temperature)
+        interactive = sys.stdin.isatty()
+        print(f"serving {server.run_name} ({server.image}, phase '{server.phase}')")
+        print(f"endpoint: http://127.0.0.1:{port}/v1  (OpenAI-compatible)")
+        info = client.model_info()
+        if info:
+            shown = {k: v for k, v in sorted(info.items()) if k not in ("object", "created")}
+            print(f"model: {', '.join(f'{k}={v}' for k, v in shown.items())}")
+        if interactive:
+            print(_HELP)
         _repl(client, interactive)
     finally:
         # Distinguish "the server died on us" from "we stopped it because the
