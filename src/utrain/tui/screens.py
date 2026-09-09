@@ -48,7 +48,9 @@ from . import data, export, render, widgets
 _EDIT_MODE_OFF = frozenset(
     {
         "focus_pane",
+        "focus_tab",
         "next_pane",
+        "prev_pane",
         "drill_in",
         "images",
         "compute",
@@ -66,6 +68,10 @@ _EDIT_MODE_OFF = frozenset(
         "new_run",
         # A `t` typed at a config field is a letter, not "chat with this run".
         "chat_run",
+        # And a `?` is a character, not "show me the keys".
+        "help",
+        # And an `m` is a letter, not "open the metric picker".
+        "toggle_metrics",
     }
 )
 
@@ -146,6 +152,30 @@ class Host(typing.Protocol):
         the second a cast at every call site.
         """
 
+    def charset(self) -> str:
+        """Which character set to draw curves with, before the viewer says.
+
+        The app's to answer because the console is the app's: see
+        `render.default_charset` for what the guess is made of.
+        """
+        ...
+
+    def close(self) -> None:
+        """Pop the screen on top of the stack.
+
+        The counterpart to `open`: the app owns the stack, so a screen that has
+        finished asks rather than reaches for `self.app`.
+        """
+
+    def go(self, destination: str) -> None:
+        """Show a top-level destination, keeping the one being left alive.
+
+        Not `open`: runs, images and compute are siblings, so putting one over
+        another would make `escape` mean "off the thing I pushed" in a place
+        where nothing was pushed -- and would throw away the run the viewer had
+        selected every time they went to look at an image.
+        """
+
     def from_thread(
         self,
         callback: collections.abc.Callable[..., None],
@@ -157,9 +187,19 @@ class Host(typing.Protocol):
 class _Screen(textual.screen.Screen[None]):
     """Shared chrome: a header, a footer, an error line and a refresh timer."""
 
+    # Which top-level destination this screen is, or None for one that was
+    # pushed over a destination rather than being one. It decides what escape
+    # does and which entry of the strip is picked out.
+    DESTINATION: typing.ClassVar[str | None] = None
+
     BINDINGS = [
         textual.binding.Binding("r", "force_refresh", "refresh"),
-        textual.binding.Binding("escape", "app.pop_screen", "back", show=False),
+        textual.binding.Binding("escape", "back", "back", show=False),
+        # On the base screen rather than on `MainScreen`: the destinations are
+        # siblings, so each of them can reach the others.
+        textual.binding.Binding("i", "images", "images"),
+        textual.binding.Binding("c", "compute", "compute"),
+        textual.binding.Binding("question_mark", "help", "help", key_display="?"),
     ]
 
     def __init__(self, host: Host, source: data.Data) -> None:
@@ -167,13 +207,19 @@ class _Screen(textual.screen.Screen[None]):
         self.host = host
         self.data = source
         # Kept as well as displayed: a `Static`'s content is not readable back
-        # off the widget, and both the tests and `showing_config` want to know
-        # what the viewer was last told.
+        # off the widget, and the tests want to know what the viewer was last
+        # told.
         self.error = ""
         self._held_until = 0.0
+        # None until `on_mount` starts it, and left as None by a screen that
+        # has nothing to poll -- `ChatScreen`, whose transcript changes when
+        # somebody says something and not on a clock.
+        self.timer: textual.timer.Timer | None = None
 
     def compose(self) -> textual.app.ComposeResult:
         yield textual.widgets.Header()
+        if self.DESTINATION is not None:
+            yield textual.widgets.Static(render.destinations(self.DESTINATION), id="destinations")
         yield from self.compose_body()
         yield textual.widgets.Static("", id="error")
         yield textual.widgets.Footer()
@@ -185,6 +231,62 @@ class _Screen(textual.screen.Screen[None]):
         # The timer is in place before the first fetch, because `refresh_data`
         # restarts it.
         self.timer = self.set_interval(_REFRESH_SECONDS, self.refresh_data)
+        self.refresh_data()
+
+    def action_back(self) -> None:
+        """`escape`: up one level, whatever "up" is for this screen.
+
+        Off a pushed screen, or -- from a destination that is not the runs
+        browser -- back to the one every other destination is reached from.
+        `MainScreen` overrides this with its own ladder, since it is where the
+        ladder bottoms out.
+        """
+        if self.DESTINATION is None:
+            self.host.close()
+            return
+        self.host.go("runs")
+
+    def action_help(self) -> None:
+        """`?`: the keys that are not in the footer.
+
+        The footer carries the keys of the pane in focus, which is what makes
+        it useful and what stops it carrying the navigation: the numbers and
+        `tab` and `enter` are `show=False` precisely so there is room for the
+        rest. This is where they are written down.
+        """
+        self.host.ask(HelpScreen(), lambda _answer: None)
+
+    def action_images(self) -> None:
+        self.host.go("images")
+
+    def action_compute(self) -> None:
+        self.host.go("compute")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """The destination already showing is not offered as somewhere to go.
+
+        And neither is any of them from a screen that was pushed: chat is about
+        one run, so leaving it is `escape` rather than a sideways step.
+        """
+        if action in ("images", "compute"):
+            return self.DESTINATION is not None and self.DESTINATION != action
+        return True
+
+    def on_screen_suspend(self) -> None:
+        """Stop polling a screen nobody is looking at.
+
+        Each destination's screen stays alive while another is showing, and its
+        refresh is a `podman` call: three of them ticking at once would spend
+        most of the app's time answering questions nobody asked. A modal
+        suspends the screen under it too, which is the same argument.
+        """
+        if self.timer is not None:
+            self.timer.pause()
+
+    def on_screen_resume(self) -> None:
+        if self.timer is None:
+            return
+        self.timer.resume()
         self.refresh_data()
 
     def action_force_refresh(self) -> None:
@@ -262,9 +364,19 @@ def _table(
     identifier: str,
     title: str,
     columns: tuple[str, ...],
+    drill: bool = True,
 ) -> textual.widgets.DataTable[render.Cell]:
-    """One of the sidebar's lists, framed and titled like a lazygit pane."""
-    table: textual.widgets.DataTable[render.Cell] = widgets.PaneTable(id=identifier)
+    """One of the screens' lists, framed and titled like a lazygit pane.
+
+    `drill=False` for a list with nothing under it -- the images and the
+    compute devices are the whole of what there is to see about them -- so that
+    its footer does not offer an `enter` that would do nothing.
+    """
+    table: textual.widgets.DataTable[render.Cell] = (
+        widgets.PaneTable(id=identifier)
+        if drill
+        else textual.widgets.DataTable[render.Cell](id=identifier)
+    )
     table.cursor_type = "row"
     table.border_title = title
     table.add_columns(*columns)
@@ -330,17 +442,19 @@ class MainScreen(_Screen):
     """
 
     TITLE = "utrain"
+    DESTINATION = "runs"
 
     BINDINGS = [
-        # The pane keys are `show=False`: each pane's number is in its title,
-        # and a footer that repeated all five would leave no room for the keys
-        # that are actually about the focused pane.
+        # The pane and tab keys are `show=False`: the sidebar panes carry
+        # their number in their title and the content tabs carry theirs in the
+        # tab strip, and a footer that repeated all five would leave no room
+        # for the keys that are actually about the focused pane.
         textual.binding.Binding("tab", "next_pane", "pane", show=False),
-        textual.binding.Binding("1", "focus_pane('runs')", "runs", show=False),
-        textual.binding.Binding("2", "focus_pane('phases')", "phases", show=False),
-        textual.binding.Binding("3", "focus_pane('metrics')", "metrics", show=False),
-        textual.binding.Binding("4", "focus_pane('top')", "content", show=False),
-        textual.binding.Binding("5", "focus_pane('log')", "logs", show=False),
+        textual.binding.Binding("shift+tab", "prev_pane", "pane", show=False),
+        textual.binding.Binding("1", "focus_list", "list", show=False),
+        textual.binding.Binding("2", "focus_tab('config')", "config", show=False),
+        textual.binding.Binding("3", "focus_tab('plots')", "plots", show=False),
+        textual.binding.Binding("4", "focus_tab('log')", "logs", show=False),
         # On the screen rather than on the form: you pick the run in the runs
         # pane, so that is where you want to be able to say "edit this one".
         # `check_action` greys it out unless the selected run can be edited.
@@ -356,37 +470,48 @@ class MainScreen(_Screen):
         # `r` is the base screen's refresh, so restart takes the shifted key --
         # the same convention `S` follows.
         textual.binding.Binding("R", "restart_run", "restart"),
-        # Overrides `_Screen`'s escape, which pops the screen. There is nothing
-        # under this one but the app's blank default screen, so popping it is
-        # never what was meant; backing out of a pane is.
-        textual.binding.Binding("escape", "back", "back", show=False),
-        textual.binding.Binding("i", "images", "images"),
-        textual.binding.Binding("c", "compute", "compute"),
         # `t` for talk: `c` is compute, and a `C` next to it would read as a
         # variant of it. Offered from the runs and phases panes both, the way
         # `S` and `R` are; `check_action` greys it out on a run there is
         # nothing to talk to yet.
         textual.binding.Binding("t", "chat_run", "chat"),
+        # Shown, unlike the pane keys: the picker is the only way to change
+        # which curves are drawn, and nothing else on the screen says so.
+        textual.binding.Binding("m", "toggle_metrics", "metrics"),
     ]
 
-    # The panes, by column. `tab` cycles within one of these; the number keys
-    # are how you cross from one to the other. The right column is one or the
-    # other list, never both: the config and the plots are the same slot.
-    _LEFT = ("runs", "phases", "metrics")
-    _RIGHT_CONFIG = ("config",)
-    _RIGHT_DASHBOARD = ("plots", "log")
-    # Focus in either of these means the content column is showing config: the
-    # runs pane is what it follows, and the config is where you land from it.
-    _CONFIG_PANES = ("runs", "config")
+    # Every pane in reading order -- the sidebar top to bottom, then the
+    # content column. This is what `tab` walks, skipping whatever is not on
+    # screen; the columns below are what decides which of those are.
+    _PANES = ("runs", "phases", "config", "plots", "metrics", "log")
+
+    # The sidebar's two levels. One of them is on screen at a time: they are
+    # one list, and this is what it can be listing.
+    _LEFT = ("runs", "phases")
 
     def __init__(self, host: Host, source: data.Data) -> None:
         super().__init__(host, source)
         self.runs: list[types.RunRow] = []
         self.phases: list[types.PhaseListEntry] = []
-        # Which sidebar pane the content column is following. Not simply
-        # whatever has focus: clicking into the log or into the config form
-        # must not change what the content column is about.
+        # The pane that has the focus. Kept rather than read off
+        # `self.focused` because a keypress asks about the pane, not about the
+        # widget inside it that happens to hold the cursor.
         self.pane = "runs"
+        # Which content pane is up, and which one was last asked for on each
+        # phase. The viewer's choice, and nothing else's -- the old layout
+        # derived this from which pane had focus, so a view could not be held
+        # at all. A phase nobody has chosen a tab for is not in the dict and
+        # keeps whatever is up, so moving down the list never changes the pane
+        # under someone who did not ask it to.
+        self.tab = "config"
+        self.tabs: dict[tuple[str, str], str] = {}
+        # Which level the sidebar list is at: the runs, or one run's phases.
+        # There is one list, and this is what it is listing.
+        self.level = "runs"
+        # The phase last visited per run, so that leaving a run and coming back
+        # lands where it was left. Without it the drill is lossy, and a viewer
+        # who steps up to compare two runs pays for it on the way back down.
+        self.visited: dict[str, str] = {}
         self.selected_run: str | None = None
         self.selected_phase: str | None = None
         # A run created this session, waiting for the fetch that will list it.
@@ -400,6 +525,8 @@ class MainScreen(_Screen):
         self.pinned: list[render.PlotKey] = []
         self.overridden = False
         self.log_y = False
+        # Settled in `on_mount`, where the console that answers half of it
+        # exists. Blocks until then, because they are the safe half.
         self.charset = render.CHARSET_BLOCK
         # Both keyed by phase address, so returning to a phase shows the series
         # already read rather than starting over from an exhausted Tail.
@@ -408,7 +535,7 @@ class MainScreen(_Screen):
         self._tails: dict[str, metrics.Tail] = {}
         self.plots: dict[render.PlotKey, widgets.MetricPlot] = {}
         # What the footer was last built for; see `sync_bindings`.
-        self._binding_state: tuple[str, str | None, bool, bool, str | None] | None = None
+        self._binding_state: tuple[str, str, str | None, bool, bool, str | None] | None = None
         # The pending fetch for a cursor that is still moving; see `refresh_soon`.
         self._settle: textual.timer.Timer | None = None
         # Whether a fetch is running, and whether another was asked for while
@@ -423,14 +550,22 @@ class MainScreen(_Screen):
             with textual.containers.Vertical(id="sidebar"):
                 yield _table("runs", "1 runs", render.RUN_COLUMNS)
                 yield _table("phases", "2 phases", render.PHASE_COLUMNS)
-                yield widgets.MetricList(id="metrics")
             with textual.containers.Vertical(id="content"):
+                yield textual.widgets.Static(render.content_tabs("config"), id="tabs")
                 yield widgets.ConfigPane(id="config")
                 with widgets.PlotPane(id="plots"):
                     yield textual.widgets.Static("no metrics yet", id="empty")
                 yield widgets.LogTail(id="log")
+        # Outside `#main`, because it docks against the screen and takes its
+        # width from the content column. Mounted once and hidden rather than
+        # built on each open: the list owns the check set and the range anchor,
+        # and both have to survive being put away.
+        yield widgets.MetricList(id="metrics")
 
     def on_mount(self) -> None:
+        # Before `super()`, which starts the first fetch: a plot mounted by the
+        # snapshot that lands from it is given this.
+        self.charset = self.host.charset()
         super().on_mount()
         self.table("#runs").focus()
 
@@ -482,7 +617,8 @@ class MainScreen(_Screen):
         # A fetch started by a cursor move restarts the clock, so a selection
         # is never followed a few milliseconds later by a tick that cancels the
         # fetch it just started.
-        self.timer.reset()
+        if self.timer is not None:
+            self.timer.reset()
         addr = self.address()
         # The Tail is read on the loop and handed to the worker rather than
         # looked up there: a thread worker cannot be interrupted, so `exclusive`
@@ -506,7 +642,8 @@ class MainScreen(_Screen):
             self._settle.stop()
         # The tick goes out with it, so a scan is not interrupted halfway by a
         # refresh for whichever row the cursor happened to be passing.
-        self.timer.reset()
+        if self.timer is not None:
+            self.timer.reset()
         self._settle = self.set_timer(_SETTLE_SECONDS, self.refresh_data)
 
     @textual.work(thread=True, exclusive=True, group="snapshot")
@@ -597,12 +734,35 @@ class MainScreen(_Screen):
 
     def apply_phases(self, snapshot: data.Snapshot) -> None:
         self.phases = snapshot.phases
-        _fill(
-            self.table("#phases"),
-            [render.phase_cells(p, snapshot.now) for p in snapshot.phases],
-        )
-        if self.selected_phase is None and snapshot.phases:
-            self.select_phase(snapshot.phases[0].phase)
+        table = self.table("#phases")
+        _fill(table, [render.phase_cells(p, snapshot.now) for p in snapshot.phases])
+        run = self.selected_run_row()
+        # The breadcrumb: one list, so what it is listing has to be written on
+        # it. The runs level keeps its plain title.
+        table.border_title = "1 phases" if run is None else f"1 {run.name} > phases"
+        if not snapshot.phases:
+            return
+        listed = [entry.phase for entry in snapshot.phases]
+        phase = self.selected_phase
+        if phase not in listed:
+            # Nothing selected, or a phase this run does not have. Where the
+            # viewer left this run, if that phase is still listed, and
+            # otherwise where the run has got to -- so that a run selected but
+            # not yet drilled into shows its live curve and its live log.
+            remembered = self.visited.get(snapshot.run_id or "")
+            phase = remembered if remembered in listed else data.current_phase(snapshot.phases)
+        if phase is None:
+            return
+        # Every tick, not only when the selection is being restored. The rows
+        # are refilled in place -- deliberately, see `_fill` -- so a list that
+        # grows or shrinks moves the cursor off the selected phase without
+        # anything having selected another one, and Textual's own clamping
+        # lands as a message after this has returned. Re-asserting it here is
+        # what keeps the cursor and the selection the same fact.
+        index = listed.index(phase)
+        if table.cursor_row != index:
+            table.move_cursor(row=index)
+        self.select_phase(phase)
 
     def apply_metrics(self, snapshot: data.Snapshot) -> None:
         addr = self.address()
@@ -648,14 +808,13 @@ class MainScreen(_Screen):
             render.config_rows(snapshot.config_schema, snapshot.config, snapshot.phase_order),
             editable=snapshot.run.run.status == "configuring",
         )
-        # Each pane names what it is showing, since which of the two is up
-        # depends on where the focus is. Both are numbered 4: they are the same
-        # slot in the content column, and the number is only in the title now
-        # that the footer no longer carries it.
-        form.border_title = f"4 {render.run_title(snapshot.run)}"
-        self.query_one(
-            "#plots", widgets.PlotPane
-        ).border_title = f"4 {render.phase_title(snapshot.phase_label, snapshot.run)}"
+        # Each content pane names what it is showing rather than what it is:
+        # the tab strip above already says which of the three is up, so the
+        # title is free to say whose config or whose curves these are.
+        form.border_title = render.run_title(snapshot.run)
+        self.query_one("#plots", widgets.PlotPane).border_title = render.phase_title(
+            snapshot.phase_label, snapshot.run
+        )
 
     # -- what the content column shows ------------------------------------
 
@@ -670,35 +829,23 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         return run is not None and run.status == status
 
-    def showing_config(self) -> bool:
-        """The content column shows config while the runs pane is being followed
-        -- or while the viewer is standing in the config itself.
-
-        Every run, not only one that can still be edited: what a finished run
-        was configured with is the first thing you want when comparing it to
-        another. A run past `configuring` gets the same fields read-only.
-        """
-        return self.pane in self._CONFIG_PANES and self.selected_run_row() is not None
-
-    def right_column(self) -> tuple[str, ...]:
-        """The content column's panes: the config, or the plots and the log."""
-        return self._RIGHT_CONFIG if self.showing_config() else self._RIGHT_DASHBOARD
-
-    def column(self, pane: str) -> tuple[str, ...]:
-        """The panes `tab` can reach from `pane`, in order."""
-        return self._LEFT if pane in self._LEFT else self.right_column()
-
     def apply_focus(self) -> None:
-        config = self.showing_config()
-        self.query_one("#config", widgets.ConfigPane).display = config
-        self.query_one("#plots", widgets.PlotPane).display = not config
-        self.query_one("#log", widgets.LogTail).display = not config
+        """Show the level the list is at and the content pane the tab names."""
+        for level in self._LEFT:
+            self.query_one(f"#{level}").display = level == self.level
+        for _, _, pane in render.CONTENT_TABS:
+            self.query_one(f"#{pane}").display = pane == self.tab
+        self.query_one("#tabs", textual.widgets.Static).update(render.content_tabs(self.tab))
+        if self.tab != "plots":
+            # The picker decides which curves are drawn, so it has nothing to
+            # say about a config form or a log: it goes with the plots it is
+            # beside.
+            self.show_metrics(False)
 
     def _pane_of(self, node: textual.widget.Widget | None) -> str | None:
         """The pane `node` sits in, or None for anything else."""
-        panes = self._LEFT + self._RIGHT_CONFIG + self._RIGHT_DASHBOARD
         for parent in widgets.ancestors(node):
-            if parent.id in panes:
+            if parent.id in self._PANES:
                 return parent.id
         return None
 
@@ -738,6 +885,7 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         state = (
             self.pane,
+            self.tab,
             None if run is None else run.status,
             self.export_metric() is not None,
             self.chattable() is None,
@@ -768,11 +916,25 @@ class MainScreen(_Screen):
         if phase == self.selected_phase:
             return
         self.selected_phase = phase
+        self.remember_phase()
+        self.restore_tab()
         self.reset_phase_view()
         # As soon as the cursor stops rather than on the next tick: a move that
         # took a second to reach the plots would feel like the app had missed
         # it, and one that fetched per row on the way would strobe.
         self.refresh_soon()
+
+    def remember_phase(self) -> None:
+        """File the selected phase under its run, for coming back to.
+
+        Only from inside the phase list. A phase picked for the viewer -- the
+        one a run has got to, chosen by `apply_phases` while the cursor is
+        still up on the run itself -- is not a phase they visited, and pinning
+        it would stop a live run's dashboard following the phase it moves on
+        to.
+        """
+        if self.level == "phases" and self.selected_run is not None and self.selected_phase:
+            self.visited[self.selected_run] = self.selected_phase
 
     def reset_phase_view(self) -> None:
         """Start the metrics panes over for a different phase.
@@ -959,39 +1121,143 @@ class MainScreen(_Screen):
     def action_focus_pane(self, slot: str) -> None:
         """Focus the pane a number key names, if it is on screen.
 
-        `slot` is a position rather than a widget id: `top` is whichever of the
-        config and the plots the content column is currently showing, since the
-        two share the number.
-
-        A number key moves the focus; it never changes what the content column
-        shows. So `5` does nothing while the config is up -- there is no log
-        pane to focus -- and the way to the log is through a pane that puts the
-        dashboard back.
+        A pane that is not on screen is not focused: the metric picker while
+        it is put away, or the two content panes the tab is not on.
         """
-        pane = self.right_column()[0] if slot == "top" else slot
-        widget = self.query_one(f"#{pane}")
+        widget = self.query_one(f"#{slot}")
         if widget.display:
             widget.focus()
 
-    def action_drill_in(self) -> None:
-        """`enter` on a sidebar list: show me the one under the cursor.
+    def action_focus_tab(self, tab: str) -> None:
+        """`2`/`3`/`4`: show that content pane, and go to it.
 
-        Which content pane that is has already been worked out --
-        `right_column` reads it off the sidebar pane being followed -- so this
-        is the same as `4` and needs no state of its own.
+        One key rather than two. The tab is what the content column is about
+        and the focus is where the keys go, and a viewer who says "logs" wants
+        both -- there is nothing they could have meant by asking for the tab
+        and staying in the sidebar.
+
+        Asking for a tab is what files it under the phase: `restore_tab` puts
+        it back the next time that phase is selected.
         """
-        self.action_focus_pane("top")
+        self.tab = tab
+        self.remember_tab()
+        self.apply_focus()
+        self.action_focus_pane(tab)
+
+    def phase_key(self) -> tuple[str, str] | None:
+        """What a per-phase memory is filed under, or None with none selected."""
+        if self.selected_run is None or self.selected_phase is None:
+            return None
+        return (self.selected_run, self.selected_phase)
+
+    def remember_tab(self) -> None:
+        key = self.phase_key()
+        if key is not None:
+            self.tabs[key] = self.tab
+
+    def restore_tab(self) -> None:
+        """Put back the tab last asked for on this phase, if there was one.
+
+        Phases are not alike -- a download has no curve to draw and a train
+        phase is mostly curve -- so how you were looking at one is worth
+        keeping. A phase nobody has chosen a tab for is left alone: the pane
+        does not change under a cursor that is only passing through.
+        """
+        key = self.phase_key()
+        tab = None if key is None else self.tabs.get(key)
+        if tab is None or tab == self.tab:
+            return
+        self.tab = tab
+        self.apply_focus()
+        if self.pane in render.content_panes():
+            # The pane the focus was in has just been hidden; take the focus to
+            # the one that replaced it rather than letting Textual pick.
+            self.action_focus_pane(tab)
+        self.sync_bindings()
+
+    def metrics_open(self) -> bool:
+        return self.query_one("#metrics", widgets.MetricList).display
+
+    def action_toggle_metrics(self) -> None:
+        """`m`: put the metric picker over the plots, or take it away.
+
+        Brings the plots up first if they are not the tab that is showing, the
+        way `e` brings up the config: asking which curves to draw is asking to
+        see them, and a key that quietly did nothing off the plots tab would be
+        a gate with nothing behind it.
+
+        It keeps the focus while it is up, because everything it is opened for
+        -- checking a curve, soloing one, changing the x axis -- is a keypress
+        aimed at it. `tab` still reaches the plots without closing it, so the
+        curve a check draws can be looked at with the picker still in hand.
+        """
+        if self.metrics_open():
+            self.show_metrics(False)
+            return
+        if self.tab != "plots":
+            self.action_focus_tab("plots")
+        self.show_metrics(True)
+
+    def show_metrics(self, open_: bool) -> None:
+        metric_list = self.query_one("#metrics", widgets.MetricList)
+        if metric_list.display == open_:
+            return
+        metric_list.display = open_
+        if open_:
+            metric_list.focus()
+        elif self.pane == "metrics":
+            # Back to the plots the picker was beside, rather than to whatever
+            # Textual would pick once the focused widget vanishes.
+            self.action_focus_pane("plots")
+
+    def action_focus_list(self) -> None:
+        """`1`: the sidebar, at whichever level it is showing."""
+        self.action_focus_pane(self.level)
+
+    def set_level(self, level: str) -> None:
+        """Take the list down into a run's phases, or back up to the runs."""
+        if level == self.level:
+            return
+        self.level = level
+        # Arriving in the list is itself a visit: a viewer who drills in and
+        # comes straight back out was on the phase it opened on.
+        self.remember_phase()
+        self.apply_focus()
+        self.action_focus_pane(level)
+        self.sync_bindings()
+
+    def action_drill_in(self) -> None:
+        """`enter`: one level down, and from the bottom into the content.
+
+        From the runs it opens that run's phases; from the phases there is
+        nothing below, so it hands over to the tab that is up. Which tab that
+        is stays the viewer's: moving the cursor has been feeding that pane all
+        along, so `enter` is "let me at it", not "show me something else".
+        """
+        if self.level == "runs":
+            self.set_level("phases")
+            return
+        self.action_focus_pane(self.tab)
 
     def action_back(self) -> None:
-        """`escape`: out of the editor, then out of the pane, then nothing.
+        """`escape`: out of the editor or the picker, then out of the pane.
 
         Closing an editor keeps the file's value: a committed field has already
         been written, so there is never anything here to lose.
         """
         if self.query_one("#config", widgets.ConfigPane).close_editor():
             return
-        if self.pane in self.right_column():
-            self.action_focus_pane("runs" if self.showing_config() else "phases")
+        if self.metrics_open():
+            self.show_metrics(False)
+            return
+        if self.pane not in self._LEFT:
+            # Out of the content column and back to the list, at whatever level
+            # it was left at.
+            self.action_focus_pane(self.level)
+            return
+        # And from the list, one level up. The runs are the top: `q` is how the
+        # app is left, and an escape that quit would be a surprise.
+        self.set_level("runs")
 
     def action_next_row(self) -> None:
         self.query_one("#config", widgets.ConfigPane).focus_row(1)
@@ -999,17 +1265,32 @@ class MainScreen(_Screen):
     def action_prev_row(self) -> None:
         self.query_one("#config", widgets.ConfigPane).focus_row(-1)
 
-    def action_next_pane(self) -> None:
-        """The next pane in the focused pane's own column.
+    def visible_panes(self) -> list[str]:
+        """The panes on screen, in reading order."""
+        return [pane for pane in self._PANES if self.query_one(f"#{pane}").display]
 
-        `tab` stays in its column -- crossing between the two is what the
-        numbers are for -- so it cycles the three lists on the left, or the plots
-        and the log on the right, and stays put on a config that is a column of
-        one.
+    def action_next_pane(self) -> None:
+        self.step_pane(1)
+
+    def action_prev_pane(self) -> None:
+        self.step_pane(-1)
+
+    def step_pane(self, delta: int) -> None:
+        """`tab`: the next pane on screen, wrapping; `shift+tab`: the previous.
+
+        One cycle over both columns rather than one per column. `tab` is the
+        one key every viewer tries first, and it has to mean "the next thing":
+        a cycle that stopped at the column boundary would leave the content
+        panes reachable only by their numbers, and the numbers are deliberately
+        not in the footer.
         """
-        column = self.column(self.pane)
-        index = column.index(self.pane) if self.pane in column else -1
-        self.action_focus_pane(column[(index + 1) % len(column)])
+        panes = self.visible_panes()
+        if not panes:
+            return
+        # A focus that is not in a pane at all -- nothing focused yet -- starts
+        # the cycle rather than stepping from an index it does not have.
+        index = (panes.index(self.pane) + delta) % len(panes) if self.pane in panes else 0
+        self.action_focus_pane(panes[index])
 
     def action_toggle_metric(self) -> None:
         """`space`: draw or stop drawing the metric, or the extended range."""
@@ -1145,9 +1426,13 @@ class MainScreen(_Screen):
         second is not, since an image is free to declare no config at all.
         """
         form = self.query_one("#config", widgets.ConfigPane)
-        if not self.showing_config() or not form.editable:
+        if not form.editable:
             self.show_error("only a configuring run can be edited", hold=True)
             return
+        # `e` is offered from the sidebar too, where the config need not be the
+        # tab that is up: asking to edit a field is asking to see it.
+        if self.tab != "config":
+            self.action_focus_tab("config")
         if not form.edit_here():
             self.show_error("this image declares no config", hold=True)
 
@@ -1178,36 +1463,23 @@ class MainScreen(_Screen):
             # same fact one tick late: the form is only told what it is showing
             # when the next snapshot lands, so asking it would leave `e` greyed
             # for the run the cursor was on a moment ago.
-            return None if not (self.showing_config() and self.run_is("configuring")) else True
+            return True if self.run_is("configuring") else None
         if action == "chat_run" and not self.editing():
-            # From the runs pane, where you pick the run, and from the phases
-            # pane, which is where you end up: having just read a loss curve is
-            # exactly when you want to hear what the thing it trained sounds
-            # like, and going back up a pane to ask is a step for nothing.
-            #
-            # What it talks to follows the cursor. On the phases pane that is
-            # the phase under it, whose data dir is a frozen snapshot of the run
-            # as it stood when that phase ended; on the runs pane, where no
-            # phase is in view, the run's newest servable one.
-            if self.pane not in ("runs", "phases"):
-                return False
+            # Offered wherever the focus is, because the run it would talk to
+            # is the selected one wherever the focus is. What it talks to
+            # follows the level: at the phases level, the phase the cursor is
+            # on, whose data dir is a frozen snapshot of the run as it stood
+            # when that phase ended; at the runs level, the newest servable one.
             return True if self.chattable() is None else None
         if action in _LIFECYCLE and not self.editing():
-            # Only from the pane the key is about: hidden elsewhere rather than
-            # greyed, because on the metrics pane they are not keys that happen
-            # not to apply -- they are not offered at all.
-            #
-            # Stop and restart reach the phases pane as a pair: standing on the
-            # phase that is running is exactly where you decide to abandon it,
-            # and offering the restart there without the stop would make the
-            # cheaper of the two answers the one you had to leave the pane for.
-            # Both still act on the whole run -- there is no stopping one phase.
-            panes = ("runs", "phases") if action in ("restart_run", "stop_run") else ("runs",)
-            if self.pane not in panes:
-                return False
-            # `n` is about the list, not about a run, so it is always live.
+            # No pane gate. These act on the selected run, and which run that
+            # is does not depend on where the focus happens to be -- so a key
+            # that vanished on the way to the plots and came back on the way
+            # out would be describing the focus, not the run.
             if action == "new_run":
-                return True
+                # The exception: `n` is about the list, and only the runs level
+                # is a list of runs to add one to.
+                return self.level == "runs"
             run = self.selected_run_row()
             if run is None:
                 return None
@@ -1224,7 +1496,7 @@ class MainScreen(_Screen):
             return None if run.status == "running" else True
         if self.editing() and action in _EDIT_MODE_OFF:
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def on_input_submitted(self) -> None:
         """`enter` in an editor: what is in it is what the field should be."""
@@ -1316,10 +1588,12 @@ class MainScreen(_Screen):
         if run is None or run.status == "configuring":
             self.show_error("only a started run can be restarted", hold=True)
             return
-        # Only from the phases pane: on the runs pane there is no phase being
-        # pointed at, and restarting from whichever one the cursor happened to
-        # leave behind is not what pressing `R` over a run means.
-        from_phase = self.selected_phase if self.pane == "phases" else None
+        # Only at the phases level: standing on the run, there is no phase
+        # being pointed at, and restarting from whichever one the list happens
+        # to have left behind is not what `R` over a run means. Which of the
+        # two it will be is on screen -- the list says which level it is at --
+        # and the prompt below names the phase either way.
+        from_phase = self.selected_phase if self.level == "phases" else None
         run_id = run.id
         question = (
             f"restart run '{run.name}'?"
@@ -1447,10 +1721,10 @@ class MainScreen(_Screen):
     def chat_phase(self) -> str | None:
         """The phase `t` would talk to, or None to mean the newest servable one.
 
-        From the phases pane it is the phase under the cursor; from the runs
-        pane nothing is in view to name one, so the default stands.
+        At the phases level it is the phase the cursor is on; at the runs
+        level no phase is being pointed at, so the default stands.
         """
-        return self.selected_phase if self.pane == "phases" else None
+        return self.selected_phase if self.level == "phases" else None
 
     def chattable(self) -> str | None:
         """Why `t` cannot talk to the selection, or None if it can.
@@ -1498,11 +1772,69 @@ class MainScreen(_Screen):
             return
         self.host.open(ChatScreen(self.host, self.data, run.id, run.name, self.chat_phase()))
 
-    def action_images(self) -> None:
-        self.host.open(ImagesScreen(self.host, self.data))
 
-    def action_compute(self) -> None:
-        self.host.open(ComputeScreen(self.host, self.data))
+# What `?` writes down: the keys the footer has no room for, grouped by what
+# they are for. The lifecycle and plot keys are deliberately not here -- those
+# are in the footer, where they answer for the run and the pane in front of
+# you, and a second list of them would be the one that went stale.
+_HELP = (
+    (
+        "getting around",
+        (
+            ("enter", "down a level: run, then phases, then content"),
+            ("escape", "up a level, as far as the runs"),
+            ("tab / shift+tab", "the next pane on screen, and the previous"),
+            ("1", "the list, at whichever level it is at"),
+            ("2 / 3 / 4", "the config, the plots, the logs"),
+            ("i / c", "the images and the compute devices"),
+        ),
+    ),
+    (
+        "the plots",
+        (
+            ("m", "the metric picker: which curves are drawn"),
+            ("space", "draw this metric, or stop drawing it"),
+            ("y / x", "solo this metric; change the x axis"),
+            ("l / b", "log y scale; braille instead of blocks"),
+            ("E", "write the curve out as csv, png, svg or pdf"),
+        ),
+    ),
+    (
+        "runs",
+        (
+            ("n / d", "new run; delete this one"),
+            ("s / S", "start; stop"),
+            ("R", "restart, from the selected phase if there is one"),
+            ("e", "edit the field the cursor is on"),
+            ("t", "talk to what this run produced"),
+            ("r", "refresh now, dropping the image caches"),
+        ),
+    ),
+)
+
+
+class HelpScreen(textual.screen.ModalScreen[bool]):
+    """The key map, because five navigation keys are not in the footer."""
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "close"),
+        textual.binding.Binding("question_mark", "cancel", "close", show=False),
+    ]
+
+    def compose(self) -> textual.app.ComposeResult:
+        with textual.containers.VerticalScroll(id="help"):
+            for heading, entries in _HELP:
+                yield textual.widgets.Static(render.help_heading(heading))
+                for keys, what in entries:
+                    yield textual.widgets.Static(render.help_line(keys, what))
+
+    def on_mount(self) -> None:
+        box = self.query_one("#help", textual.containers.VerticalScroll)
+        box.border_title = "keys"
+        box.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class ConfirmScreen(textual.screen.ModalScreen[bool]):
@@ -1863,7 +2195,7 @@ class ChatScreen(_Screen):
     """
 
     BINDINGS = [
-        textual.binding.Binding("escape", "app.pop_screen", "back"),
+        textual.binding.Binding("escape", "back", "back"),
     ]
 
     def __init__(
@@ -2081,6 +2413,7 @@ class ImagesScreen(_Screen):
 
     TITLE = "utrain"
     SUB_TITLE = "images"
+    DESTINATION = "images"
 
     BINDINGS = [
         textual.binding.Binding("a", "add_image", "add"),
@@ -2095,7 +2428,7 @@ class ImagesScreen(_Screen):
         self.pulling = False
 
     def compose_body(self) -> textual.app.ComposeResult:
-        yield _table("images", "images", render.IMAGE_COLUMNS)
+        yield _table("images", "images", render.IMAGE_COLUMNS, drill=False)
 
     def refresh_data(self) -> None:
         self.fetch()
@@ -2122,7 +2455,7 @@ class ImagesScreen(_Screen):
         """
         if action == "add_image":
             return None if self.pulling else True
-        return True
+        return super().check_action(action, parameters)
 
     def action_add_image(self) -> None:
         """`a`: pull an image and tag it as a preset."""
@@ -2174,9 +2507,10 @@ class ComputeScreen(_Screen):
 
     TITLE = "utrain"
     SUB_TITLE = "compute"
+    DESTINATION = "compute"
 
     def compose_body(self) -> textual.app.ComposeResult:
-        yield _table("compute", "compute", render.COMPUTE_COLUMNS)
+        yield _table("compute", "compute", render.COMPUTE_COLUMNS, drill=False)
 
     def refresh_data(self) -> None:
         self.fetch()

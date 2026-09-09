@@ -145,7 +145,9 @@ class MetricPlot(textual.widgets.Static):
                 xs=plot.xs,
                 ys=plot.ys,
                 lines=True,
-                title=f"{plot.title} vs {plot.x_label}",
+                # The latest value rides in the title, so the number a viewer
+                # watches tick is on the curve rather than in a pane beside it.
+                title=f"{plot.title} = {plot.latest} vs {plot.x_label}",
                 width=width,
                 height=height,
                 y_as_log=log_y,
@@ -171,7 +173,10 @@ class PlotPane(textual.containers.VerticalScroll):
 
     BINDINGS = [
         textual.binding.Binding("l", "screen.log_y", "log y"),
-        textual.binding.Binding("b", "screen.charset", "braille"),
+        # "charset" rather than "braille": which of the two it switches *to*
+        # depends on where it started, and where it starts is a guess about the
+        # viewer's font.
+        textual.binding.Binding("b", "screen.charset", "charset"),
         # Shifted, the convention `S` and `R` already follow: `e` is the
         # screen's `edit_config`, and a pane-local `e` would shadow it here and
         # nowhere else. Offered on the metrics pane too -- see `MetricList`.
@@ -224,7 +229,7 @@ class MetricList(textual.widgets.OptionList):
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.border_title = "3 metrics"
+        self.border_title = "metrics"
         self._columns: list[str] = []
         self._selected: set[str] = set()
         self._rows: list[render.MetricRow] = []
@@ -440,7 +445,7 @@ class LogTail(textual.widgets.RichLog):
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.border_title = "5 logs"
+        self.border_title = "logs"
         self._shown: list[str] = []
 
     @property
@@ -778,7 +783,7 @@ class ConfigPane(textual.containers.VerticalScroll):
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.border_title = "4 config"
+        self.border_title = "config"
         self._key: tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]] | None = None
         self._summary: dict[str, FieldRow] = {}
         self._can_edit = False

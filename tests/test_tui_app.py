@@ -512,9 +512,17 @@ def _described_with_plots() -> utrain.container.schema.DescribeOutput:
 def _app(
     data_dir: pathlib.Path,
     described: utrain.container.schema.DescribeOutput | None = None,
+    charset: str = "block",
 ) -> utrain.tui.app.UtrainApp:
+    """The app under test.
+
+    `charset` is pinned rather than left on `auto`, whose answer depends on the
+    `TERM` the suite happens to run under. What `auto` decides is
+    `render.default_charset`'s business and is tested there; these tests are
+    about what the screen does with the answer.
+    """
     source = _RecordingData(
-        settings=utrain.config.Settings(data_dir=data_dir),
+        settings=utrain.config.Settings(data_dir=data_dir, tui_charset=charset),
         describe_cache={IMAGE: described if described is not None else _describe()},
     )
     return utrain.tui.app.UtrainApp(source)
@@ -619,10 +627,13 @@ async def _pause_until(
 
 
 async def _select_pretrain(app: utrain.tui.app.UtrainApp, pilot: typing.Any) -> None:
-    """Move the phases cursor onto the phase that logged metrics."""
+    """Drill into the run, whose current phase is the one that logged metrics.
+
+    Both of the seeded phases are done, so the run's current phase is the last
+    of them -- which is why this no longer has to move the cursor.
+    """
     await _settle(app, pilot)
-    await pilot.press("2")
-    await pilot.press("down")
+    await pilot.press("enter")
     await _settle(app, pilot)
     # The metrics arrive on the tick after the selection, since the fetch that
     # was in flight was for the previously selected phase.
@@ -632,17 +643,20 @@ async def _select_pretrain(app: utrain.tui.app.UtrainApp, pilot: typing.Any) -> 
 # -- selection ------------------------------------------------------------
 
 
-async def test_the_app_opens_on_the_first_run_and_its_first_phase(
+async def test_the_app_opens_on_the_first_run_and_where_it_has_got_to(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
+    """The current phase, not the first: the runs list is a live monitor, so
+    standing on a run shows what it is doing rather than what it did first."""
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
         screen = _main(app)
 
         assert [r.name for r in screen.runs] == ["tiny-shakespeare"]
         assert screen.selected_run == RUN_ID
+        assert screen.level == "runs"
         assert [p.phase for p in screen.phases] == ["tokenizer", "pretrain"]
-        assert screen.selected_phase == "tokenizer"
+        assert screen.selected_phase == "pretrain"
 
 
 async def test_moving_the_phase_cursor_selects_that_phase(app: utrain.tui.app.UtrainApp) -> None:
@@ -651,6 +665,56 @@ async def test_moving_the_phase_cursor_selects_that_phase(app: utrain.tui.app.Ut
 
         # The full run id, not the short form the table displays.
         assert _main(app).address() == f"{RUN_ID}/pretrain"
+
+        await pilot.press("up")
+        await _settle(app, pilot)
+
+        assert _main(app).address() == f"{RUN_ID}/tokenizer"
+
+
+async def test_enter_drills_into_the_run_and_escape_comes_back(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """One list, two levels: `enter` is down and `escape` is up, and the list
+    says which of the two it is showing."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = _main(app)
+        assert screen.level == "runs"
+        assert screen.query_one("#runs").display
+        assert not screen.query_one("#phases").display
+
+        await pilot.press("enter")
+        await _settle(app, pilot)
+        assert screen.level == "phases"
+        assert screen.query_one("#phases").display
+        assert not screen.query_one("#runs").display
+        assert "tiny-shakespeare" in str(screen.query_one("#phases").border_title)
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+        assert screen.level == "runs"
+        assert app.focused is not None and app.focused.id == "runs"
+
+
+async def test_coming_back_to_a_run_lands_on_the_phase_it_was_left_at(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Otherwise the drill is lossy, and stepping up to compare two runs costs
+    the place in each of them."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("up")
+        await _settle(app, pilot)
+        assert screen.selected_phase == "tokenizer"
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+        await pilot.press("enter")
+        await _settle(app, pilot)
+
+        assert screen.selected_phase == "tokenizer"
 
 
 async def test_the_images_and_compute_screens_are_reachable(
@@ -661,6 +725,61 @@ async def test_the_images_and_compute_screens_are_reachable(
         await pilot.press("i")
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.ImagesScreen)
+
+        await pilot.press("c")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.ComputeScreen)
+
+
+async def test_escape_returns_to_the_runs_browser(app: utrain.tui.app.UtrainApp) -> None:
+    """The destinations are siblings, so leaving one goes to the one they are
+    all reached from rather than to whichever was visited last."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("i")
+        await pilot.press("c")
+        await _settle(app, pilot)
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+
+        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
+
+
+async def test_a_destination_keeps_its_state_while_another_is_showing(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The reason they are modes and not a stack: going to look at an image
+    must not throw away the phase the viewer had open."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        await pilot.press("3")
+        await _settle(app, pilot)
+        before = _main(app)
+        assert before.address() == f"{RUN_ID}/pretrain"
+
+        await pilot.press("i")
+        await _settle(app, pilot)
+        await pilot.press("escape")
+        await _settle(app, pilot)
+
+        assert _main(app) is before
+        assert before.address() == f"{RUN_ID}/pretrain"
+        assert before.tab == "plots"
+
+
+async def test_the_destination_showing_is_not_offered_as_somewhere_to_go(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        assert "i" in _footer(app)
+
+        await pilot.press("i")
+        await _settle(app, pilot)
+
+        assert "i" not in _footer(app)
+        assert "c" in _footer(app)
 
 
 # -- the metrics pane -----------------------------------------------------
@@ -709,7 +828,7 @@ async def test_shift_arrows_extend_the_range_space_acts_on(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         await _settle(app, pilot)
         assert sorted(metrics.selected) == ["loss", "mfu"]
 
@@ -731,7 +850,7 @@ async def test_space_checks_a_range_that_is_not_all_checked(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("space")
         await _settle(app, pilot)
         assert len(metrics.selected) == 1
@@ -754,7 +873,7 @@ async def test_a_plain_arrow_rubs_out_the_range_it_drops(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("shift+down")
         await _settle(app, pilot)
         # The cursor's own row wears the cursor bar instead, so the range shows
@@ -772,7 +891,7 @@ async def test_a_plain_arrow_drops_the_range(app: utrain.tui.app.UtrainApp) -> N
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("shift+down")
         await _settle(app, pilot)
         assert metrics.range_indices == [0, 1]
@@ -795,7 +914,7 @@ async def test_extending_stops_at_the_end_of_the_list(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         for _ in range(4):
             await pilot.press("shift+down")
         await _settle(app, pilot)
@@ -810,25 +929,29 @@ async def test_a_refresh_leaves_the_metrics_cursor_and_scroll_alone(
     """A live phase relogs every value each tick; the viewer's place must hold.
 
     Driven through the widget rather than through a fetch, because the pane has
-    to be longer than the sidebar for a scroll offset to exist at all, and the
+    to be longer than the picker for a scroll offset to exist at all, and the
     seeded run logs two metrics.
     """
 
     def _rows(offset: float) -> list[utrain.tui.render.MetricRow]:
         return [
             utrain.tui.render.MetricRow(mark="*", name=f"m{i:02d}", value=f"{i + offset:g}")
-            for i in range(40)
+            for i in range(80)
         ]
 
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
+        await pilot.press("m")
+        await _settle(app, pilot)
         # The tick would otherwise repaint the pane with the run's own two
         # metrics halfway through.
-        _main(app).timer.stop()
+        timer = _main(app).timer
+        assert timer is not None
+        timer.stop()
         metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
         metrics.show(_rows(0.0))
-        await _pause_until(pilot, lambda: metrics.option_count == 40, "the rows to be listed")
-        metrics.highlighted = 30
+        await _pause_until(pilot, lambda: metrics.option_count == 80, "the rows to be listed")
+        metrics.highlighted = 70
         await _pause_until(pilot, lambda: metrics.scroll_y > 0, "the cursor to scroll into view")
         # Scrolled away from the cursor, which is what reading further up the
         # list looks like and what a rebuild cannot put back: restoring the
@@ -842,11 +965,11 @@ async def test_a_refresh_leaves_the_metrics_cursor_and_scroll_alone(
         # rebuild has landed, so the rebuild has to be observably done first.
         await _pause_until(
             pilot,
-            lambda: "30.5" in str(metrics.get_option_at_index(30).prompt),
+            lambda: "70.5" in str(metrics.get_option_at_index(70).prompt),
             "the relogged values to land",
         )
 
-        assert metrics.highlighted == 30
+        assert metrics.highlighted == 70
         assert metrics.scroll_y == 0
 
 
@@ -874,7 +997,7 @@ async def test_toggling_a_metric_hides_its_plot(app: utrain.tui.app.UtrainApp) -
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("space")
         await _settle(app, pilot)
 
@@ -886,7 +1009,7 @@ async def test_toggling_a_metric_hides_its_plot(app: utrain.tui.app.UtrainApp) -
 async def test_toggling_a_metric_back_shows_it_again(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("space")
         await _settle(app, pilot)
         await pilot.press("space")
@@ -900,7 +1023,7 @@ async def test_y_solos_one_metric(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("y")
         await _settle(app, pilot)
 
@@ -912,7 +1035,7 @@ async def test_y_again_stops_soloing(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("y")
         await _settle(app, pilot)
         await pilot.press("y")
@@ -931,7 +1054,7 @@ async def test_x_cycles_the_x_axis(app: utrain.tui.app.UtrainApp) -> None:
         screen = _main(app)
         assert screen.x_axis == utrain.tui.render.X_STEP
 
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("x")
         await _settle(app, pilot)
         assert screen.x_axis == utrain.tui.render.X_ELAPSED
@@ -945,7 +1068,7 @@ async def test_x_cycles_the_x_axis(app: utrain.tui.app.UtrainApp) -> None:
 async def test_the_x_axis_reaches_the_plots(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("x")
         await _settle(app, pilot)
 
@@ -957,7 +1080,7 @@ async def test_the_x_axis_reaches_the_plots(app: utrain.tui.app.UtrainApp) -> No
 async def test_l_toggles_log_scale_on_every_plot(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.press("l")
         await _settle(app, pilot)
 
@@ -1002,11 +1125,14 @@ async def test_a_phase_that_names_a_plot_gets_that_one_only(
 async def test_a_phase_that_names_no_plot_still_gets_the_dashboard(
     plotted_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """`tokenizer` names none, and it is the phase the app opens on."""
+    """`tokenizer` names none."""
     app = plotted_app
     async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        await pilot.press("up")
         await _settle(app, pilot)
 
+        assert _main(app).selected_phase == "tokenizer"
         assert _main(app).pinned == []
 
 
@@ -1029,7 +1155,7 @@ async def test_checking_a_metric_takes_the_dashboard_back(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("down")
         await pilot.press("space")
         await _settle(app, pilot)
@@ -1049,7 +1175,7 @@ async def test_cycling_the_x_axis_takes_the_dashboard_back(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("x")
         await _settle(app, pilot)
 
@@ -1067,7 +1193,7 @@ async def test_soloing_and_back_returns_to_the_named_plot(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("down")
         await pilot.press("y")
         await _settle(app, pilot)
@@ -1087,13 +1213,14 @@ async def test_leaving_the_phase_forgets_that_the_dashboard_was_asked_for(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("down")
         await pilot.press("space")
         await _settle(app, pilot)
         assert screen.pinned == []
 
-        await pilot.press("2")
+        # Off the phase and back onto it, which is what forgets the override.
+        await pilot.press("1")
         await pilot.press("up")
         await _settle(app, pilot)
         await pilot.press("down")
@@ -1125,6 +1252,9 @@ async def test_an_inherited_phase_shows_the_attempt_that_ran_it(
         await _settle(restarted_app, pilot)
         screen = _main(restarted_app)
         assert screen.selected_run == RESTART_ID
+        await pilot.press("enter")
+        await pilot.press("up")
+        await _settle(restarted_app, pilot)
         assert screen.selected_phase == "tokenizer"
         # The list itself: inherited from attempt 1, and addressed under it.
         entry = screen.selected_entry()
@@ -1143,6 +1273,8 @@ async def test_a_phase_that_logged_nothing_is_empty_not_broken(
 ) -> None:
     """tokenizer has no rtsdb and no log file here."""
     async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        await pilot.press("up")
         await _settle(app, pilot)
         screen = _main(app)
 
@@ -1182,7 +1314,7 @@ async def test_a_configuring_run_reads_the_same_as_any_other(
         screen = _main(draft_app)
 
         assert screen.selected_run == DRAFT_ID
-        assert screen.showing_config()
+        assert screen.tab == "config"
         assert _form(draft_app).editable
         assert not any(r.editing for r in _rows(draft_app))
         assert [str(r.value) for r in _rows(draft_app)] == ["4", "fp32", "0.001", "false"]
@@ -1199,7 +1331,7 @@ async def test_a_started_run_shows_its_config_read_only(
         screen = _main(draft_app)
 
         assert screen.selected_run == RUN_ID
-        assert screen.showing_config()
+        assert screen.tab == "config"
         assert not _form(draft_app).editable
         assert [str(r.value) for r in _rows(draft_app)] == ["4", "fp32", "0.001", "false"]
 
@@ -1235,15 +1367,23 @@ async def test_the_summary_rows_are_not_cursor_stops(
 # -- navigation: enter goes in, escape comes out --------------------------
 
 
-async def test_enter_opens_the_pane_the_list_is_about(app: utrain.tui.app.UtrainApp) -> None:
+async def test_enter_opens_the_tab_that_is_up(app: utrain.tui.app.UtrainApp) -> None:
+    """From either list, and without changing which tab that is.
+
+    Moving the cursor has been feeding that pane all along, so `enter` is "let
+    me at it" rather than "show me something else".
+    """
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
 
+        # Runs, then phases, then the tab that is up.
+        await pilot.press("enter")
         await pilot.press("enter")
         await _settle(app, pilot)
         assert app.focused is not None and app.focused.id == "config"
 
-        await pilot.press("2")
+        await pilot.press("3")
+        await pilot.press("1")
         await pilot.press("enter")
         await _settle(app, pilot)
         assert app.focused is not None and app.focused.id == "plots"
@@ -1254,7 +1394,7 @@ async def test_enter_on_the_metrics_list_still_toggles(app: utrain.tui.app.Utrai
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         metrics = _main(app).query_one("#metrics", utrain.tui.widgets.MetricList)
-        await pilot.press("3")
+        await pilot.press("m")
         await _settle(app, pilot)
         # The cursor starts on the first metric rather than nowhere, which is
         # what gives the list's own `enter` something to act on.
@@ -1277,13 +1417,13 @@ async def test_escape_returns_to_the_list_the_pane_follows(
         await _settle(app, pilot)
         assert app.focused is not None and app.focused.id == "runs"
 
-        await pilot.press("2")
+        await pilot.press("enter")
         await pilot.press("enter")
         await pilot.press("escape")
         await _settle(app, pilot)
         assert app.focused is not None and app.focused.id == "phases"
 
-        await pilot.press("5")
+        await pilot.press("4")
         await pilot.press("escape")
         await _settle(app, pilot)
         assert app.focused is not None and app.focused.id == "phases"
@@ -1331,7 +1471,7 @@ async def test_e_edits_the_field_under_the_row_cursor(
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
 
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("down")
         await pilot.press("down")
         await pilot.press("down")
@@ -1347,9 +1487,13 @@ async def test_e_edits_the_field_under_the_row_cursor(
 async def test_enter_goes_one_level_deeper_each_press(
     draft_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """Run, then its config, then the first field: `e` skips to the last."""
+    """Run, its phases, its config, then the first field: `e` skips to the last."""
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
+
+        await pilot.press("enter")
+        await _settle(draft_app, pilot)
+        assert draft_app.focused is not None and draft_app.focused.id == "phases"
 
         await pilot.press("enter")
         await _settle(draft_app, pilot)
@@ -1450,7 +1594,7 @@ async def test_a_bool_flips_on_enter(draft_app: utrain.tui.app.UtrainApp) -> Non
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
 
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("up")
         await _settle(draft_app, pilot)
         assert draft_app.focused is _rows(draft_app)[3]
@@ -1467,7 +1611,7 @@ async def test_an_enum_offers_its_options(draft_app: utrain.tui.app.UtrainApp) -
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
 
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("down")
         await pilot.press("down")
         await pilot.press("e")
@@ -1536,7 +1680,7 @@ async def test_a_single_key_shortcut_cannot_interrupt_an_edit(
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
         screen = _main(draft_app)
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("down")
         await pilot.press("down")
         await pilot.press("e")
@@ -1574,19 +1718,21 @@ async def test_e_is_offered_only_where_it_works(draft_app: utrain.tui.app.Utrain
         assert not screen.editing()
 
 
-async def test_tab_stays_put_on_the_config_pane(draft_app: utrain.tui.app.UtrainApp) -> None:
-    """`tab` is the panes' key; the config column is a column of one."""
+async def test_tab_leaves_the_config_pane_for_the_sidebar(
+    draft_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """`tab` is one cycle over every pane, so the last one wraps to the first."""
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
         screen = _main(draft_app)
-        await pilot.press("4")
+        await pilot.press("2")
         await _settle(draft_app, pilot)
         assert screen.pane == "config"
 
         await pilot.press("tab")
         await _settle(draft_app, pilot)
 
-        assert screen.pane == "config"
+        assert screen.pane == "runs"
 
 
 # -- the podman cache -----------------------------------------------------
@@ -1626,38 +1772,26 @@ async def test_the_plot_and_log_panes_can_be_focused(app: utrain.tui.app.UtrainA
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
 
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.pause()
         assert app.focused is not None and app.focused.id == "plots"
 
-        await pilot.press("5")
+        await pilot.press("4")
         await pilot.pause()
         assert app.focused is not None and app.focused.id == "log"
 
 
-async def test_tab_cycles_the_left_column_only(app: utrain.tui.app.UtrainApp) -> None:
-    """Crossing to the content column is what the number keys are for."""
+async def test_tab_cycles_every_pane_on_screen(app: utrain.tui.app.UtrainApp) -> None:
+    """One cycle over both columns: `tab` has to mean "the next thing".
+
+    What it walks is the list, at whichever level it is at, and whichever
+    content pane the tab is on -- nothing else is on screen, so nothing else is
+    a stop.
+    """
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
         screen = _main(app)
         assert screen.pane == "runs"
-
-        visited = []
-        for _ in range(4):
-            await pilot.press("tab")
-            await _settle(app, pilot)
-            visited.append(screen.pane)
-
-        assert visited == ["phases", "metrics", "runs", "phases"]
-
-
-async def test_tab_cycles_the_content_column(app: utrain.tui.app.UtrainApp) -> None:
-    async with app.run_test(size=SIZE) as pilot:
-        await _select_pretrain(app, pilot)
-        screen = _main(app)
-        await pilot.press("4")
-        await _settle(app, pilot)
-        assert screen.pane == "plots"
 
         visited = []
         for _ in range(3):
@@ -1665,57 +1799,108 @@ async def test_tab_cycles_the_content_column(app: utrain.tui.app.UtrainApp) -> N
             await _settle(app, pilot)
             visited.append(screen.pane)
 
-        assert visited == ["log", "plots", "log"]
+        assert visited == ["config", "runs", "config"]
 
 
-async def test_tab_stays_put_on_a_config_that_is_a_column_of_one(
+async def test_the_metric_picker_joins_the_cycle_while_it_is_open(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
+    """`tab` reaches the plots without putting the picker away.
+
+    Checking a metric is asking to see a curve, so the picker has to still be
+    in hand once the curve is drawn.
+    """
     async with app.run_test(size=SIZE) as pilot:
-        await _settle(app, pilot)
+        await _select_pretrain(app, pilot)
         screen = _main(app)
-        await pilot.press("4")
+        await pilot.press("m")
         await _settle(app, pilot)
-        assert screen.pane == "config"
+        assert screen.pane == "metrics"
 
         await pilot.press("tab")
         await _settle(app, pilot)
-        assert screen.pane == "config"
+
+        assert screen.pane == "phases"
+        assert screen.metrics_open()
 
 
-async def test_four_focuses_whichever_content_pane_is_up(
+async def test_tab_leaves_the_content_column_for_the_sidebar(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """The plots and the config are the same slot, so they share the number."""
+    """The content panes are no longer a loop of their own."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        await pilot.press("3")
+        await _settle(app, pilot)
+        assert screen.pane == "plots"
+
+        visited = []
+        for _ in range(2):
+            await pilot.press("tab")
+            await _settle(app, pilot)
+            visited.append(screen.pane)
+
+        assert visited == ["phases", "plots"]
+
+
+async def test_shift_tab_cycles_the_other_way(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("4")
+        screen = _main(app)
+        assert screen.pane == "runs"
+
+        # Backwards from the first pane is the last one on screen, which with
+        # the config tab up is the config.
+        await pilot.press("shift+tab")
         await _settle(app, pilot)
-        assert _main(app).pane == "config"
+        assert screen.pane == "config"
 
-        await pilot.press("2")
-        await pilot.press("4")
+        await pilot.press("shift+tab")
         await _settle(app, pilot)
-        assert _main(app).pane == "plots"
+        assert screen.pane == "runs"
 
 
-async def test_a_number_cannot_reach_a_hidden_pane(app: utrain.tui.app.UtrainApp) -> None:
-    """`5` does nothing while the config is up: there is no log pane to focus.
+async def test_each_number_selects_its_tab_and_goes_to_it(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """One key, both halves: naming a tab and staying in the sidebar is not
+    something a viewer could have meant."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = _main(app)
 
-    A number key moves the focus; it does not decide what the content column
-    shows.
+        for key, tab in (("3", "plots"), ("4", "log"), ("2", "config")):
+            await pilot.press(key)
+            await _settle(app, pilot)
+            assert screen.tab == tab
+            assert screen.pane == tab
+
+
+async def test_the_sidebar_cursor_does_not_change_the_tab(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The whole point of the tabs: the content column is the viewer's choice.
+
+    Descending into a run changes whose logs are shown, never that logs are
+    what is shown. A phase that has a tab of its own is the one exception, and
+    it is still the viewer's choice -- see
+    `test_each_phase_comes_back_to_the_tab_it_was_left_on`.
     """
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
         screen = _main(app)
-        assert screen.showing_config()
+        await pilot.press("4")
+        await _settle(app, pilot)
+        assert screen.tab == "log"
 
-        await pilot.press("5")
+        await pilot.press("1")
+        await pilot.press("enter")
         await _settle(app, pilot)
 
-        assert screen.pane == "runs"
-        assert screen.showing_config()
-        assert not screen.query_one("#log", utrain.tui.widgets.LogTail).display
+        assert screen.pane == "phases"
+        assert screen.tab == "log"
+        assert screen.query_one("#log", utrain.tui.widgets.LogTail).display
 
 
 async def test_a_panes_key_is_inert_from_another_pane(app: utrain.tui.app.UtrainApp) -> None:
@@ -1738,21 +1923,26 @@ async def test_the_footer_shows_the_focused_panes_keys(app: utrain.tui.app.Utrai
         await _select_pretrain(app, pilot)
         assert "space" not in _main(app).active_bindings
 
-        await pilot.press("3")
+        await pilot.press("m")
         await _settle(app, pilot)
         assert "space" in _main(app).active_bindings
 
 
-async def test_both_content_panes_carry_the_same_number(app: utrain.tui.app.UtrainApp) -> None:
-    """The plots and the config share slot 4, and say so in their titles."""
+async def test_the_tab_strip_names_the_three_and_marks_the_one_that_is_up(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The numbers live here now, which is what frees the pane titles to say
+    whose config or whose curves they are showing."""
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
         screen = _main(app)
-        assert str(screen.query_one("#config").border_title).startswith("4 ")
+        strip = screen.query_one("#tabs", textual.widgets.Static)
 
-        await pilot.press("2")
-        await _settle(app, pilot)
-        assert str(screen.query_one("#plots").border_title).startswith("4 ")
+        assert "2 Config" in str(strip.render())
+        assert "3 Plots" in str(strip.render())
+        assert "4 Logs" in str(strip.render())
+        # Not a number in sight: the pane title is free to say what it holds.
+        assert not str(screen.query_one("#config").border_title).startswith("4 ")
 
 
 async def test_the_pane_numbers_are_not_in_the_footer(app: utrain.tui.app.UtrainApp) -> None:
@@ -1769,7 +1959,7 @@ async def test_b_switches_the_plots_to_braille(app: utrain.tui.app.UtrainApp) ->
         screen = _main(app)
         assert all(p.charset == utrain.tui.render.CHARSET_BLOCK for p in screen.plots.values())
 
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.press("b")
         await _settle(app, pilot)
         assert all(p.charset == utrain.tui.render.CHARSET_BRAILLE for p in screen.plots.values())
@@ -1812,8 +2002,8 @@ async def test_a_plot_mounted_later_gets_the_chosen_character_set(
         await _settle(app, pilot)
         # Off the runs pane first, so the content column is the plots and not
         # the config; then onto the plots pane, which is what owns `b`.
-        await pilot.press("2")
-        await pilot.press("4")
+        await pilot.press("enter")
+        await pilot.press("3")
         await pilot.press("b")
         await _settle(app, pilot)
         await _select_pretrain(app, pilot)
@@ -1948,31 +2138,24 @@ async def test_shift_s_is_greyed_on_a_run_that_is_not_running(
         assert _recording(live_app).stopped == []
 
 
-async def test_start_is_not_offered_away_from_the_runs_pane(
+async def test_the_lifecycle_keys_follow_the_run_not_the_focus(
     live_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """Gone from the footer, not greyed: the phases pane does not offer it.
-
-    Stop is the exception, and stays -- it pairs with restart there.
-    """
+    """They act on the selected run, and which run that is does not depend on
+    where the focus happens to be -- so they do not come and go with it."""
     async with live_app.run_test(size=SIZE) as pilot:
         await _settle(live_app, pilot)
-        await pilot.press("2")
+        await pilot.press("enter")
         await _settle(live_app, pilot)
         screen = _main(live_app)
-        assert screen.pane == "phases"
+        assert screen.level == "phases"
 
-        assert "s" not in screen.active_bindings
         assert screen.active_bindings["S"].enabled
 
-        await pilot.press("3")
+        await pilot.press("m")
         await _settle(live_app, pilot)
         assert screen.pane == "metrics"
-        assert "S" not in screen.active_bindings
-
-        await pilot.press("S")
-        await _settle(live_app, pilot)
-        assert _recording(live_app).stopped == []
+        assert screen.active_bindings["S"].enabled
 
 
 async def test_shift_s_stops_the_run_from_the_phases_pane(
@@ -2004,7 +2187,7 @@ async def test_shift_s_typed_into_an_editor_is_a_value_not_a_stop(
 ) -> None:
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("down")
         await pilot.press("e")
         await _settle(draft_app, pilot)
@@ -2407,25 +2590,30 @@ async def test_shift_r_is_greyed_on_a_run_that_never_started(
         assert screen.active_bindings["R"].enabled
 
 
-async def test_new_and_delete_are_not_offered_off_the_runs_pane(
+async def test_new_is_the_one_key_the_phases_level_does_not_offer(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """Restart is the one that reaches the phases pane, because it uses it."""
+    """`n` is about the list, and only the runs level is a list of runs.
+
+    Delete and restart act on the selected run, which is as unambiguous inside
+    it as it is outside, so they stay.
+    """
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("2")
+        await pilot.press("enter")
         await _settle(app, pilot)
         screen = _main(app)
-        assert screen.pane == "phases"
+        assert screen.level == "phases"
 
         assert "n" not in screen.active_bindings
-        assert "d" not in screen.active_bindings
+        assert screen.active_bindings["d"].enabled
         assert screen.active_bindings["R"].enabled
 
-        await pilot.press("3")
+        await pilot.press("m")
         await _settle(app, pilot)
         assert screen.pane == "metrics"
-        assert "R" not in screen.active_bindings
+        assert "n" not in screen.active_bindings
+        assert screen.active_bindings["R"].enabled
 
 
 async def test_the_new_keys_typed_into_an_editor_are_values(
@@ -2434,7 +2622,7 @@ async def test_the_new_keys_typed_into_an_editor_are_values(
     """The twin of the `S` case: an `n` or a `d` at a field is a character."""
     async with draft_app.run_test(size=SIZE) as pilot:
         await _settle(draft_app, pilot)
-        await pilot.press("4")
+        await pilot.press("2")
         await pilot.press("down")
         await pilot.press("e")
         await _settle(draft_app, pilot)
@@ -2497,22 +2685,20 @@ async def test_the_footer_follows_the_run_the_cursor_is_on(
         assert not keys["s"] and not keys["S"] and not keys["e"]
 
 
-async def test_the_footer_drops_the_keys_off_the_runs_pane(
+async def test_the_footer_keeps_the_lifecycle_keys_across_the_levels(
     live_app: utrain.tui.app.UtrainApp,
 ) -> None:
+    """The footer describes the run, so it does not reshuffle on the way down."""
     async with live_app.run_test(size=SIZE) as pilot:
         await _settle(live_app, pilot)
-        assert "S" in _footer(live_app)
+        assert _footer(live_app)["S"]
 
-        await pilot.press("2")
+        await pilot.press("enter")
         await _settle(live_app, pilot)
-        assert _main(live_app).pane == "phases"
-        keys = _footer(live_app)
-        # Stop survives the crossing, because the phases pane offers it; start
-        # does not.
-        assert "s" not in keys and keys["S"]
+        assert _main(live_app).level == "phases"
+        assert _footer(live_app)["S"]
 
-        await pilot.press("1")
+        await pilot.press("escape")
         await _settle(live_app, pilot)
         assert _footer(live_app)["S"]
 
@@ -2618,7 +2804,7 @@ async def test_shift_e_opens_the_export_dialog_named_for_the_curve(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
 
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2642,7 +2828,7 @@ async def test_the_export_dialog_opens_over_the_plot_pane_too(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
 
-        await pilot.press("4")
+        await pilot.press("3")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2654,7 +2840,7 @@ async def test_escape_closes_the_export_dialog_and_writes_nothing(
 ) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2670,7 +2856,7 @@ async def test_enter_writes_the_curve_and_says_where(
 ) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2711,7 +2897,7 @@ async def test_the_export_is_at_full_resolution(
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         monkeypatch.setattr(utrain.tui.screens.render, "build_plot", spy)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2723,7 +2909,7 @@ async def test_the_exported_figure_is_the_format_that_was_picked(
 ) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2743,7 +2929,7 @@ async def test_the_exported_figure_is_the_format_that_was_picked(
 async def test_picking_a_format_tracks_the_extension(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2762,7 +2948,7 @@ async def test_picking_a_format_leaves_a_typed_name_alone(
     """The picker rewrites the extension it last offered, not one that was typed."""
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2780,7 +2966,7 @@ async def test_picking_a_format_leaves_a_typed_name_alone(
 async def test_an_export_with_no_path_says_so(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2801,7 +2987,7 @@ async def test_exporting_over_a_file_asks_first(
     target.write_text("keep me\n")
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2825,7 +3011,7 @@ async def test_confirming_the_overwrite_writes(
     target.write_text("keep me\n")
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -2844,7 +3030,7 @@ async def test_soloing_a_metric_is_what_gets_exported(app: utrain.tui.app.Utrain
     """Soloing is the viewer saying which curve they are looking at."""
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("down")
         await pilot.press("y")
         await _settle(app, pilot)
@@ -2861,7 +3047,7 @@ async def test_shift_e_is_greyed_out_when_no_metric_is_drawn(
 ) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         # Uncheck both, so there is no curve to write.
         await pilot.press("space")
         await pilot.press("down")
@@ -2881,7 +3067,7 @@ async def test_a_failed_export_stays_on_the_status_line(
 ) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
-        await pilot.press("3")
+        await pilot.press("m")
         await pilot.press("E")
         await _settle(app, pilot)
 
@@ -3088,7 +3274,7 @@ async def test_t_is_offered_from_the_phases_pane_too(
         await _settle(chat_app, pilot)
         await pilot.press("down")  # onto the finished run
         await _settle(chat_app, pilot)
-        await pilot.press("2")
+        await pilot.press("enter")
         await _settle(chat_app, pilot)
         await pilot.press("down")  # onto `pretrain`, the phase with a model
         await _settle(chat_app, pilot)
@@ -3108,7 +3294,7 @@ async def test_t_from_the_phases_pane_talks_to_the_phase_under_the_cursor(
         await _settle(chat_app, pilot)
         await pilot.press("down")
         await _settle(chat_app, pilot)
-        await pilot.press("2")
+        await pilot.press("enter")
         await _settle(chat_app, pilot)
         await pilot.press("down")
         await _settle(chat_app, pilot)
@@ -3137,7 +3323,8 @@ async def test_t_is_greyed_on_a_phase_that_leaves_no_model(
         await _settle(chat_app, pilot)
         await pilot.press("down")
         await _settle(chat_app, pilot)
-        await pilot.press("2")
+        await pilot.press("enter")
+        await pilot.press("up")
         await _settle(chat_app, pilot)
         assert _main(chat_app).selected_phase == "tokenizer"
 
@@ -3148,17 +3335,18 @@ async def test_t_is_greyed_on_a_phase_that_leaves_no_model(
         assert isinstance(chat_app.screen, utrain.tui.screens.MainScreen)
 
 
-async def test_t_is_not_offered_from_the_metrics_pane(
+async def test_t_is_offered_wherever_the_focus_is(
     chat_app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """Hidden rather than greyed: on a list of metrics it is not a key that
-    happens not to apply, it is not offered at all."""
+    """What it talks to follows the level, not the focused pane, so standing in
+    the metric picker is no reason for the key to disappear."""
     async with chat_app.run_test(size=SIZE) as pilot:
         await _settle(chat_app, pilot)
-        await pilot.press("3")
+        await pilot.press("enter")
+        await pilot.press("m")
         await _settle(chat_app, pilot)
 
-        assert "t" not in _footer(chat_app)
+        assert "t" in _footer(chat_app)
 
 
 async def test_t_goes_live_as_soon_as_the_run_is_selected(
@@ -3295,3 +3483,252 @@ async def test_the_pull_message_outlives_the_refresh_that_would_clear_it(
         screen.pull_finished("utrain-big", "")
         await pilot.pause()
         assert _footer(app)["a"] is True
+
+
+async def test_question_mark_opens_the_key_map(app: utrain.tui.app.UtrainApp) -> None:
+    """The navigation keys are `show=False`, so this is where they are written."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+
+        await pilot.press("question_mark")
+        await _settle(app, pilot)
+
+        assert isinstance(app.screen, utrain.tui.screens.HelpScreen)
+        text = " ".join(str(s.render()) for s in app.screen.query(textual.widgets.Static))
+        assert "tab / shift+tab" in text
+        assert "2 / 3 / 4" in text
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
+
+
+async def test_the_key_map_is_reachable_from_every_destination(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("i")
+        await _settle(app, pilot)
+
+        await pilot.press("question_mark")
+        await _settle(app, pilot)
+
+        assert isinstance(app.screen, utrain.tui.screens.HelpScreen)
+
+
+OTHER_ID = "f" * 32
+
+
+def _seed_other(data_dir: pathlib.Path) -> None:
+    run_dir = data_dir / "runs" / OTHER_ID
+    (run_dir / "attempt" / "1" / "logs").mkdir(parents=True)
+    with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        session.execute(
+            sqlalchemy.insert(utrain.db.runs).values(
+                id=OTHER_ID,
+                name="other",
+                image=IMAGE,
+                compute="cpu",
+                run_dir=str(run_dir),
+                status="done",
+                config_hash="deadbeef",
+                created_at=500.0,
+            )
+        )
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_attempts).values(
+                run_id=OTHER_ID,
+                attempt=1,
+                from_phase=None,
+                status="done",
+                pid=None,
+                started_at=500.0,
+                ended_at=600.0,
+            )
+        )
+        for order, phase in enumerate(["alpha", "beta", "gamma", "delta"]):
+            session.execute(
+                sqlalchemy.insert(utrain.db.run_phases).values(
+                    run_id=OTHER_ID,
+                    attempt=1,
+                    phase=phase,
+                    phase_order=order,
+                    status="done",
+                    started_at=500.0,
+                    ended_at=600.0,
+                )
+            )
+
+
+@pytest.fixture()
+def two_app(tmp_path: pathlib.Path) -> utrain.tui.app.UtrainApp:
+    _seed(tmp_path)
+    _seed_other(tmp_path)
+    return _app(tmp_path)
+
+
+async def test_the_phase_cursor_follows_the_selection_across_a_refill(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The rows are refilled in place, so a list that changes length would
+    otherwise drift the cursor off the phase that is actually selected."""
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        await pilot.press("enter")
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+        table = screen.table("#phases")
+        assert screen.selected_phase == "pretrain"
+        assert table.cursor_row == 1
+
+        # Out onto the run with no phases at all, which empties the table, and
+        # back: the cursor has to find its way to row 1 again.
+        await pilot.press("escape")
+        await _settle(live_app, pilot)
+        await pilot.press("down")
+        await _settle(live_app, pilot)
+        assert screen.selected_run == DRAFT_ID
+        await pilot.press("up")
+        await _settle(live_app, pilot)
+
+        assert screen.selected_phase == "pretrain"
+        assert table.cursor_row == 1
+
+
+async def test_a_run_only_passed_over_is_not_pinned_to_a_phase(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Standing on a run selects the phase it has got to, so that the panes
+    show something -- but that is the app's choice, not a visit.
+
+    Recording it would pin a live run to whichever phase it happened to be on
+    when the cursor first crossed it, and the dashboard would stop following.
+    """
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+        assert screen.selected_run == LIVE_ID
+        assert screen.selected_phase == "pretrain"
+
+        assert screen.visited == {}
+
+
+async def test_drilling_in_records_the_phase_it_opened_on(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A viewer who drills in and comes straight back out was on that phase."""
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+
+        await pilot.press("enter")
+        await _settle(live_app, pilot)
+
+        assert screen.visited == {LIVE_ID: "pretrain"}
+
+
+async def test_each_phase_comes_back_to_the_tab_it_was_left_on(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Phases are not alike -- a download has no curve and a train phase is
+    mostly curve -- so how you were looking at one is worth keeping."""
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        await pilot.press("enter")
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+        assert screen.selected_phase == "pretrain"
+
+        # Plots on `pretrain`, logs on `tokenizer`.
+        await pilot.press("3")
+        await pilot.press("1")
+        await _settle(live_app, pilot)
+        assert screen.tab == "plots"
+
+        await pilot.press("up")
+        await _settle(live_app, pilot)
+        assert screen.selected_phase == "tokenizer"
+        await pilot.press("4")
+        await pilot.press("1")
+        await _settle(live_app, pilot)
+        assert screen.tab == "log"
+
+        await pilot.press("down")
+        await _settle(live_app, pilot)
+        assert screen.selected_phase == "pretrain"
+        assert screen.tab == "plots"
+
+        await pilot.press("up")
+        await _settle(live_app, pilot)
+        assert screen.tab == "log"
+
+
+async def test_a_phase_with_no_tab_of_its_own_keeps_the_one_that_is_up(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Only phases you deliberately set stick; the rest do not move the pane
+    under a cursor that is passing through."""
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        await pilot.press("enter")
+        await pilot.press("4")
+        await pilot.press("1")
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+        assert screen.selected_phase == "pretrain"
+        assert screen.tab == "log"
+
+        await pilot.press("up")
+        await _settle(live_app, pilot)
+
+        assert screen.selected_phase == "tokenizer"
+        assert screen.tab == "log"
+
+
+async def test_the_tab_a_phase_remembers_survives_leaving_the_run(
+    live_app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with live_app.run_test(size=SIZE) as pilot:
+        await _settle(live_app, pilot)
+        await pilot.press("enter")
+        await pilot.press("3")
+        await pilot.press("1")
+        await _settle(live_app, pilot)
+        screen = _main(live_app)
+        assert screen.tab == "plots"
+
+        # Out to the runs, onto another run, and back in.
+        await pilot.press("escape")
+        await _settle(live_app, pilot)
+        await pilot.press("down")
+        await _settle(live_app, pilot)
+        await pilot.press("2")
+        await pilot.press("1")
+        await _settle(live_app, pilot)
+        assert screen.tab == "config"
+
+        await pilot.press("up")
+        await _settle(live_app, pilot)
+
+        assert screen.selected_run == LIVE_ID
+        assert screen.tab == "plots"
+
+
+async def test_the_charset_setting_reaches_the_plots(tmp_path: pathlib.Path) -> None:
+    """`tui_charset` is the pin for a viewer whose font braille is wrong for.
+
+    Whether the font has the glyphs is the one thing a terminal program cannot
+    ask -- see `render.default_charset` -- so the answer has to be settable.
+    """
+    _seed(tmp_path)
+    app = _app(tmp_path, charset="braille")
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        await pilot.press("3")
+        await _settle(app, pilot)
+        screen = _main(app)
+
+        assert screen.charset == utrain.tui.render.CHARSET_BRAILLE
+        assert screen.plots
+        assert all(p.charset == utrain.tui.render.CHARSET_BRAILLE for p in screen.plots.values())

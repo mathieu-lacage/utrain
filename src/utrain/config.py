@@ -1,4 +1,5 @@
 import pathlib
+import typing
 
 import pydantic
 import pydantic_settings
@@ -9,6 +10,14 @@ class Settings(pydantic_settings.BaseSettings):
     host: str = "127.0.0.1"
     port: int = 7613
     data_dir: pathlib.Path = pathlib.Path(".")
+    # How the TUI draws a curve. Braille packs 2x4 points into a cell against
+    # half-blocks' 2x2, so it is the finer of the two wherever the font has the
+    # glyphs -- and whether it does is the one thing a terminal program cannot
+    # ask. `auto` guesses from the things it *can* see; see
+    # `tui.render.default_charset`. This is the escape hatch for a viewer whose
+    # font it guessed wrong about, so that they pin it once rather than
+    # pressing `b` every launch.
+    tui_charset: typing.Literal["auto", "block", "braille"] = "auto"
     model_config = pydantic_settings.SettingsConfigDict(
         env_prefix="UTRAIN_",
         env_nested_delimiter="__",

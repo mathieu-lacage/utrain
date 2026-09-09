@@ -97,6 +97,23 @@ def _address(run_id: str, phase: str | None, attempt: int | None) -> str | None:
     return f"{run_id}/{attempt}/{phase}"
 
 
+def current_phase(phases: list[types.PhaseListEntry]) -> str | None:
+    """Where a run has got to: the phase running, or the last one that ran.
+
+    What the content column is about while the cursor is still on the run
+    itself, one level up from the phases. It is what keeps the runs list a live
+    monitor -- scanning it shows each run's current curve and current log --
+    rather than a menu on the way to them.
+    """
+    if not phases:
+        return None
+    for entry in phases:
+        if entry.status == "running":
+            return entry.phase
+    started = [entry for entry in phases if entry.status not in (None, "pending")]
+    return (started[-1] if started else phases[0]).phase
+
+
 def phase_plots(
     described: containermod.schema.DescribeOutput | None, phase: str | None
 ) -> list[containermod.schema.PlotSpec]:

@@ -429,3 +429,49 @@ def test_compute_option_values_are_what_the_query_layer_accepts() -> None:
     """
     assert utrain.runs._resolve_compute("cpu") == "cpu"
     assert [value for _, value in render.compute_options(_compute(2))][1:] == ["gpu0", "gpu1"]
+
+
+# -- which character set a curve is drawn with ----------------------------
+
+
+def test_the_setting_wins_over_every_guess() -> None:
+    """The escape hatch for a viewer whose font the guess is wrong about."""
+    assert render.default_charset("block", "utf-8", "xterm-256color") == render.CHARSET_BLOCK
+    assert render.default_charset("braille", "ascii", "linux", True) == render.CHARSET_BRAILLE
+
+
+def test_a_modern_terminal_gets_braille() -> None:
+    """Braille is in every monospace font in common use, so it is the default
+    unless something visible says otherwise."""
+    for term in ("xterm-256color", "screen-256color", "tmux-256color", "alacritty", ""):
+        assert render.default_charset("auto", "utf-8", term) == render.CHARSET_BRAILLE
+
+
+def test_a_non_unicode_encoding_gets_blocks() -> None:
+    """Not a question about the font: braille has no representation at all."""
+    assert render.default_charset("auto", "ascii", "xterm") == render.CHARSET_BLOCK
+    assert render.default_charset("auto", "latin-1", "xterm") == render.CHARSET_BLOCK
+    assert render.default_charset("auto", None, "xterm") == render.CHARSET_BLOCK
+
+
+def test_utf8_is_recognised_however_it_is_spelled() -> None:
+    for encoding in ("utf-8", "UTF-8", "utf8", "UTF8"):
+        assert render.default_charset("auto", encoding, "xterm") == render.CHARSET_BRAILLE
+
+
+def test_a_terminal_with_no_font_to_configure_gets_blocks() -> None:
+    """The Linux virtual console draws from a framebuffer font of a few hundred
+    glyphs, and the rest of these predate the block entirely."""
+    for term in ("linux", "dumb", "vt100", "vt220", "ansi"):
+        assert render.default_charset("auto", "utf-8", term) == render.CHARSET_BLOCK
+
+
+def test_the_terminal_name_is_matched_on_its_first_word() -> None:
+    """`linux-16color` is still the console; `xterm-kitty` is still xterm."""
+    assert render.default_charset("auto", "utf-8", "linux-16color") == render.CHARSET_BLOCK
+    assert render.default_charset("auto", "utf-8", "XTERM-KITTY") == render.CHARSET_BRAILLE
+
+
+def test_the_old_windows_console_gets_blocks() -> None:
+    """Its raster fonts stop well short of U+2800."""
+    assert render.default_charset("auto", "utf-8", "xterm", True) == render.CHARSET_BLOCK

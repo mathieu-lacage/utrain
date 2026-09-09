@@ -6,12 +6,29 @@ both through the `screens.Host` protocol, which this implements.
 """
 
 import collections.abc
+import os
+import typing
 
 import textual.app
 import textual.binding
 import textual.screen
 
-from . import data, screens, widgets
+from . import data, render, screens, widgets
+
+
+class _Modes(typing.Protocol):
+    """`App.add_mode`, with the screen its factory returns spelled out.
+
+    Textual types it against a bare `Screen`, whose result type is
+    unparameterised; every screen here is a `Screen[None]`. Saying so here is
+    what lets the call site stay typed.
+    """
+
+    def add_mode(
+        self,
+        mode: str,
+        base_screen: collections.abc.Callable[[], textual.screen.Screen[None]],
+    ) -> None: ...
 
 
 class UtrainApp(textual.app.App[None]):
@@ -33,13 +50,43 @@ class UtrainApp(textual.app.App[None]):
     #content {
         width: 1fr;
     }
-    #runs, #phases, #metrics {
+    #runs, #phases {
         height: 1fr;
         border: round $panel;
         border-title-align: left;
     }
+    /* The metric picker is a drawer rather than a fourth list in the sidebar.
+       It is a control for the plots -- it decides which curves are drawn, not
+       what the screen is about -- so it is there while it is being used and
+       gone the rest of the time. Each metric's latest value rides in its
+       plot's title, which is what lets it be transient at all.
+
+       Docked rather than laid over the plots: it takes its width from them, so
+       the curve a viewer has just checked stays whole while they are still
+       standing in the list that checked it. */
+    #metrics {
+        display: none;
+        dock: right;
+        /* Clears the header above and the status line and footer below. */
+        margin: 1 0 2 0;
+        width: 34;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
     #log {
         height: 1fr;
+    }
+    /* The tab strip: one line above the content panes, naming which of the
+       three is up and the number that gets to the others. */
+    #tabs {
+        height: 1;
+        padding: 0 1;
+    }
+    /* The destinations, one line under the header on every one of them. */
+    #destinations {
+        height: 1;
+        padding: 0 1;
     }
     #sidebar > *:focus, #content > *:focus, #content > *:focus-within {
         border: round $accent;
@@ -57,6 +104,18 @@ class UtrainApp(textual.app.App[None]):
        See `_Screen.show_message`. */
     #error.-ok {
         color: $success;
+    }
+    HelpScreen {
+        align: center middle;
+    }
+    #help {
+        width: 78;
+        height: auto;
+        max-height: 90%;
+        padding: 0 2 1 2;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
     }
     ConfirmScreen {
         align: center middle;
@@ -211,7 +270,15 @@ class UtrainApp(textual.app.App[None]):
         self.data = source if source is not None else data.Data()
 
     def on_mount(self) -> None:
-        self.push_screen(screens.MainScreen(self, self.data))
+        # A mode per destination rather than a screen pushed over the last one.
+        # Each keeps its own screen and its own stack, so going to look at an
+        # image and coming back lands on the run that was selected -- and the
+        # metric readers that run had open are still open.
+        modes = typing.cast(_Modes, self)
+        modes.add_mode("runs", lambda: screens.MainScreen(self, self.data))
+        modes.add_mode("images", lambda: screens.ImagesScreen(self, self.data))
+        modes.add_mode("compute", lambda: screens.ComputeScreen(self, self.data))
+        self.switch_mode("runs")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """`q` is off while a config field's editor or a confirm prompt is open.
@@ -245,6 +312,20 @@ class UtrainApp(textual.app.App[None]):
         answer: collections.abc.Callable[[screens.Answer | None], None],
     ) -> None:
         self.push_screen(screen, answer)
+
+    def charset(self) -> str:
+        return render.default_charset(
+            self.data.settings.tui_charset,
+            self.console.encoding,
+            os.environ.get("TERM", ""),
+            self.console.legacy_windows,
+        )
+
+    def close(self) -> None:
+        self.pop_screen()
+
+    def go(self, destination: str) -> None:
+        self.switch_mode(destination)
 
     def from_thread(
         self,

@@ -48,9 +48,54 @@ X_ELAPSED = "elapsed"
 
 # uniplot's names for how a point is drawn. Half-blocks pack 2x2 points into a
 # cell and braille dots 2x4, so braille doubles the vertical resolution -- where
-# the terminal font has the glyphs. Blocks stay the default for that reason.
+# the terminal font has the glyphs.
 CHARSET_BLOCK = "block"
 CHARSET_BRAILLE = "braille"
+
+# Terminals that cannot draw braille whatever font is configured, because the
+# font is not configurable: the Linux virtual console renders from a framebuffer
+# font of a few hundred glyphs, and the rest of these predate the block.
+_NO_BRAILLE_TERMS = frozenset(
+    {"linux", "dumb", "vt52", "vt100", "vt102", "vt220", "ansi", "cons25", "unknown"}
+)
+
+
+def default_charset(
+    setting: str,
+    encoding: str | None,
+    term: str,
+    legacy_windows: bool = False,
+) -> str:
+    """Which character set to draw curves with, before the viewer says.
+
+    Whether the font in front of the viewer has U+2800-U+28FF is the one thing
+    a terminal program cannot find out. The encoding can be asked, and so can
+    the terminal's name, and neither answers the question -- a UTF-8 terminal
+    accepts the bytes and renders tofu just the same. The cursor-position
+    report, which is the only real probe there is, measures the width a glyph
+    took: a substituted box is one cell wide, exactly like the glyph it stands
+    in for, so it cannot see the failure that matters.
+
+    What is left is a guess from what *is* knowable, and it is a good one:
+    braille is in every monospace font in common use, and the terminals that
+    cannot draw it are the ones with no font to configure. So braille unless
+    something visible says otherwise -- and `b` and `tui_charset` are there for
+    the viewer the guess is wrong about, who can see that it is wrong the
+    moment the plot is drawn.
+    """
+    if setting != "auto":
+        return CHARSET_BRAILLE if setting == CHARSET_BRAILLE else CHARSET_BLOCK
+    if legacy_windows:
+        # The old Windows console, whose raster fonts stop well short of U+2800.
+        return CHARSET_BLOCK
+    if encoding is None or "utf" not in encoding.replace("-", "").lower():
+        # Braille has no representation outside Unicode, so this is not a
+        # question about the font at all.
+        return CHARSET_BLOCK
+    if term.split("-")[0].lower() in _NO_BRAILLE_TERMS:
+        return CHARSET_BLOCK
+    return CHARSET_BRAILLE
+
 
 # What a plot is: the metric on the y axis, and what it is drawn against. A pair
 # rather than the metric alone, because a phase can name two default plots of the
@@ -66,6 +111,12 @@ class Plot:
     x_label: str
     xs: list[float]
     ys: list[float]
+    # The metric's own latest value, already formatted. Carried on the plot so
+    # that the curve can be labelled with it: a live readout costs no columns
+    # there, and it sits on the curve it describes. Read off the raw series
+    # rather than off `ys`, which against a metric x axis holds only the points
+    # the join could pair, and which downsampling may have thinned.
+    latest: str = ""
 
 
 # A table cell is plain text unless it is coloured, and only status cells are.
@@ -290,7 +341,7 @@ def build_plot(
         x_label = x_axis
 
     xs, ys = downsample(xs, ys, limit)
-    return Plot(title=name, x_label=x_label, xs=xs, ys=ys)
+    return Plot(title=name, x_label=x_label, xs=xs, ys=ys, latest=format_value(series[-1].value))
 
 
 def compute_options(info: compute.ComputeInfo) -> list[tuple[str, str]]:
@@ -340,6 +391,89 @@ def compute_rows(info: compute.ComputeInfo) -> list[list[str]]:
             ]
         )
     return rows
+
+
+# -- the destinations -----------------------------------------------------
+
+# The top-level views, in order, as (key, name, mode). Runs has no key of its
+# own because escape is how every other destination is left, and that is the
+# one it goes to.
+DESTINATIONS = (
+    ("", "Runs", "runs"),
+    ("i", "Images", "images"),
+    ("c", "Compute", "compute"),
+)
+
+
+def destinations(active: str) -> rich.text.Text:
+    """The strip under the header, with `active` picked out.
+
+    Runs, images and compute are siblings -- none of them is inside another --
+    so they are shown side by side rather than reached by pushing one over the
+    top of the next.
+    """
+    line = rich.text.Text("  ")
+    for key, name, mode in DESTINATIONS:
+        if line.plain != "  ":
+            line.append("   ")
+        label = f" {key} {name} " if key else f" {name} "
+        line.append(label, style="bold reverse" if mode == active else "dim")
+    return line
+
+
+# -- the content column's tabs --------------------------------------------
+
+# The tabs, in order, as (key, name, pane id). The key is the number that
+# selects the tab and the pane id is the widget it shows, so this is the one
+# place the three are tied together.
+CONTENT_TABS = (
+    ("2", "Config", "config"),
+    ("3", "Plots", "plots"),
+    ("4", "Logs", "log"),
+)
+
+
+def content_panes() -> tuple[str, ...]:
+    """The widget ids the tabs switch between."""
+    return tuple(pane for _, _, pane in CONTENT_TABS)
+
+
+def content_tabs(active: str) -> rich.text.Text:
+    """The tab strip above the content column, with `active` picked out.
+
+    A line of text rather than a `TabbedContent`: the tabs here are switched by
+    number keys and never by clicking through a bar, so what is wanted is the
+    label and which one is current, not a widget with its own focus and its own
+    key handling to keep out of the way of the screen's.
+    """
+    line = rich.text.Text("  ")
+    for key, name, pane in CONTENT_TABS:
+        if line.plain != "  ":
+            line.append("   ")
+        style = "bold reverse" if pane == active else "dim"
+        line.append(f" {key} {name} ", style=style)
+    return line
+
+
+# -- the help screen ------------------------------------------------------
+
+# Wide enough for the longest key spelling in `screens._HELP`, so the
+# descriptions line up in one column.
+_HELP_KEY_WIDTH = 16
+
+
+def help_heading(heading: str) -> rich.text.Text:
+    return rich.text.Text(f"\n{heading}", style="bold")
+
+
+def help_line(keys: str, what: str) -> rich.text.Text:
+    """One key and what it does, as two aligned columns."""
+    line = rich.text.Text("  ")
+    # A plain Rich colour, as the status styles are: `$accent` is Textual CSS
+    # and Rich is what renders this.
+    line.append(keys.ljust(_HELP_KEY_WIDTH), style="bold cyan")
+    line.append(what)
+    return line
 
 
 # -- the metrics pane -----------------------------------------------------
