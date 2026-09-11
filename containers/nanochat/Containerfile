@@ -23,7 +23,10 @@ RUN git clone https://github.com/karpathy/nanochat.git /app/nanochat \
 
 WORKDIR /app/nanochat
 # Before the COPY below, so that editing wrapper source does not re-resolve torch.
-RUN uv sync --extra gpu
+# `cache prune --ci` runs in the same layer as the sync it cleans up: uv's cache
+# and the venv are both written here, and a later RUN could only hide the cache,
+# not shrink the ~10 GB of CUDA wheels this layer commits.
+RUN uv sync --extra gpu && uv cache prune --ci
 # setuptools is for torch's inductor, not the wrapper: its C++ backend -- what
 # `torch.compile` falls back to when there is no GPU -- imports it to build the
 # extension. nanochat declares it under its `cpu` extra only.

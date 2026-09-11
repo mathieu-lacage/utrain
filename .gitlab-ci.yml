@@ -10,6 +10,10 @@
 #                check stage runs first), so a release only publishes if they pass.
 #                Once the images are built, publish-pypi builds the wheel/sdist
 #                with `uv build` and uploads them to PyPI.
+#                build-images can also be run off a tag: set BUILD_IMAGES=1 in
+#                the Run-pipeline form to exercise it on a branch. Such a run
+#                tags the images ci-<sha> and leaves :latest alone, so it never
+#                stands in for a release.
 # deploy stage:  build the docs with zensical and publish them to GitLab Pages,
 #                one version per release tag plus a rolling "dev" for main. mike
 #                owns the `pages` branch -- it keeps every version there, and
@@ -29,7 +33,9 @@
 #     protected, so publish-pypi can upload releases. gitlab.inria.fr is
 #     self-hosted, so PyPI trusted publishing (OIDC) isn't available -- it
 #     only supports gitlab.com.
-#   - runner has privileged = true
+#   - runner has privileged = true: both the test job and build-images run
+#     podman inside the job container, which needs /dev/fuse and the ability
+#     to mount.
 
 stages: [check, release, deploy]
 
@@ -85,30 +91,50 @@ test:
 
 build-images:
   stage: release
-  image:
-    # The :debug tag ships /busybox/sh so the shell loop below can run.
-    name: gcr.io/kaniko-project/executor:debug
-    entrypoint: [""]
+  image: quay.io/podman/stable
   tags:
     - self-linux
   rules:
     - if: '$CI_COMMIT_TAG'
+    # Run pipeline -> BUILD_IMAGES=1 builds the presets off a tag, so this job
+    # can be exercised without cutting a release.
+    - if: '$BUILD_IMAGES'
+  variables:
+    # The nanochat preset installs ~10 GB of CUDA wheels in a single layer. vfs
+    # (what the test job uses) copies the whole tree per layer, which is tens of
+    # GB for this build; fuse-overlayfs stores real diffs and, unlike the native
+    # overlay driver, works when the job's own filesystem is already overlay.
+    STORAGE_DRIVER: overlay
+    STORAGE_OPTS: overlay.mount_program=/usr/bin/fuse-overlayfs
   script:
-    - mkdir -p /kaniko/.docker
-    - |
-      cat > /kaniko/.docker/config.json <<EOF
-      {"auths":{"$CI_REGISTRY":{"username":"$CI_REGISTRY_USER","password":"$CI_REGISTRY_PASSWORD"}}}
-      EOF
+    # The volume is shared with the test jobs and holds whatever earlier builds
+    # left behind; nanochat needs every gigabyte of it. Anything still in use by
+    # a running container survives, so a concurrent job loses a cache, not work.
+    - podman system df
+    - podman system prune -af
+    - podman login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - IMAGE_TAG="${CI_COMMIT_TAG:-ci-$CI_COMMIT_SHORT_SHA}"
     - |
       for dir in containers/*/; do
         name=$(basename "$dir")
         [ -f "containers/$name/Containerfile" ] || continue
-        echo "Building and pushing $name"
-        /kaniko/executor \
-          --context "$CI_PROJECT_DIR" \
-          --dockerfile "containers/$name/Containerfile" \
-          --destination "$CI_REGISTRY_IMAGE/$name:$CI_COMMIT_TAG" \
-          --destination "$CI_REGISTRY_IMAGE/$name:latest"
+        echo "Building and pushing $name:$IMAGE_TAG"
+        # nanochat is ~11 GB unpacked and the volume is shared with other jobs;
+        # if a release ever dies on space, this is the line that says so.
+        df -h "$(podman info --format '{{.Store.GraphRoot}}')"
+        podman build \
+          --file "containers/$name/Containerfile" \
+          --tag "$CI_REGISTRY_IMAGE/$name:$IMAGE_TAG" \
+          "$CI_PROJECT_DIR"
+        podman push "$CI_REGISTRY_IMAGE/$name:$IMAGE_TAG"
+        # :latest is what `utrain image add` pulls, so only a release moves it.
+        if [ -n "$CI_COMMIT_TAG" ]; then
+          podman tag "$CI_REGISTRY_IMAGE/$name:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/$name:latest"
+          podman push "$CI_REGISTRY_IMAGE/$name:latest"
+        fi
+        # Drop the layers before the next preset: the images are large enough
+        # that keeping both around is what fills the runner's disk.
+        podman rmi -f "$CI_REGISTRY_IMAGE/$name:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/$name:latest"
       done
 
 publish-pypi:
