@@ -3,20 +3,28 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: \.t$
+        exclude: (\.t|\.cast)$
       - id: end-of-file-fixer
+        exclude: ^docs/assets/
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=1000]
+        # The TUI tour. A cast is a full-screen repaint several times a second,
+        # so it is megabytes on disk -- and gzips to about fifty kilobytes,
+        # which is what git actually stores per revision. The hook measures the
+        # wrong number for this one file.
+        exclude: ^docs/assets/.*\.cast$
       - id: debug-statements
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.2
     hooks:
       - id: codespell
         name: Spell check source files
-        exclude: frontend/package-lock.json
+        # docs/assets: a minified JS bundle, the Apache licence text and a
+        # terminal recording, none of them prose anyone wrote.
+        exclude: ^(frontend/package-lock\.json|docs/assets/)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.14
     hooks:

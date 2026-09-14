@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir pyyaml wandb fastapi uvicorn pydantic
+# The real nanochat image's self-description, verbatim. It is a module of bare
+# dicts with no imports of its own, so copying it costs nothing and means the
+# tour cannot show phases, plots or a config form that nanochat does not have.
+COPY containers/nanochat/src/utrain_nanochat/describe.py /app/nanochat_describe.py
+COPY tests/containers/nanochat-fake/nanochat_fake.py /app/nanochat_fake.py
+ENTRYPOINT ["python", "/app/nanochat_fake.py"]

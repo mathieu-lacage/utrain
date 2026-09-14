@@ -19,13 +19,18 @@ nav = [
   { "Get started" = "index.md" },
   { "Installation" = "installation.md" },
   { "Quickstart" = "quickstart.md" },
+  { "Tour of the TUI" = "tour.md" },
   { "Building a container" = "building-a-container.md" },
   { "Container reference" = "container-contract.md" },
   { "Changelog" = "changelog.md" },
 ]
 
-# extra_css = ["stylesheets/extra.css"]
-# extra_javascript = ["javascripts/extra.js"]
+# The asciinema player, vendored in docs/assets rather than pulled from a CDN:
+# the docs should build and read with no third party in the loop. It is
+# Apache-2.0; the licence is next to it. tour.js mounts it -- see the comment
+# there about `navigation.instant`, which is why it is not a load listener.
+extra_css = ["assets/asciinema-player.css"]
+extra_javascript = ["assets/asciinema-player.min.js", "assets/tour.js"]
 
 [project.theme]
 # variant = "classic"

@@ -88,7 +88,9 @@ addopts = "--tb=short -n auto --dist worksteal"
 # so type checking it here would mean vendoring or stubbing upstream. ruff,
 # ruff-format, codespell and check-imports still cover it, since those run on
 # every python file.
-include = ["src", "containers/shakespeare-char/src"]
+# `scripts` is here for tour.py, which drives the TUI through a pty and has
+# every reason to be held to the same bar as the code it records.
+include = ["src", "containers/shakespeare-char/src", "scripts"]
 pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"

@@ -17,6 +17,12 @@ cram:
 e2e-%: FORCE
 	./scripts/e2e-$*.sh $(ARGS)
 
+# Re-record the TUI tour docs/tour.md embeds. Needs podman, and a GPU unless
+# ARGS="--cpu"; CI has neither, so the cast is committed rather than built
+# there. `make tour ARGS=--no-build` reuses the fixture image.
+tour: FORCE
+	uv run python scripts/tour.py $(ARGS)
+
 test-matrix:
 	uv run tox
 
