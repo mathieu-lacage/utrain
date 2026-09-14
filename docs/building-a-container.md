@@ -91,7 +91,7 @@ def cmd_check_compat():
 
 def _run_train(root: pathlib.Path, cfg: dict) -> bool:
     # `dir` is what utrain sets, through WANDB_DIR; passing it anyway
-    # is what lets this script run standalone, below, with nothing in 
+    # is what lets this script run standalone, below, with nothing in
     # the environment.
     run = wandb.init(dir=str(root))
     steps = int(cfg.get("steps", 50))
