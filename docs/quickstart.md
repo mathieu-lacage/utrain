@@ -171,7 +171,7 @@ done in order.
 **`3`** is the plots. Each phase declares which curves are worth drawing, and
 they follow the run live. `m` opens the metric picker: `space` draws a metric or
 stops drawing it, `y` solos one, `l` switches to a log y axis and `b` swaps the
-half-block glyphs for braille, which is finer where the font has it. `E` writes
+braille dots for half-blocks, for a font that has no braille. `E` writes
 the curve out as csv, png, svg or pdf.
 
 **`4`** is the phase's log, tailed as it is written.
