@@ -194,8 +194,10 @@ a single servable phase may default it instead, so that a hand-run `serve`
 needs nothing but a mount and a port.
 
 The phase is what tells you which model to load, and the reason to load it by
-name rather than by search: `containers/nanochat` maps `pretrain`, `sft` and
-`rl` onto its `base_`, `chatsft_` and `chatrl_checkpoints` dirs. Searching for
+name rather than by search: the published
+[utrain-nanochat](https://gitlab.inria.fr/mlacage/utrain-nanochat) container
+maps `pretrain`, `sft` and `rl` onto its `base_`, `chatsft_` and
+`chatrl_checkpoints` dirs. Searching for
 the newest checkpoint present would look equivalent — a phase's data dir is
 frozen when the phase ends, so it cannot hold a later phase's model — but it
 answers the wrong question when a phase saved nothing: a stopped `rl` phase
@@ -513,7 +515,8 @@ $ podman run --rm localhost/utrain-<name>:utrain describe
   next to it. Its `schemas.py` holds the chat-completions models on their own,
   free of anything model-specific, which makes it the file to lift wholesale
   into a container of your own.
-- `containers/nanochat/` — a published container that *wraps* an existing
+- [utrain-nanochat](https://gitlab.inria.fr/mlacage/utrain-nanochat) — a
+  published container, in a repository of its own, that *wraps* an existing
   training project ([nanochat](https://github.com/karpathy/nanochat)) rather
   than owning the training code. Worth reading if that is your situation: its
   phases shell out to the upstream scripts, and `wandb_bridge/sitecustomize.py`

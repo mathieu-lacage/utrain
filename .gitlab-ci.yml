@@ -100,16 +100,16 @@ build-images:
     # can be exercised without cutting a release.
     - if: '$BUILD_IMAGES'
   variables:
-    # The nanochat preset installs ~10 GB of CUDA wheels in a single layer. vfs
-    # (what the test job uses) copies the whole tree per layer, which is tens of
-    # GB for this build; fuse-overlayfs stores real diffs and, unlike the native
-    # overlay driver, works when the job's own filesystem is already overlay.
+    # A preset is an image with a torch install in it, so its layers are
+    # gigabytes. vfs (what the test job uses) copies the whole tree per layer;
+    # fuse-overlayfs stores real diffs and, unlike the native overlay driver,
+    # works when the job's own filesystem is already overlay.
     STORAGE_DRIVER: overlay
     STORAGE_OPTS: overlay.mount_program=/usr/bin/fuse-overlayfs
   script:
     # The volume is shared with the test jobs and holds whatever earlier builds
-    # left behind; nanochat needs every gigabyte of it. Anything still in use by
-    # a running container survives, so a concurrent job loses a cache, not work.
+    # left behind. Anything still in use by a running container survives, so a
+    # concurrent job loses a cache, not work.
     - podman system df
     - podman system prune -af
     - podman login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
@@ -119,8 +119,8 @@ build-images:
         name=$(basename "$dir")
         [ -f "containers/$name/Containerfile" ] || continue
         echo "Building and pushing $name:$IMAGE_TAG"
-        # nanochat is ~11 GB unpacked and the volume is shared with other jobs;
-        # if a release ever dies on space, this is the line that says so.
+        # The volume is shared with other jobs; if a release ever dies on
+        # space, this is the line that says so.
         df -h "$(podman info --format '{{.Store.GraphRoot}}')"
         podman build \
           --file "containers/$name/Containerfile" \

@@ -2,9 +2,9 @@
 """A nanochat-shaped container that fakes the training.
 
 Same contract as `tests/containers/fake`, but wearing the real nanochat image's
-face: it serves `containers/nanochat/src/utrain_nanochat/describe.py` verbatim,
-so its five phases, their plots and the whole config form are nanochat's own and
-cannot drift from them. What it does not have is nanochat -- each phase sleeps
+face: it serves that container's own `describe.py`, vendored next to this file
+from gitlab.inria.fr/mlacage/utrain-nanochat, so its five phases, their plots
+and the whole config form are nanochat's own. What it does not have is nanochat -- each phase sleeps
 its way through a plausible metric curve instead of training anything, so the
 run that takes hours on eight GPUs takes about twenty seconds on any laptop.
 
