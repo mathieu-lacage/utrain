@@ -16,7 +16,13 @@
         markers: true,
         // A frame with a run in it, rather than the empty list it opens on.
         poster: el.dataset.poster || "npt:0:45",
-        terminalFontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        // The plots are braille, so the stack is fonts that have the
+        // Braille Patterns block at a monospace width -- Menlo on macOS,
+        // DejaVu on Linux, Cascadia on Windows -- ahead of the generic
+        // faces, where a miss falls back to a symbol font of another
+        // width and the curves come out ragged.
+        terminalFontFamily:
+          "Menlo, 'DejaVu Sans Mono', 'Cascadia Mono', ui-monospace, monospace",
       });
     });
   }
