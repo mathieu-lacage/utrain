@@ -1416,20 +1416,20 @@ wheels = [
 
 [[package]]
 name = "naw"
-version = "0.0.8"
+version = "0.0.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "pyyaml" },
     { name = "tabulate" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/d9/67344f48e4d20b52727204669db91c9e925e1292bf1636f01c213c9e3cc0/naw-0.0.8.tar.gz", hash = "sha256:3d0fe12ef8594a49379c01fa861f1bdf28711d686748cae8f0e92dd57a3699d0", size = 52035, upload-time = "2026-08-24T09:01:25.254Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/67/0b37e64b792b55e29d99e68538870fba95a412593233b22f782c53c4c9dd/naw-0.0.10.tar.gz", hash = "sha256:c1267256d323b509b44c5b6e646a4975c02a123cb989286cdc0eb43c74fce559", size = 53006, upload-time = "2026-09-14T11:25:31.798Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/5b/aa119ab0249d4211333259c813e14ec338a934389cbab640493ef6707893/naw-0.0.8-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:64289242884c33edca13f6da01de6d44e7560a91a0919542680519c6be2454c4", size = 633544, upload-time = "2026-08-24T09:01:18.318Z" },
-    { url = "https://files.pythonhosted.org/packages/7c/0a/1f8d85e3ebdf344531067ae34cd5fad1d5ff49ad9d7cbfeb2fdf0ed7980b/naw-0.0.8-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:a4085e2de9a4f2ad798b4bb6f475f6363f7a5b3a16a486359f6e91ccf66e46fb", size = 673231, upload-time = "2026-08-24T09:01:19.905Z" },
-    { url = "https://files.pythonhosted.org/packages/72/ba/213efa93f47252334961597b5724fe92b6a3733eb358646de57cfeed9e21/naw-0.0.8-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:fe0e14519eea3e7bd94c69b8644ef114066009bd4fde1b427c48049e2e076744", size = 663495, upload-time = "2026-08-24T09:01:21.546Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/a0/e17089d03ecb62792c6c8e35c0dc9289f2f4255bfc0f93ffb88d4b7cf7e7/naw-0.0.8-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:09e11c37a20e08b41f2b01e2700cd7172e2898e7f4ea074ecc8a3ab842767efe", size = 658229, upload-time = "2026-08-24T09:01:22.854Z" },
-    { url = "https://files.pythonhosted.org/packages/54/eb/68e086adee63c3d897bd8aac458e18ca5a8a05e5e050e22deecdd2a7b360/naw-0.0.8-py3-none-any.whl", hash = "sha256:4ae3a9dc5d558c0957aa7d92907ce36bd4e9eac4e8f797030582baa9258cbd07", size = 56524, upload-time = "2026-08-24T09:01:24.071Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/77/cbedc75619597ab82e3dca667e00ac6e13bebd6c654ebbb469d5e56a864b/naw-0.0.10-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:d93449e7b3f11b44e27658cd904125cc4cfd173456f537f5019a1a59b8b75e14", size = 634619, upload-time = "2026-09-14T11:25:25.686Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/1f/64d0245cd368480d8febecd3fffe0115f46eb15dd1ef679c0fbdc5a318ab/naw-0.0.10-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:8de0158f056c047c1f8fd3c95f5caabd116cd46e8bbb2eb7bc47d1ec3f012c7b", size = 674304, upload-time = "2026-09-14T11:25:27.115Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/10/44c9900c3265ead1781dfdc0550091642da69b5416e645b79db36e6534c9/naw-0.0.10-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:363231d0e9593339b4bd5aaf9bcc7e97bb9dfaad8fca6352c3428d75345c46fb", size = 664568, upload-time = "2026-09-14T11:25:28.411Z" },
+    { url = "https://files.pythonhosted.org/packages/71/82/8bb1e372d74406b4c5bd14de2681ee3812c9c767eeac45551b8c568db47b/naw-0.0.10-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:b296edb47d3ef2d0247ab876c47a37c733c3bdb85de0d47f21267ed0673b1b46", size = 659303, upload-time = "2026-09-14T11:25:29.724Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/a4/5272ae515010f2495117945abd615c1a034da28996acc469ecaabe02a5fb/naw-0.0.10-py3-none-any.whl", hash = "sha256:bccc65a62ae849db1f7a223125454b901d281a7065883b1ec822a41ac9eaf373", size = 57593, upload-time = "2026-09-14T11:25:30.846Z" },
 ]
 
 [[package]]
@@ -2864,7 +2864,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "matplotlib", marker = "extra == 'tui'", specifier = ">=3.8" },
-    { name = "naw", specifier = ">=0.0.4" },
+    { name = "naw", specifier = ">=0.0.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
