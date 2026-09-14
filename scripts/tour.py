@@ -401,6 +401,10 @@ def storyboard(rec: Recorder, gpu: bool) -> None:
         rec.wait(0.7)
         rec.send("l")
         rec.wait(0.7)
+        # There and back: `b` shows the half-blocks, and the second press
+        # leaves the rest of the tour on the braille the plots opened in.
+        rec.send("b")
+        rec.wait(1.2)
         rec.send("b")
         rec.wait(0.7)
         rec.send("m")
@@ -466,10 +470,10 @@ def prepare(root: pathlib.Path) -> dict[str, str]:
         UTRAIN_IMAGE_TAG=IMAGE_TAG,
         UTRAIN_COMPUTE_FIXTURE=str(root / "compute.json"),
         # Pinned, so the plots do not depend on what `render.default_charset`
-        # guesses about the recording machine's font. Blocks rather than
-        # braille: the player's font is the viewer's, and half-blocks are in
-        # every terminal font while braille is not in all of them.
-        UTRAIN_TUI_CHARSET="block",
+        # guesses about the recording machine's font. Braille, which is what
+        # that guess lands on for a modern terminal and what the curves look
+        # best in; `docs/assets/tour.js` pins the player to a font that has it.
+        UTRAIN_TUI_CHARSET="braille",
         # No COLORTERM, deliberately: rich then writes `38;5;n` instead of
         # `38;2;r;g;b`, which is most of a kilobyte off every full repaint and
         # a difference nobody can see in a recording of a TUI.
