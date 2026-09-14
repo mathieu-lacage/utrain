@@ -62,9 +62,9 @@ Each phase logs its metrics as a `naw` time-series file under the run directory.
 Point `naw` at the pretrain metrics to plot the loss right in your terminal:
 
 ```console
-$ naw metrics runs/$RID/attempt/1/wandb/pretrain/*.rtsdb              # list metrics
-$ naw plot -y loss --lines runs/$RID/attempt/1/wandb/pretrain/*.rtsdb # display a plot in-terminal
-$ naw watch runs/$RID/attempt/1/wandb/pretrain/*.rtsdb                # live tail while training
+$ naw metrics runs/$RID/attempt/1/wandb/pretrain/*/*.rtsdb              # list metrics
+$ naw plot -y loss --lines runs/$RID/attempt/1/wandb/pretrain/*/*.rtsdb # display a plot in-terminal
+$ naw watch runs/$RID/attempt/1/wandb/pretrain/*/*.rtsdb                # live tail while training
 ```
 
 `naw plot ...` also supports `--output png`/`--output svg`/`--output csv` if you

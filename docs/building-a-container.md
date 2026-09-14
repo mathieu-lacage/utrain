@@ -90,10 +90,10 @@ def cmd_check_compat():
 
 
 def _run_train(root: pathlib.Path, cfg: dict) -> bool:
-    # The wandb project name is the directory utrain files this phase's metrics
-    # under, so name it after the phase. utrain puts the run id in the config;
-    # standalone there is none, so let wandb pick one.
-    run = wandb.init(project="train", id=str(cfg.get("run_id", "")) or None, dir=str(root))
+    # `dir` is what utrain sets, through WANDB_DIR; passing it anyway
+    # is what lets this script run standalone, below, with nothing in 
+    # the environment.
+    run = wandb.init(dir=str(root))
     steps = int(cfg.get("steps", 50))
     ok = True
     for step in range(steps):
@@ -221,9 +221,13 @@ $ utrain run show "$RID" --wait
 ## 7. Look at the metrics with `naw`
 
 ```console
-$ naw metrics runs/$RID/attempt/1/wandb/train/*.rtsdb
-$ naw plot -y loss --lines runs/$RID/attempt/1/wandb/train/*.rtsdb
+$ naw metrics runs/$RID/attempt/1/wandb/train/*/*.rtsdb
+$ naw plot -y loss --lines runs/$RID/attempt/1/wandb/train/*/*.rtsdb
 ```
+
+`train` is the phase, whose directory utrain gave the container. The wildcard
+after it is the wandb project, which the container above never named, so wandb
+called it `default`. Nothing reads it, which is why the path globs over it.
 
 You should see `loss` decreasing across steps.
 

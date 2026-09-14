@@ -51,6 +51,31 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+def _write_metrics(
+    attempt_dir: pathlib.Path,
+    phase: str,
+    run_id: str,
+    rows: list[dict[str, float]],
+) -> None:
+    """A phase's metrics, laid out the way the per-phase mount leaves them.
+
+    `naw.wandb` always inserts a literal ``wandb`` segment; under utrain the
+    orchestrator's bind mount makes that segment the phase's own directory. The
+    rename stands in for the mount. The project name is not the phase, because
+    utrain neither chooses nor reads it.
+    """
+    staging = attempt_dir / f".staging-{phase}"
+    run = naw.wandb.init(project="a-project", id=run_id, dir=str(staging))
+    for step, row in enumerate(rows):
+        run.log(dict(row), step=step, commit=True)
+    run.finish()
+
+    phase_dir = attempt_dir / "wandb" / phase
+    phase_dir.parent.mkdir(parents=True, exist_ok=True)
+    (staging / "wandb").rename(phase_dir)
+    staging.rmdir()
+
+
 # The real `refresh_soon`, kept because the fixture below replaces it and the
 # tests that are about the settling put it back.
 _REFRESH_SOON = utrain.tui.screens.MainScreen.refresh_soon
@@ -146,10 +171,12 @@ def _seed(data_dir: pathlib.Path) -> None:
         "".join(f"step {i}\n" for i in range(50))
     )
 
-    run = naw.wandb.init(project="pretrain", id=RUN_ID, dir=str(attempt_dir))
-    for step in range(20):
-        run.log({"loss": 3.0 - step * 0.1, "mfu": 0.01 * step}, step=step, commit=True)
-    run.finish()
+    _write_metrics(
+        attempt_dir,
+        "pretrain",
+        RUN_ID,
+        [{"loss": 3.0 - step * 0.1, "mfu": 0.01 * step} for step in range(20)],
+    )
 
     settings = utrain.config.Settings(data_dir=data_dir)
     with utrain.db.with_db(settings) as session:
@@ -280,9 +307,7 @@ def _seed_restarted(data_dir: pathlib.Path) -> None:
     first = run_dir / "attempt" / "1"
     (first / "logs").mkdir(parents=True)
     (first / "logs" / "tokenizer_stdout.log").write_text("counting\nvocab built\n")
-    run = naw.wandb.init(project="tokenizer", id=RESTART_ID, dir=str(first))
-    run.log({"chars": 65.0}, step=0, commit=True)
-    run.finish()
+    _write_metrics(first, "tokenizer", RESTART_ID, [{"chars": 65.0}])
 
     (run_dir / "attempt" / "2" / "logs").mkdir(parents=True)
 

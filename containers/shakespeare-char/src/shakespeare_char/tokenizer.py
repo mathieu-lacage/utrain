@@ -11,8 +11,8 @@ import wandb
 from . import download, paths
 
 
-def run(p: paths.Paths, run_id: str) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
+def run(p: paths.Paths) -> bool:
+    run = wandb.init(dir=str(p.run_dir))
     input_path = p.data_dir / download.CORPUS_FILENAME
 
     if not input_path.exists():

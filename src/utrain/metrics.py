@@ -3,8 +3,12 @@
 Metrics never reach the database. The orchestrator shadows the image's ``wandb``
 with a shim backed by ``naw`` (see ``orchestrator._wandb_mount_args``), so a
 phase's time series lands on disk at
-``<attempt_dir>/wandb/<phase>/<run_id>.rtsdb`` -- one row per commit, columns
-``_step`` and ``_timestamp`` plus one per metric name.
+``<attempt_dir>/wandb/<phase>/<project>/<id>.rtsdb`` -- one row per commit,
+columns ``_step`` and ``_timestamp`` plus one per metric name.
+
+``<project>`` and ``<id>`` are the container's to choose and nothing here reads
+them: each phase is given ``<attempt_dir>/wandb/<phase>`` as its whole wandb
+directory.
 
 Reading that file directly, rather than through
 ``container.run_data.read_metrics``, buys two things a dashboard needs:
@@ -72,15 +76,21 @@ class MetricUpdate:
 
 
 def find_rtsdb(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path | None:
-    """The ``.rtsdb`` a phase logs to, or None before it has written one."""
+    """The ``.rtsdb`` a phase logs to, or None before it has written one.
+
+    The glob carries the wandb project as a wildcard because utrain does not
+    pick it -- see the module docstring.
+    """
     phase_dir = attempt_dir / "wandb" / phase
     if not phase_dir.is_dir():
         return None
-    # A phase re-run under a different wandb id leaves more than one file; the
-    # newest is the one it is still writing to. The name breaks a tie, so that
-    # two files of the same age resolve the same way from one refresh to the
-    # next.
-    files = sorted(phase_dir.glob("*.rtsdb"), key=lambda p: (p.stat().st_mtime, p.name))
+    # We currently do not support showing the time series for multiple calls
+    # to wandb.init() within a phase. However, if this were to happen,
+    # we just pick (arbitrarily) the "newest" one.
+    files = sorted(
+        phase_dir.glob("*/*.rtsdb"),
+        key=lambda p: (p.stat().st_mtime, str(p.relative_to(phase_dir))),
+    )
     return files[-1] if files else None
 
 

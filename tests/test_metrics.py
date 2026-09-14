@@ -14,14 +14,30 @@ import pytest
 
 import utrain.metrics
 
+_PROJECT = "whatever-the-container-called-it"
 
-def _write(run_dir: pathlib.Path, phase: str, rows: list[dict[str, float]]) -> pathlib.Path:
-    """A phase's metrics file, written the way a container would write it."""
-    run = naw.wandb.init(project=phase, id="rid", dir=str(run_dir))
+
+def _write(attempt_dir: pathlib.Path, phase: str, rows: list[dict[str, float]]) -> pathlib.Path:
+    """A phase's metrics file, laid out the way a real phase leaves it.
+
+    `naw.wandb` always inserts a literal ``wandb`` path segment, and under
+    utrain that segment *is* the phase's directory, because the orchestrator
+    bind-mounts `<attempt_dir>/wandb/<phase>` at `<root>/wandb`. There is no
+    mount here, so the rename stands in for one. The project name is
+    deliberately not the phase: utrain does not choose it and must not depend
+    on it.
+    """
+    staging = attempt_dir / f".staging-{phase}"
+    run = naw.wandb.init(project=_PROJECT, id="rid", dir=str(staging))
     for step, row in enumerate(rows):
         run.log(dict(row), step=step, commit=True)
     run.finish()
-    return run_dir / "wandb" / phase / "rid.rtsdb"
+
+    phase_dir = attempt_dir / "wandb" / phase
+    phase_dir.parent.mkdir(parents=True, exist_ok=True)
+    (staging / "wandb").rename(phase_dir)
+    staging.rmdir()
+    return phase_dir / _PROJECT / "rid.rtsdb"
 
 
 def test_find_rtsdb_missing_phase_dir(tmp_path: pathlib.Path) -> None:
@@ -30,6 +46,14 @@ def test_find_rtsdb_missing_phase_dir(tmp_path: pathlib.Path) -> None:
 
 def test_find_rtsdb_empty_phase_dir(tmp_path: pathlib.Path) -> None:
     (tmp_path / "wandb" / "pretrain").mkdir(parents=True)
+    assert utrain.metrics.find_rtsdb(tmp_path, "pretrain") is None
+
+
+def test_find_rtsdb_ignores_a_file_outside_a_project_dir(tmp_path: pathlib.Path) -> None:
+    """Only `<phase>/<project>/<id>.rtsdb` counts -- a stray file is not a run."""
+    phase_dir = tmp_path / "wandb" / "pretrain"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / "stray.rtsdb").write_bytes(b"")
     assert utrain.metrics.find_rtsdb(tmp_path, "pretrain") is None
 
 
@@ -44,7 +68,7 @@ def test_find_rtsdb_follows_the_newest(tmp_path: pathlib.Path) -> None:
     The ids do not order, so the newest file is the only way to tell which one
     is still being written to.
     """
-    phase_dir = tmp_path / "wandb" / "pretrain"
+    phase_dir = tmp_path / "wandb" / "pretrain" / _PROJECT
     phase_dir.mkdir(parents=True)
     for name, mtime in (("b.rtsdb", 200.0), ("a.rtsdb", 300.0), ("c.rtsdb", 100.0)):
         path = phase_dir / name
@@ -56,7 +80,7 @@ def test_find_rtsdb_follows_the_newest(tmp_path: pathlib.Path) -> None:
 
 def test_find_rtsdb_is_deterministic(tmp_path: pathlib.Path) -> None:
     """Two files of the same age must not resolve differently between calls."""
-    phase_dir = tmp_path / "wandb" / "pretrain"
+    phase_dir = tmp_path / "wandb" / "pretrain" / _PROJECT
     phase_dir.mkdir(parents=True)
     for name in ("b.rtsdb", "a.rtsdb", "c.rtsdb"):
         path = phase_dir / name
@@ -157,13 +181,13 @@ def test_read_accumulates_to_the_same_series(tmp_path: pathlib.Path) -> None:
 
 def test_a_tail_on_a_phase_that_has_not_logged_yet(tmp_path: pathlib.Path) -> None:
     """A Tail may outlive the absence of its file, and start when it appears."""
-    path = tmp_path / "wandb" / "pretrain" / "rid.rtsdb"
+    path = tmp_path / "wandb" / "pretrain" / _PROJECT / "rid.rtsdb"
 
     with utrain.metrics.Tail(path) as tail:
         assert tail.read().empty
         assert tail.columns == []
 
-        _write(tmp_path, "pretrain", [{"loss": 1.0}])
+        assert _write(tmp_path, "pretrain", [{"loss": 1.0}]) == path
 
         update = tail.read()
         assert [p.value for p in update.points["loss"]] == [1.0]

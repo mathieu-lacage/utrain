@@ -43,8 +43,8 @@ def _sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def run(p: paths.Paths, run_id: str) -> bool:
-    run = wandb.init(project="download", id=run_id, dir=str(p.run_dir))
+def run(p: paths.Paths) -> bool:
+    run = wandb.init(dir=str(p.run_dir))
     target = p.data_dir / CORPUS_FILENAME
 
     print(f"Downloading {SHAKESPEARE_URL}...", flush=True)

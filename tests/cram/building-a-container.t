@@ -60,9 +60,10 @@ What the phase wrote to <root>/data lands in the phase's data dir on the host.
   $ cat "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/data/train/model.txt"
   trained for 50 steps
 
-Step 7: the metrics utrain captured through the wandb shim, filed under the
-wandb project name the container passed to `wandb.init`.
-  $ METRICS="$UTRAIN_DATA_DIR/runs/$RID/attempt/1/wandb/train"
+Step 7: the metrics utrain captured through the wandb shim. The phase's own
+directory comes from utrain; the `default` inside it is wandb's own fallback
+project, since the container named none and utrain does not read it.
+  $ METRICS="$UTRAIN_DATA_DIR/runs/$RID/attempt/1/wandb/train/default"
   $ naw metrics "$METRICS"/*.rtsdb
   metric      type
   ----------  -------

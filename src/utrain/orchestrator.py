@@ -84,6 +84,20 @@ def _wandb_mount_args() -> list[str]:
     resolves to the shim -> ``naw.wandb`` and metrics are written as rtsdb
     files, regardless of what wandb the image itself ships. podman creates the
     mountpoints itself, so no equivalent of enroot's `x-create=dir` is needed.
+
+    PYTHONPATH settles what ``import wandb`` means; ``WANDB_DIR`` settles where
+    it writes, and is the only thing utrain has to tell a phase about metrics.
+    naw files a run at ``<dir>/wandb/<project>/<id>.rtsdb``, and `_WANDB_MOUNT`
+    is this phase's own directory (see `wandb_dir`), so whatever project and id
+    the container picks land inside it and none of utrain's readers care what
+    they were. Deliberately a default rather than an override -- a container
+    that passes ``dir=`` explicitly still wins, and, pointed at the mount by the
+    contract, still lands in the right place.
+
+    `WANDB_RUN_ID` is deliberately *not* set. naw's writer opens its file with
+    `"xb"`, so pinning one id would turn a second ``wandb.init()`` within a
+    phase into a `FileExistsError`; leaving ids random gives such a phase two
+    files and lets `metrics.find_rtsdb` take the newest.
     """
     naw_dir = pathlib.Path(naw.__file__).parent
     shim_dir = pathlib.Path(container.__file__).parent / "wandb_shim" / "wandb"
@@ -94,12 +108,19 @@ def _wandb_mount_args() -> list[str]:
         f"{shim_dir}:{_WANDB_PYPATH}/wandb:ro",
         "-e",
         f"PYTHONPATH={_WANDB_PYPATH}",
+        "-e",
+        f"WANDB_DIR={_RUN_MOUNT}",
     ]
 
 
 def mount_dir(attempt_dir: pathlib.Path) -> pathlib.Path:
     """Host dir bind-mounted read-only at `_RUN_MOUNT`."""
     return attempt_dir / "mnt"
+
+
+def wandb_dir(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    """Host dir bind-mounted read-write at `_WANDB_MOUNT`, holding the metrics."""
+    return attempt_dir / "wandb" / phase
 
 
 def serve_dir(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
@@ -175,29 +196,38 @@ def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None
     (mnt / "data").mkdir(parents=True, exist_ok=True)
     (mnt / "wandb").mkdir(parents=True, exist_ok=True)
     (mnt / "serve").mkdir(parents=True, exist_ok=True)
-    # The real metrics dir, mounted over the stub above. Created here rather than
-    # in _start_phase because _check_cache mounts it too, and runs first.
+    # Parent of the per-phase metrics dirs `_mount_args` creates, each mounted
+    # over the stub above. Made here so that it exists for a reader even if no
+    # phase ever starts.
     (attempt_dir / "wandb").mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_path, mnt / "config.yaml")
     os.chmod(mnt / "config.yaml", 0o444)
     write_control(attempt_dir, "continue")
 
 
-def _mount_args(attempt_dir: pathlib.Path, data_dir: pathlib.Path, *, data_ro: bool) -> list[str]:
+def _mount_args(
+    attempt_dir: pathlib.Path, data_dir: pathlib.Path, phase: str, *, data_ro: bool
+) -> list[str]:
     """The three `-v` flags making up the container's `/utrain` tree.
 
     `data_ro` is for `check-cache`, which the contract forbids from writing to the
     data dir; mounting it read-only makes that a guarantee rather than a request.
     A container that violates it fails, which the caller already treats as a cache
     miss -- the safe outcome.
+
+    The metrics dir is created here rather than by each caller because all three
+    of them mount it, and `check-cache` runs before the phase that would
+    otherwise have been the one to make it.
     """
+    metrics_dir = wandb_dir(attempt_dir, phase)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
     return [
         "-v",
         f"{mount_dir(attempt_dir)}:{_RUN_MOUNT}:ro",
         "-v",
         f"{data_dir}:{_DATA_MOUNT}{':ro' if data_ro else ''}",
         "-v",
-        f"{attempt_dir / 'wandb'}:{_WANDB_MOUNT}",
+        f"{metrics_dir}:{_WANDB_MOUNT}",
     ]
 
 
@@ -270,7 +300,7 @@ def _start_phase(
             "--security-opt=label=disable",
             *gpu_args,
             *_wandb_mount_args(),
-            *_mount_args(attempt_dir, data_dir, data_ro=False),
+            *_mount_args(attempt_dir, data_dir, phase, data_ro=False),
             container.podman.image_ref(image_key),
             "--utrain-root",
             _RUN_MOUNT,
@@ -305,8 +335,10 @@ def serve_argv(
 
     `data_ro=True` because serving is a read of a finished run: by the time a run
     is servable its data files are hardlinked into the content-addressed store,
-    so a write here would corrupt every other run sharing them. And no wandb
-    mounts, since serve logs no metrics -- the same reasoning as _check_cache.
+    so a write here would corrupt every other run sharing them. And no naw or
+    shim mounts, since serve logs no metrics -- the same reasoning as
+    _check_cache. `/utrain/wandb` is still bound, because the read-only `mnt`
+    tree cannot have a mountpoint missing from underneath it.
 
     `compute` comes from the run, so a model trained on a GPU is served on one.
     """
@@ -330,7 +362,7 @@ def serve_argv(
         "--cidfile",
         str(cid_file(attempt_dir, phase)),
         *gpu_args,
-        *_mount_args(attempt_dir, data_dir, data_ro=True),
+        *_mount_args(attempt_dir, data_dir, phase, data_ro=True),
         "-v",
         f"{host_serve_dir}:{_SERVE_MOUNT}",
         container.podman.image_ref(image_key),
@@ -369,7 +401,7 @@ def _check_cache(
                 "--security-opt=label=disable",
                 "--cidfile",
                 str(cid_path),
-                *_mount_args(attempt_dir, data_dir, data_ro=True),
+                *_mount_args(attempt_dir, data_dir, phase, data_ro=True),
                 container.podman.image_ref(image_key),
                 "--utrain-root",
                 _RUN_MOUNT,

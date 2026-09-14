@@ -3,6 +3,8 @@ import pathlib
 import naw.rtsdb
 import pydantic
 
+from .. import metrics
+
 
 class Metric(pydantic.BaseModel):
     rowid: int
@@ -13,27 +15,19 @@ class Metric(pydantic.BaseModel):
     value: float
 
 
-def _find_rtsdb(run_dir: pathlib.Path, phase: str) -> pathlib.Path | None:
-    phase_dir = run_dir / "wandb" / phase
-    if not phase_dir.exists():
-        return None
-    files = list(phase_dir.glob("*.rtsdb"))
-    return files[0] if files else None
-
-
 def read_metrics(
     run_dir: pathlib.Path,
     phase: str,
     name: str | None = None,
     since_rowid: int = 0,
 ) -> list[Metric]:
-    path = _find_rtsdb(run_dir, phase)
+    path = metrics.find_rtsdb(run_dir, phase)
     if path is None or not path.exists():
         return []
     try:
         reader = naw.rtsdb.Reader(str(path))
         try:
-            metrics: list[Metric] = []
+            found: list[Metric] = []
             for row in reader.read_rows(0):
                 if row.end_offset <= since_rowid:
                     continue
@@ -57,7 +51,7 @@ def read_metrics(
                     val_raw = row.values[col_names.index(col.name)]
                     if not isinstance(val_raw, (int, float)):
                         continue
-                    metrics.append(
+                    found.append(
                         Metric(
                             rowid=row.end_offset,
                             step=step,
@@ -67,7 +61,7 @@ def read_metrics(
                             value=float(val_raw),
                         )
                     )
-            return metrics
+            return found
         finally:
             reader.close()
     except Exception:

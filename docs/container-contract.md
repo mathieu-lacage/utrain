@@ -387,16 +387,17 @@ utrain always passes `/utrain`, and runs your image roughly as:
 $ podman run --rm --network=host --security-opt=label=disable \
     [gpu device args if compute is gpuN] \
     -v <naw>:/opt/utrain-py/naw:ro -v <shim>:/opt/utrain-py/wandb:ro \
-    -e PYTHONPATH=/opt/utrain-py \
+    -e PYTHONPATH=/opt/utrain-py -e WANDB_DIR=/utrain \
     -v <attempt_dir>/mnt:/utrain:ro \
     -v <phase_data_dir>:/utrain/data \
-    -v <attempt_dir>/wandb:/utrain/wandb \
+    -v <attempt_dir>/wandb/<phase>:/utrain/wandb \
     localhost/<image>:utrain \
     --utrain-root /utrain run --phase <phase>
 ```
 
-`serve` is launched the same way but swaps the last two mounts, dropping `wandb`
-and adding the writable `serve` dir, and mounts `data` read-only:
+`serve` is launched the same way but adds the writable `serve` dir, mounts
+`data` read-only, and leaves out `naw`, the shim and `WANDB_DIR`, since it logs
+no metrics:
 
 ```console
 $ podman run --rm --network=host --security-opt=label=disable \
@@ -413,7 +414,7 @@ $ podman run --rm --network=host --security-opt=label=disable \
 | `<root>/config.yaml` | ro | this run's config (see [Config protocol](#config-protocol)) |
 | `<root>/control.json` | ro | the stop flag (see [Graceful stop](#graceful-stop)) |
 | `<root>/data` | rw | the phase's data dir — inputs from earlier phases, and your output. Read-only for `check-cache` and `serve`. |
-| `<root>/wandb` | rw | where the wandb shim writes metrics; you never touch it directly |
+| `<root>/wandb` | rw | where the wandb shim writes **this phase's** metrics; you never touch it directly. Each phase gets its own, so you cannot see or damage another phase's. |
 | `<root>/serve` | rw | **`serve` only**, and the only writable place it gets. Publish `port.json` here — see [`serve`](#serve). Not mounted for `run` or `check-cache`. |
 
 The root itself is mounted read-only, and the three directories above are the
@@ -428,7 +429,7 @@ The mounts differ per subcommand, and it is worth being precise about it:
 |---|---|---|---|
 | `run` | rw | rw | not mounted |
 | `check-cache` | **ro** | rw | not mounted |
-| `serve` | **ro** | not mounted | **rw** |
+| `serve` | **ro** | rw, but unused | **rw** |
 
 `serve` gets `data` read-only because serving is a read of a *finished* run: by
 then its files are hardlinked into utrain's content-addressed store, so writing
@@ -472,11 +473,18 @@ control.json as `"continue"`. Drop a `run/config.yaml` in place to exercise the
 [config protocol](#config-protocol) itself.
 
 The one thing that differs from a real run is `wandb`: utrain substitutes its
-shim for you inside the container, but on the host `import wandb` finds whatever
-you installed. Either put utrain's shim first on `PYTHONPATH`
-(`src/utrain/container/wandb_shim`, alongside `naw`) to get the same rtsdb files
-utrain would collect, or set `WANDB_MODE=offline` if you only care about the
-phase's real work.
+shim and sets `WANDB_DIR` for you inside the container. On the host, `import
+wandb` finds whatever you installed and nothing sets the directory. Either put
+utrain's shim first on `PYTHONPATH` (`src/utrain/container/wandb_shim`,
+alongside `naw`) and set `WANDB_DIR` to your root, to get the same rtsdb files
+utrain would collect:
+
+```console
+$ PYTHONPATH=<utrain>/src/utrain/container/wandb_shim WANDB_DIR=$PWD/run \
+    ./my_container run --phase train
+```
+
+You can also set `WANDB_MODE=offline` if you only care about the phase's real work.
 
 You don't need to reproduce the `podman run` invocation above yourself — it's
 shown so you can build the same command by hand while debugging a built image,
@@ -519,6 +527,5 @@ $ podman run --rm localhost/utrain-<name>:utrain describe
   published container, in a repository of its own, that *wraps* an existing
   training project ([nanochat](https://github.com/karpathy/nanochat)) rather
   than owning the training code. Worth reading if that is your situation: its
-  phases shell out to the upstream scripts, and `wandb_bridge/sitecustomize.py`
-  shows how to let a project that already logs through wandb keep its own metric
-  names while landing them in the right phase's file.
+  phases shell out to the upstream scripts and let nanochat's own `wandb.init`
+  calls stand, keeping upstream's metric names without patching a line of it.

@@ -200,8 +200,8 @@ def _wait_for_gate(p: Paths, cfg: dict[str, object], timeout: float = 120.0) -> 
         time.sleep(0.05)
 
 
-def _run_tokenizer(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 50) -> bool:
-    run = wandb.init(project="tokenizer", id=run_id, dir=str(p.run_dir))
+def _run_tokenizer(p: Paths, cfg: dict[str, object], total_steps: int = 50) -> bool:
+    run = wandb.init()
     _wait_for_gate(p, cfg)
     ok = True
     for step in range(total_steps):
@@ -217,8 +217,8 @@ def _run_tokenizer(p: Paths, run_id: str, cfg: dict[str, object], total_steps: i
     return ok
 
 
-def _run_pretrain(p: Paths, run_id: str, cfg: dict[str, object], total_steps: int = 200) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, dir=str(p.run_dir))
+def _run_pretrain(p: Paths, cfg: dict[str, object], total_steps: int = 200) -> bool:
+    run = wandb.init()
     # Echo the effective config so the e2e suite can verify the utrain config
     # protocol: `num_layers` comes from `globals`, `batch_size` from this phase.
     num_layers = int(cfg.get("num_layers", 12))
@@ -272,11 +272,10 @@ def cmd_run(p: Paths, phase: str) -> None:
         (yaml.safe_load(cfg_path.read_text()) or {}) if cfg_path.exists() else {}
     )
     cfg = _flatten_config(raw_cfg, phase)
-    run_id = str(cfg.get("run_id", ""))
     if phase == "tokenizer":
-        ok = _run_tokenizer(p, run_id, cfg)
+        ok = _run_tokenizer(p, cfg)
     elif phase == "pretrain":
-        ok = _run_pretrain(p, run_id, cfg)
+        ok = _run_pretrain(p, cfg)
     else:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)

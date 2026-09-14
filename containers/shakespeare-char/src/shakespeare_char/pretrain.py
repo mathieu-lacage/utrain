@@ -28,8 +28,8 @@ def _estimate_mfu(n_params: int, tokens_per_sec: float, device: torch.device) ->
     return 6.0 * n_params * tokens_per_sec / peak_flops
 
 
-def run(p: paths.Paths, run_id: str, cfg: dict[str, object]) -> bool:
-    run = wandb.init(project="pretrain", id=run_id, config=cfg, dir=str(p.run_dir))
+def run(p: paths.Paths, cfg: dict[str, object]) -> bool:
+    run = wandb.init(config=cfg, dir=str(p.run_dir))
 
     # Config
     n_layer = config.get_int(cfg, "n_layer", 4)

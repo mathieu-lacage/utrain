@@ -16,9 +16,9 @@ from . import config, describe, download, paths, pretrain, serve, tokenizer
 
 # The phases utrain may ask for, normalized to one signature so dispatch is a
 # lookup rather than an if-chain. Each returns True when the phase succeeded.
-_PHASES: dict[str, collections.abc.Callable[[paths.Paths, str, dict[str, object]], bool]] = {
-    "download": lambda p, run_id, cfg: download.run(p, run_id),
-    "tokenizer": lambda p, run_id, cfg: tokenizer.run(p, run_id),
+_PHASES: dict[str, collections.abc.Callable[[paths.Paths, dict[str, object]], bool]] = {
+    "download": lambda p, cfg: download.run(p),
+    "tokenizer": lambda p, cfg: tokenizer.run(p),
     "pretrain": pretrain.run,
 }
 
@@ -54,12 +54,11 @@ def cmd_check_cache(phase: str) -> None:
 
 def cmd_run(p: paths.Paths, phase: str) -> None:
     cfg = config.flatten(config.load(p), phase)
-    run_id = config.get_str(cfg, "run_id", "")
     entry = _PHASES.get(phase)
     if entry is None:
         print(f"unknown phase: {phase}", file=sys.stderr)
         sys.exit(1)
-    sys.exit(0 if entry(p, run_id, cfg) else 1)
+    sys.exit(0 if entry(p, cfg) else 1)
 
 
 def main() -> None:

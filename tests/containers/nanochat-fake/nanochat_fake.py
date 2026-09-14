@@ -219,9 +219,9 @@ PHASES = {
 }
 
 
-def _run_phase(p: Paths, name: str, run_id: str, cfg: dict[str, object]) -> bool:
+def _run_phase(p: Paths, name: str, cfg: dict[str, object]) -> bool:
     phase = PHASES[name]
-    run = wandb.init(project=name, id=run_id, dir=str(p.run_dir))
+    run = wandb.init()
     # Echo what the config form actually decided, so the log pane shows the
     # edit the viewer just made reaching the container.
     print(f"depth={cfg.get('depth')} max_seq_len={cfg.get('max_seq_len')}", flush=True)
@@ -253,7 +253,7 @@ def cmd_run(p: Paths, phase: str) -> None:
         (yaml.safe_load(cfg_path.read_text()) or {}) if cfg_path.exists() else {}
     )
     cfg = _flatten_config(raw_cfg, phase)
-    sys.exit(0 if _run_phase(p, phase, str(cfg.get("run_id", "")), cfg) else 1)
+    sys.exit(0 if _run_phase(p, phase, cfg) else 1)
 
 
 # -- serve ----------------------------------------------------------------
