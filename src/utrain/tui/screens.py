@@ -404,6 +404,29 @@ def _fill(table: textual.widgets.DataTable[render.Cell], rows: list[list[render.
         table.remove_row(table.ordered_rows[-1].key)
 
 
+def _stale(
+    event: textual.widgets.DataTable.RowHighlighted,
+    table: textual.widgets.DataTable[render.Cell],
+) -> bool:
+    """Whether the cursor has already left the row this event is about.
+
+    The cursor *is* the selection, so a highlight message naming any other row
+    is out of date by the time it is read. Two arrive together whenever a table
+    is filled for the first time: Textual highlights row 0 as the cursor
+    becomes valid, and `apply_phases` moves the cursor to the phase the run has
+    got to in the same pass. A snapshot landing between the two -- it arrives
+    from a thread, not through the message queue -- would read the first as the
+    viewer having selected row 0 and move the cursor down onto it to match.
+
+    It also collapses a burst of cursor moves: only the row the viewer stopped
+    on is selected, rather than every row crossed on the way.
+
+    The table is passed rather than read off the event, whose `data_table` is
+    typed as an unparameterised `DataTable`.
+    """
+    return event.cursor_row != table.cursor_row
+
+
 def min_prefix_len(run_ids: list[str]) -> int:
     """Shortest prefix that still tells these run ids apart."""
     if not run_ids:
@@ -977,11 +1000,15 @@ class MainScreen(_Screen):
     def _run_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
         # Moving the cursor is the selection: there is nothing to drill into any
         # more, so waiting for enter would only make the panes lag the cursor.
+        if _stale(event, self.table("#runs")):
+            return
         if 0 <= event.cursor_row < len(self.runs):
             self.select_run(self.runs[event.cursor_row].id)
 
     @textual.on(textual.widgets.DataTable.RowHighlighted, "#phases")
     def _phase_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
+        if _stale(event, self.table("#phases")):
+            return
         if 0 <= event.cursor_row < len(self.phases):
             self.select_phase(self.phases[event.cursor_row].phase)
 

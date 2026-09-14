@@ -697,6 +697,33 @@ async def test_moving_the_phase_cursor_selects_that_phase(app: utrain.tui.app.Ut
         assert _main(app).address() == f"{RUN_ID}/tokenizer"
 
 
+async def test_a_highlight_for_a_row_the_cursor_has_left_is_not_a_selection(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A queued highlight for another row is stale, not a second selection.
+
+    Filling the phases table for the first time highlights row 0 as the cursor
+    becomes valid, and the same pass moves the cursor to the phase the run has
+    got to. Both are messages; a snapshot lands from a thread rather than
+    through the queue, so it can arrive between them -- and if the first were
+    read as a selection, it would put the cursor back on row 0 and leave the
+    screen on a phase the viewer never picked.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        table = screen.table("#phases")
+        assert table.cursor_row == 1
+
+        table.post_message(
+            textual.widgets.DataTable.RowHighlighted(table, 0, table.ordered_rows[0].key)
+        )
+        await _settle(app, pilot)
+
+        assert screen.selected_phase == "pretrain"
+        assert table.cursor_row == 1
+
+
 async def test_enter_drills_into_the_run_and_escape_comes_back(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
@@ -2304,7 +2331,10 @@ async def test_a_single_move_still_fetches_once_the_cursor_stops(
         await _wait_out_settle(live_app, pilot)
 
         assert _main(live_app).selected_run == DRAFT_ID
-        assert source.fetched == [DRAFT_ID]
+        # By run rather than by count, as above: the refresh tick is still
+        # running, so what is asserted is that the move fetched, and fetched
+        # for the row it landed on.
+        assert set(source.fetched) == {DRAFT_ID}
 
 
 async def test_the_phases_pane_holds_its_rows_until_the_new_ones_arrive(
