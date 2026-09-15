@@ -2,6 +2,27 @@
 
 <!-- towncrier release notes start -->
 
+## 0.0.8 (2026-09-15)
+
+### Added
+
+- A recorded tour of the TUI in the documentation, driven end to end by
+  `scripts/tour.py` against a nanochat-shaped fixture container.
+
+### Changed
+
+- Isolate wandb dir of phase A from all other phases and setup WANDB_DIR so it is found transparently by `naw`. ([#23](https://gitlab.inria.fr/mlacage/utrain/-/issues/23))
+
+### Removed
+
+- The `nanochat` container preset now lives in its own repository,
+  [utrain-nanochat](https://gitlab.inria.fr/mlacage/utrain-nanochat), and is
+  published from there: `utrain image add
+  docker://registry.gitlab.inria.fr/mlacage/utrain-nanochat:latest`. It wraps an
+  upstream project on its own release schedule, so it no longer rides on a utrain
+  tag. Nothing about how utrain drives it has changed. ([#21](https://gitlab.inria.fr/mlacage/utrain/-/issues/21))
+
+
 ## 0.0.7 (2026-09-08)
 
 ### Added
