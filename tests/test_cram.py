@@ -67,6 +67,10 @@ def test_phase_show(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "phase-show.t", fake_image)
 
 
+def test_phase_restart(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "phase-restart.t", fake_image)
+
+
 def test_run_config(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "run-config.t", fake_image)
 

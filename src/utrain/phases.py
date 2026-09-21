@@ -3,7 +3,7 @@ import pathlib
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import container, exceptions, logs, metrics, reconcile, types
+from . import container, exceptions, logs, metrics, reconcile, runs, types
 from . import db as dbmod
 
 
@@ -163,6 +163,24 @@ def list_phases(
             )
 
     return entries
+
+
+def restart_phase(
+    addr: str,
+    session: sqlalchemy.orm.Session,
+) -> str:
+    """Restart a run from the phase a phase address names, as a new attempt.
+
+    The address is the same one `phase show` takes. The attempt in it, if any,
+    says where the caller saw the phase; the restart always branches off the
+    run's latest state, exactly what `run restart --from-phase` does -- this is
+    that same operation spelled from the phase's side, so a failed run can be
+    sent back to the phase that broke by pointing at the phase itself.
+    """
+    run_id, _, phase = _parse_phase_addr(addr, session)
+    if phase is None:
+        raise exceptions.UI("phase address must include a phase name")
+    return runs.restart_run(run_id, phase, session)
 
 
 def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:

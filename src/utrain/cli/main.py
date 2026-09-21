@@ -267,6 +267,11 @@ def _cmd_phase_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
     )
 
 
+@db_command
+def _cmd_phase_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    _print_run_row(phases.restart_phase(args.addr, session), session)
+
+
 def _cmd_store_gc(args: argparse.Namespace) -> None:
     settings = config.Settings()
     print(render.gc_result(store.gc(settings)))
@@ -413,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
     ph_show.add_argument("--metric", default=None)
     ph_show.add_argument("--since-step", type=int, default=0, dest="since_step")
     ph_show.set_defaults(func=_cmd_phase_show)
+    ph_restart = phase_sub.add_parser(
+        "restart", help="Restart a run from one of its phases (create a new attempt)"
+    )
+    ph_restart.add_argument("addr", help="Phase address, e.g. RUN_ID/PHASE")
+    ph_restart.set_defaults(func=_cmd_phase_restart)
 
     # store
     store_p = sub.add_parser("store", help="Data store")
