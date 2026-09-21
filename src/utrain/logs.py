@@ -2,6 +2,21 @@ import os
 import pathlib
 
 
+def phase_log_path(attempt_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    """The file a phase's output lives in, merged stream or legacy split.
+
+    A phase's stdout and stderr land in one file (see
+    `orchestrator._start_phase`); runs from before the merge kept the two
+    streams apart, and their stdout is what every reader has always shown, so
+    that is the fallback. Their stderr files are left where they are --
+    unreachable through the query layer, but never deleted.
+    """
+    merged = attempt_dir / "logs" / f"{phase}_output.log"
+    if merged.exists():
+        return merged
+    return attempt_dir / "logs" / f"{phase}_stdout.log"
+
+
 def tail_lines(path: pathlib.Path, n: int) -> list[str]:
     """The last `n` lines of a file, read backwards from the end.
 

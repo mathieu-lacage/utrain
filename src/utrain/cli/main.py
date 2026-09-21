@@ -206,7 +206,6 @@ def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
         session,
         attempt=getattr(args, "attempt", None),
         phase=getattr(args, "phase", None),
-        stderr=getattr(args, "stderr", False),
         tail=getattr(args, "tail", 200),
     )
     for line in lines:
@@ -380,7 +379,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_logs.add_argument("id")
     run_logs.add_argument("--attempt", type=int, default=None)
     run_logs.add_argument("--phase", default=None)
-    run_logs.add_argument("--stderr", action="store_true")
     run_logs.add_argument("--tail", type=int, default=200)
     run_logs.set_defaults(func=_cmd_run_logs)
 

@@ -224,6 +224,9 @@ def _run_pretrain(p: Paths, cfg: dict[str, object], total_steps: int = 200) -> b
     num_layers = int(cfg.get("num_layers", 12))
     batch_size = int(cfg.get("batch_size", 32))
     print(f"config: num_layers={num_layers} batch_size={batch_size}", flush=True)
+    # One line on stderr, so the merged output log has both streams in it and
+    # the e2e suite can see them interleaved in `run logs`.
+    print("pretrain: note on stderr", file=sys.stderr)
     ok = True
     for step in range(total_steps):
         if _read_control(p) == "stop":

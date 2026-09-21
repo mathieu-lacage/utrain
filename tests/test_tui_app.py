@@ -167,7 +167,7 @@ def _seed(data_dir: pathlib.Path) -> None:
     run_dir = data_dir / "runs" / RUN_ID
     attempt_dir = run_dir / "attempt" / "1"
     (attempt_dir / "logs").mkdir(parents=True)
-    (attempt_dir / "logs" / "pretrain_stdout.log").write_text(
+    (attempt_dir / "logs" / "pretrain_output.log").write_text(
         "".join(f"step {i}\n" for i in range(50))
     )
 

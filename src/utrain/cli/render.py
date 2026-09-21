@@ -167,6 +167,6 @@ def phase_detail(detail: types.PhaseDetail, log_tail: list[str], tail_n: int) ->
         lines += ["", output.format_table(["METRIC", "LAST", "STEP"], rows)]
 
     if detail.log_file is not None:
-        lines += ["", f"--- logs/{detail.phase}_stdout.log (tail {tail_n}) ---", *log_tail]
+        lines += ["", f"--- logs/{detail.log_file.name} (tail {tail_n}) ---", *log_tail]
 
     return "\n".join(lines)

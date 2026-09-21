@@ -770,7 +770,6 @@ def read_log_tail(
     session: sqlalchemy.orm.Session,
     attempt: int | None = None,
     phase: str | None = None,
-    stderr: bool = False,
     tail: int = 200,
 ) -> list[str]:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
@@ -785,8 +784,7 @@ def read_log_tail(
     attempt_dir = run_dir / "attempt" / str(attempt)
 
     if phase is not None:
-        suffix = "stderr" if stderr else "stdout"
-        log_file = attempt_dir / "logs" / f"{phase}_{suffix}.log"
+        log_file = logs.phase_log_path(attempt_dir, phase)
     else:
         log_file = attempt_dir / "orchestrator.log"
 

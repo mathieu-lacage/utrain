@@ -280,7 +280,7 @@ def show_phase(
     for m in container.run_data.read_metrics(attempt_dir, phase):
         last_by_name[m.name] = m
 
-    log_file = attempt_dir / "logs" / f"{phase}_stdout.log"
+    log_file = logs.phase_log_path(attempt_dir, phase)
     return types.PhaseDetail(
         run_id=run_id,
         run_name=str(run_row["name"]),
@@ -299,7 +299,7 @@ def show_phase(
 
 
 def read_log_tail(detail: types.PhaseDetail, n: int) -> list[str]:
-    """Tail of a phase's stdout log, or nothing when it has not written one."""
+    """Tail of a phase's output log, or nothing when it has not written one."""
     if detail.log_file is None:
         return []
     return logs.tail_lines(detail.log_file, n)

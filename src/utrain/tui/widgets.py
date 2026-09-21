@@ -433,7 +433,7 @@ class MetricList(textual.widgets.OptionList):
 
 
 class LogTail(textual.widgets.RichLog):
-    """The tail of a phase's stdout, replaced wholesale on each refresh."""
+    """The tail of a phase's output, replaced wholesale on each refresh."""
 
     DEFAULT_CSS = """
     LogTail {

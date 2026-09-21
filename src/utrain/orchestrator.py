@@ -292,13 +292,23 @@ def _start_phase(
 ) -> subprocess.Popen[bytes]:
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout = open(logs_dir / f"{phase}_stdout.log", "wb")
-    stderr = open(logs_dir / f"{phase}_stderr.log", "wb")
+    # One file for both streams, the way a terminal shows them: the kernel
+    # serialises writes to the shared file description, so the interleaving is
+    # as faithful as the container's own buffering allows. Splitting them is
+    # not recoverable later -- separate files carry no timestamps -- which is
+    # why the merge happens here and not at read time.
+    output = open(logs_dir / f"{phase}_output.log", "wb")
 
     data_dir = attempt_dir / "data" / phase
     data_dir.mkdir(parents=True, exist_ok=True)
 
     gpu_args, env = _gpu_args(compute, attempt_dir)
+    # Piped stdout is block-buffered, so without this the container's Python
+    # would hold stdout back in 8k chunks while stderr (tracebacks, progress
+    # bars) went straight out -- and the merged log would show warnings
+    # *before* the stdout lines that produced them. Line-buffering is what
+    # makes the interleaving above honest.
+    env["PYTHONUNBUFFERED"] = "1"
 
     # `podman run` proxies SIGTERM to PID 1 and returns the container's exit
     # status, so the caller's terminate()/wait() handling needs no adjustment.
@@ -321,8 +331,8 @@ def _start_phase(
             "--phase",
             phase,
         ],
-        stdout=stdout,
-        stderr=stderr,
+        stdout=output,
+        stderr=output,
         env=env,
     )
 

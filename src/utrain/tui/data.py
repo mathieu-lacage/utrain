@@ -28,7 +28,7 @@ from .. import compute, config, exceptions, images, metrics, phases, runs, serve
 from .. import container as containermod
 from .. import db as dbmod
 
-# How much of a phase's stdout the log pane holds. `logs.tail_lines` seeks
+# How much of a phase's output the log pane holds. `logs.tail_lines` seeks
 # backwards from the end in blocks, so a deep tail costs no more to read than a
 # shallow one; this is how far the viewer can scroll back without leaving the
 # TUI.
