@@ -2,6 +2,13 @@
 
 <!-- towncrier release notes start -->
 
+## 0.0.10 (2026-09-21)
+
+### Fixed
+
+- Bump naw min version to 0.0.11 ([#32](https://gitlab.inria.fr/mlacage/utrain/-/issues/32))
+
+
 ## 0.0.9 (2026-09-21)
 
 ### Fixed
