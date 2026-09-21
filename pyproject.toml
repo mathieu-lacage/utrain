@@ -35,7 +35,7 @@ dependencies = [
     # 0.0.9 is where `naw.wandb.init` learned to read WANDB_DIR, which is how
     # the orchestrator tells a phase where to log (orchestrator._wandb_mount_args).
     # An older naw silently writes to the container's working directory instead.
-    "naw>=0.0.9",
+    "naw>=0.0.11",
 ]
 
 [project.optional-dependencies]
