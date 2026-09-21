@@ -39,6 +39,12 @@ class PhaseRow:
     status: str
     started_at: float | None
     ended_at: float | None
+    # ``<short run id>/<attempt>/<phase>``: how this phase is addressed on the
+    # command line (`phase show`, `phase restart`, ...). Kept beside the bare
+    # name because the short form depends on the other runs in the database,
+    # and the attempt because a `--from-phase` restart leaves earlier phases'
+    # outputs under earlier attempts' directories.
+    address: str
 
 
 @dataclasses.dataclass(frozen=True)

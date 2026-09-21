@@ -50,8 +50,8 @@ Step 6: start it and wait for it to finish.
   attempts: 1 (latest: done)
   created:  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   
-  PHASE  ORDER  STATUS  STARTED           ENDED
-  train  0      done    [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  PHASE\s+ORDER\s+STATUS\s+STARTED\s+ENDED (re)
+  [0-9a-f]+/1/train\s+0\s+done\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   
   config: .* (re)
   logs:   .* (re)

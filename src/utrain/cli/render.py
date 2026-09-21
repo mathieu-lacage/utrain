@@ -38,7 +38,9 @@ def _run_cells(run: types.RunRow, prefix_len: int) -> list[str]:
 
 def _phase_cells(phase: types.PhaseRow) -> list[str]:
     return [
-        phase.phase,
+        # The fully-qualified address, so what the table shows can be pasted
+        # straight into `phase show` or `phase restart`.
+        phase.address,
         str(phase.phase_order),
         phase.status,
         output.format_time(phase.started_at),

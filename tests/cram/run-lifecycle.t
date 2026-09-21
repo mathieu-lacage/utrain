@@ -27,9 +27,9 @@ started and then blocks until the gate file appears in the attempt dir.
   attempts: 1 (latest: done)
   created:  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   
-  PHASE      ORDER  STATUS  STARTED           ENDED
-  tokenizer  0      done    [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
-  pretrain   1      done    [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  PHASE\s+ORDER\s+STATUS\s+STARTED\s+ENDED (re)
+  [0-9a-f]+/1/tokenizer\s+0\s+done\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
+  [0-9a-f]+/1/pretrain\s+1\s+done\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   
   config: .* (re)
   logs:   .* (re)

@@ -361,6 +361,7 @@ def phase_rows(
         .mappings()
         .fetchall()
     )
+    rid = dbmod.short_run_id(run_id, session)
     return [
         types.PhaseRow(
             phase=str(p["phase"]),
@@ -368,6 +369,7 @@ def phase_rows(
             status=str(p["status"]),
             started_at=p["started_at"],
             ended_at=p["ended_at"],
+            address=f"{rid}/{attempt_n}/{p['phase']}",
         )
         for p in rows
     ]
