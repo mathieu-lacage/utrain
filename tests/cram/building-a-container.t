@@ -11,8 +11,9 @@ so the tutorial cannot rot without this test failing.
 Step 2: run the phase before there is any container. The doc says
 `pip install pyyaml wandb`; here an ephemeral uv environment stands in for
 the reader's shell, so the test does not depend on utrain's own venv having
-wandb.
-  $ WANDB_MODE=offline uv run --quiet --no-project --python 3.11 \
+wandb. No python version is pinned: the reader's shell has whatever it has,
+and pinning one breaks on machines where uv cannot install that version.
+  $ WANDB_MODE=offline uv run --quiet --no-project \
   >   --with pyyaml --with wandb python demo_container.py run --phase train >/dev/null 2>&1
   $ cat run/data/model.txt
   trained for 50 steps
