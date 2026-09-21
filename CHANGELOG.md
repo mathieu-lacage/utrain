@@ -2,6 +2,18 @@
 
 <!-- towncrier release notes start -->
 
+## 0.0.9 (2026-09-21)
+
+### Fixed
+
+- The phase table in `utrain run show` and `utrain attempt show` displays fully-qualified PHASE ids (`RUN_ID/ATTEMPT/PHASE`) in its first column, ready to paste into `utrain phase show` or `utrain phase restart` ([#24](https://gitlab.inria.fr/mlacage/utrain/-/issues/24))
+- A `utrain phase restart PHASE_ID` command that restarts a run from the phase the address names, as a new attempt ([#25](https://gitlab.inria.fr/mlacage/utrain/-/issues/25))
+- Display an error instead of failing silently when the NVIDIA container toolkit is missing for a GPU run ([#26](https://gitlab.inria.fr/mlacage/utrain/-/issues/26))
+- Avoid storing paths in database ([#27](https://gitlab.inria.fr/mlacage/utrain/-/issues/27))
+- Upgrade pytorch to support SM120 (blackwell) ([#28](https://gitlab.inria.fr/mlacage/utrain/-/issues/28))
+- Interleave container stdout and stderr to a single file ([#29](https://gitlab.inria.fr/mlacage/utrain/-/issues/29))
+
+
 ## 0.0.8 (2026-09-15)
 
 ### Added
