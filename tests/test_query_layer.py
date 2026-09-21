@@ -26,6 +26,7 @@ import utrain.db
 import utrain.exceptions
 import utrain.lock
 import utrain.logs
+import utrain.orchestrator
 import utrain.phases
 import utrain.runs
 import utrain.types
@@ -508,3 +509,43 @@ def test_write_config_puts_a_read_only_file_back_the_way_it_found_it(
         path.write_text("run_id: x\n")
 
     assert path.stat().st_mode & 0o777 == 0o444
+
+
+def test_ensure_gpu_toolkit_refuses_a_gpu_compute_without_nvidia_ctk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GPU run without the toolkit is a user error, not a crash in a log."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(utrain.exceptions.UI, match="nvidia-ctk not found"):
+        utrain.orchestrator.ensure_gpu_toolkit("gpu0")
+
+
+def test_ensure_gpu_toolkit_lets_cpu_runs_through_without_nvidia_ctk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CPU runs stay independent of the NVIDIA toolchain."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    utrain.orchestrator.ensure_gpu_toolkit("cpu")
+
+
+def test_start_run_refuses_a_gpu_run_without_the_container_toolkit(
+    session: sqlalchemy.orm.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start_run preflights the toolkit while it can still tell the user.
+
+    The orchestrator it spawns is detached, so an error raised there would land
+    in orchestrator.log and the run would go failed with no visible reason.
+    """
+    _insert_run(session, "5dc7917c", "toolkit-less", 1.0)
+    session.execute(
+        sqlalchemy.update(utrain.db.runs)
+        .where(utrain.db.runs.c.id == "5dc7917c")
+        .values(compute="gpu0")
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    with pytest.raises(utrain.exceptions.UI, match="nvidia-ctk not found"):
+        utrain.runs.start_run("5dc7917c", session)
+
+    # Nothing was created: no attempt, and the run is still configurable.
+    assert utrain.db.latest_attempt("5dc7917c", session) is None

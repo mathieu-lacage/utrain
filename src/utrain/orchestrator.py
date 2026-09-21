@@ -11,7 +11,7 @@ import naw
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import config, container, lock
+from . import config, container, exceptions, lock
 from . import db as dbmod
 
 # Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy
@@ -37,6 +37,22 @@ _SERVE_MOUNT = f"{_RUN_MOUNT}/serve"
 _PORT_FILE = f"{_SERVE_MOUNT}/port.json"
 
 
+def ensure_gpu_toolkit(compute: str) -> None:
+    """Refuse a GPU compute when the NVIDIA container toolkit is missing.
+
+    Front ends call this as a preflight, before any attempt state exists: the
+    orchestrator runs detached with its output in orchestrator.log, so an error
+    raised there is one the user never sees. CPU runs need no NVIDIA toolchain
+    and pass untouched.
+    """
+    if not compute.startswith("gpu"):
+        return
+    if shutil.which("nvidia-ctk") is None:
+        raise exceptions.UI(
+            "nvidia-ctk not found; install the NVIDIA container toolkit to run on a GPU"
+        )
+
+
 def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[str, str]]:
     """podman args + env that expose the selected GPU inside the container.
 
@@ -54,10 +70,7 @@ def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[
     if not compute.startswith("gpu"):
         return [], env
 
-    if shutil.which("nvidia-ctk") is None:
-        raise RuntimeError(
-            "nvidia-ctk not found; install the NVIDIA container toolkit to run on a GPU"
-        )
+    ensure_gpu_toolkit(compute)
 
     cdi_dir = attempt_dir / ".cdi"
     cdi_dir.mkdir(parents=True, exist_ok=True)
@@ -68,7 +81,7 @@ def _gpu_args(compute: str, attempt_dir: pathlib.Path) -> tuple[list[str], dict[
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"nvidia-ctk cdi generate failed: {result.stderr.strip()}")
+        raise exceptions.UI(f"nvidia-ctk cdi generate failed: {result.stderr.strip()}")
 
     conf = cdi_dir / "containers.conf"
     conf.write_text(f'[engine]\ncdi_spec_dirs = ["{cdi_dir}"]\n')

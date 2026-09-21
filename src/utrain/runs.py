@@ -450,6 +450,11 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     if status != "configuring":
         raise exceptions.UI(f"unexpected run status '{status}'")
 
+    # Preflight while still in the foreground process: the orchestrator runs
+    # detached with its output in orchestrator.log, so a GPU run whose toolkit
+    # is missing must be refused here for the user to see why (issue #26).
+    orchestrator.ensure_gpu_toolkit(str(row["compute"]))
+
     # Reconcile (no-op if status is configuring)
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
@@ -614,6 +619,9 @@ def restart_run(
     status = str(row["status"])
     if status == "configuring":
         raise exceptions.UI("run has not started yet; use 'run start'")
+
+    # Same preflight as start_run: refuse before anything is stopped or created.
+    orchestrator.ensure_gpu_toolkit(str(row["compute"]))
 
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
