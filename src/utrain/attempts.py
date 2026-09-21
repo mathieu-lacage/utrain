@@ -1,5 +1,3 @@
-import pathlib
-
 import sqlalchemy
 import sqlalchemy.orm
 
@@ -71,7 +69,7 @@ def show_attempt(
     reconcile.reconcile_attempt(run_id, attempt_n, session)
 
     run_row = dbmod.get_run(run_id, session)
-    run_dir = pathlib.Path(str(run_row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
 
     attempt_row = (
         session.execute(

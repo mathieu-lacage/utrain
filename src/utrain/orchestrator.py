@@ -483,7 +483,7 @@ def run_orchestrator(
             print(f"orchestrator: run '{run_id}' not found", file=sys.stderr)
             sys.exit(1)
 
-        run_dir = pathlib.Path(str(run_row["run_dir"]))
+        run_dir = settings.runs_dir / run_id
         image_key = str(run_row["image"])
         compute = str(run_row["compute"])
         presets = container.podman.list_presets()

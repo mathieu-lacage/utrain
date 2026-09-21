@@ -9,6 +9,7 @@ these do run in CI.
 import os
 import pathlib
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,7 +51,6 @@ def _insert_run(
             name=name,
             image="img",
             compute="cpu",
-            run_dir=f"/runs/{run_id}",
             status=status,
             config_hash=None,
             created_at=created_at,
@@ -366,7 +366,6 @@ def _configurable_run(
             name="draft",
             image="img",
             compute="cpu",
-            run_dir=str(run_dir),
             status=status,
             config_hash=None,
             created_at=100.0,
@@ -382,6 +381,25 @@ def test_read_config_parses_the_file(
     assert utrain.runs.read_config(run_id, session)["globals"] == {
         "model": {"n_layer": 4, "dtype": "fp32"}
     }
+
+
+def test_run_survives_moving_the_whole_data_dir(tmp_path: pathlib.Path) -> None:
+    """run_dir is derived from data_dir on every read rather than stored, so
+    relocating db + runs together (as one data_dir tree) doesn't strand a run."""
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    with utrain.db.with_db(utrain.config.Settings(data_dir=old_dir)) as session:
+        run_id = _configurable_run(session, old_dir)
+
+    new_dir = tmp_path / "new"
+    shutil.move(str(old_dir), str(new_dir))
+
+    with utrain.db.with_db(utrain.config.Settings(data_dir=new_dir)) as session:
+        detail = utrain.runs.get_run_detail(run_id, session)
+        assert detail.run_dir == new_dir / "runs" / run_id
+        assert utrain.runs.read_config(run_id, session)["globals"] == {
+            "model": {"n_layer": 4, "dtype": "fp32"}
+        }
 
 
 def test_write_config_coerces_form_strings_to_the_declared_types(

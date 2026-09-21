@@ -223,8 +223,7 @@ def _resolve_phase(
 
     reconcile.reconcile_attempt(run_id, attempt_n, session)
 
-    run_row = dbmod.get_run(run_id, session)
-    run_dir = pathlib.Path(str(run_row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     return run_id, attempt_n, phase, run_dir / "attempt" / str(attempt_n)
 
 

@@ -141,8 +141,7 @@ def get_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> types.RunRow
 def config_path(run_id_prefix: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
     """Path of a run's config.yaml, for a caller that wants to edit it."""
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    row = dbmod.get_run(run_id, session)
-    return pathlib.Path(str(row["run_dir"])) / "config.yaml"
+    return dbmod.run_dir(run_id, session) / "config.yaml"
 
 
 @contextlib.contextmanager
@@ -282,7 +281,7 @@ def write_config(
         described = container.podman.describe(container.podman.list_presets()[str(row["image"])])
     schema = described.config_schema
 
-    path = pathlib.Path(str(row["run_dir"])) / "config.yaml"
+    path = dbmod.run_dir(run_id, session) / "config.yaml"
     current = _mapping(yaml.safe_load(path.read_text())) if path.exists() else {}
 
     cfg: dict[str, object] = {"run_id": run_id, "compute": current.get("compute")}
@@ -392,7 +391,7 @@ def _run_detail(
 
     return types.RunDetail(
         run=_run_row(row, session),
-        run_dir=pathlib.Path(str(row["run_dir"])),
+        run_dir=dbmod.run_dir(run_id, session),
         n_attempts=len(all_attempts),
         latest_attempt_status=(
             str(all_attempts[-1]["status"]) if all_attempts else str(row["status"])
@@ -430,7 +429,6 @@ def create_run(
             name=name,
             image=image,
             compute=compute_value,
-            run_dir=str(run_dir),
             status="configuring",
             config_hash=None,
             created_at=now,
@@ -457,7 +455,7 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     if attempt_n is not None:
         reconcile.reconcile_attempt(run_id, attempt_n, session)
 
-    run_dir = pathlib.Path(str(row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     config_path = run_dir / "config.yaml"
 
     chash = _config_hash(config_path)
@@ -575,8 +573,7 @@ def _stop_attempt(run_id: str, attempt_n: int, session: sqlalchemy.orm.Session) 
     if attempt_row is None:
         return
 
-    run_row = dbmod.get_run(run_id, session)
-    run_dir = pathlib.Path(str(run_row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     attempt_dir = run_dir / "attempt" / str(attempt_n)
     orchestrator.write_control(attempt_dir, "stop")
 
@@ -627,7 +624,7 @@ def restart_run(
         _stop_attempt(run_id, attempt_n, session)
 
     image_key = str(row["image"])
-    run_dir = pathlib.Path(str(row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     config_path = run_dir / "config.yaml"
 
     # Validate from_phase
@@ -746,7 +743,7 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
         if attempt_n is not None:
             _stop_attempt(run_id, attempt_n, session)
 
-    run_dir = pathlib.Path(str(row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     shutil.rmtree(run_dir, ignore_errors=True)
 
     session.execute(sqlalchemy.delete(dbmod.run_phases).where(dbmod.run_phases.c.run_id == run_id))
@@ -767,8 +764,7 @@ def read_log_tail(
     tail: int = 200,
 ) -> list[str]:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    row = dbmod.get_run(run_id, session)
-    run_dir = pathlib.Path(str(row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
 
     if attempt is None:
         attempt_n = dbmod.latest_attempt(run_id, session)

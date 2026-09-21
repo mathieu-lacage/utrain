@@ -307,7 +307,6 @@ def _make_run(
             name="chat",
             image="utrain-fake",
             compute="cpu",
-            run_dir=str(run_dir),
             status=run_status,
             created_at=0.0,
         )

@@ -1,9 +1,11 @@
 import collections.abc
 import contextlib
+import pathlib
 import sqlite3
 
 import sqlalchemy
 import sqlalchemy.event
+import sqlalchemy.exc
 import sqlalchemy.orm
 
 from . import config, exceptions
@@ -17,7 +19,6 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("name", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("image", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("compute", sqlalchemy.Text, nullable=False),
-    sqlalchemy.Column("run_dir", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("status", sqlalchemy.Text, nullable=False, default="configuring"),
     sqlalchemy.Column("config_hash", sqlalchemy.Text, nullable=True),
     sqlalchemy.Column("created_at", sqlalchemy.Float, nullable=False),
@@ -97,8 +98,14 @@ def _migrate(engine: sqlalchemy.Engine) -> None:
                 if col not in existing["runs"]:
                     conn.execute(sqlalchemy.text(f"ALTER TABLE runs ADD COLUMN {col} {ddl}"))
 
-        # Drop columns that don't belong in the new schema (SQLite can't DROP columns
-        # before 3.35; skip silently — the extra columns are harmless).
+        # run_dir used to be stored as an absolute path, frozen at creation time,
+        # which broke once the data directory was moved elsewhere. It's now
+        # recomputed on every read from data_dir, so drop the stale column.
+        if "runs" in existing and "run_dir" in existing["runs"]:
+            try:
+                conn.execute(sqlalchemy.text("ALTER TABLE runs DROP COLUMN run_dir"))
+            except sqlalchemy.exc.OperationalError:
+                pass  # SQLite < 3.35 can't drop columns; leave it, it's harmless.
 
 
 @contextlib.contextmanager
@@ -108,6 +115,7 @@ def with_db(
     engine = create_engine(settings)
     init_db(engine)
     with sqlalchemy.orm.Session(engine) as session:
+        session.info["settings"] = settings
         try:
             yield session
             session.commit()
@@ -175,3 +183,13 @@ def get_run(run_id: str, session: sqlalchemy.orm.Session) -> sqlalchemy.engine.R
     if row is None:
         raise exceptions.UI(f"run '{run_id}' not found")
     return row
+
+
+def run_dir(run_id: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
+    """A run's directory, computed from the current data_dir rather than stored.
+
+    Storing this as an absolute path used to break once the data directory
+    was moved elsewhere; deriving it fresh keeps it correct after a move.
+    """
+    settings: config.Settings = session.info["settings"]
+    return settings.runs_dir / run_id

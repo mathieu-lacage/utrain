@@ -18,7 +18,6 @@ Phases it recorded as terminal keep their status; anything still `pending` or
 follow from the resulting set.
 """
 
-import pathlib
 import time
 
 import sqlalchemy
@@ -69,7 +68,7 @@ def reconcile_attempt(
     if attempt_row["status"] in TERMINAL:
         return
 
-    run_dir = pathlib.Path(str(run_row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     attempt_dir = run_dir / "attempt" / str(attempt)
     pid = attempt_row["pid"]
     if lock.is_held(attempt_dir, int(pid) if pid is not None else None):

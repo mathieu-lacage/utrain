@@ -9,7 +9,7 @@ import yaml
 class Settings(pydantic_settings.BaseSettings):
     host: str = "127.0.0.1"
     port: int = 7613
-    data_dir: pathlib.Path = pathlib.Path(".")
+    data_dir: pathlib.Path = pathlib.Path("utrain")
     # How the TUI draws a curve. Braille packs 2x4 points into a cell against
     # half-blocks' 2x2, so it is the finer of the two wherever the font has the
     # glyphs -- and whether it does is the one thing a terminal program cannot

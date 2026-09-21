@@ -142,7 +142,7 @@ def start(
             f"run '{run_id}' is still {status}; chat is available once the run has finished"
         )
 
-    run_dir = pathlib.Path(str(row["run_dir"]))
+    run_dir = dbmod.run_dir(run_id, session)
     attempt_dir, data_dir, phase = _model_location(run_id, run_dir, servable, phase, session)
     if not data_dir.exists():
         raise exceptions.UI(f"data dir for phase '{phase}' is missing: {data_dir}")
