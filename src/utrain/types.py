@@ -142,6 +142,50 @@ class GcResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class StoreProblem:
+    """One way a phase's data diverges from the content-addressed store.
+
+    ``path`` is relative to the data directory: ``store/<sha>`` for a store
+    file, ``runs/<run_id>/attempt/<n>/data/...`` for a phase's data file.
+    """
+
+    path: pathlib.Path
+    problem: str
+
+
+@dataclasses.dataclass(frozen=True)
+class StoreLink:
+    """One checked data file and the store file it is hardlinked to.
+
+    Both paths are relative to the data directory, as in ``StoreProblem``.
+    """
+
+    data: pathlib.Path
+    store: pathlib.Path
+
+
+@dataclasses.dataclass(frozen=True)
+class StoreCheckResult:
+    """What `utrain store check` found.
+
+    Only attempts recorded as done are checked: deduplication runs once the
+    whole run completes, so anything still going has legitimately unlinked
+    data.
+    """
+
+    # Done attempts whose data dir was examined.
+    attempts: int
+    data_files: int
+    store_files: int
+    # Store files nothing hardlinks any more; `utrain store gc` reclaims them.
+    orphaned: int
+    problems: list[StoreProblem]
+    # Every checked file beside its store file; empty unless the caller asked
+    # for verbose output, because it is one entry per data file.
+    links: list[StoreLink] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
 class ChatMessage:
     """One turn of a chat conversation.
 

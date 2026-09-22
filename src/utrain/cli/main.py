@@ -276,6 +276,21 @@ def _cmd_store_gc(args: argparse.Namespace) -> None:
     print(render.gc_result(store.gc(settings)))
 
 
+@db_command
+def _cmd_store_check(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    settings = config.Settings()
+    result = store.check(
+        settings,
+        session,
+        hash_contents=not args.no_hash,
+        verbose=args.verbose,
+        scope=args.addr,
+    )
+    print(render.store_check(result))
+    if result.problems:
+        sys.exit(1)
+
+
 def _cmd_tui(args: argparse.Namespace) -> None:
     # Imported here, not at module scope, so that every other command keeps
     # working when the optional `tui` extra is not installed.
@@ -427,6 +442,28 @@ def build_parser() -> argparse.ArgumentParser:
     store_sub = store_p.add_subparsers(dest="store_command", required=True)
     store_gc = store_sub.add_parser("gc")
     store_gc.set_defaults(func=_cmd_store_gc)
+    store_check = store_sub.add_parser(
+        "check", help="Verify run data is hardlinked into the store by content hash"
+    )
+    store_check.add_argument(
+        "addr",
+        nargs="?",
+        default=None,
+        metavar="ADDR",
+        help="Scope: RUN_ID, RUN_ID/ATTEMPT or RUN_ID/ATTEMPT/PHASE (default: every run)",
+    )
+    store_check.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="List each checked file beside the store file it is hardlinked to",
+    )
+    store_check.add_argument(
+        "--no-hash",
+        action="store_true",
+        help="Skip re-hashing store files; check only that the hardlinks are in place",
+    )
+    store_check.set_defaults(func=_cmd_store_check)
 
     sub.add_parser("tui", help="Browse runs, phases and metrics interactively").set_defaults(
         func=_cmd_tui

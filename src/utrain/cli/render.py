@@ -65,6 +65,28 @@ def gc_result(result: types.GcResult) -> str:
     )
 
 
+def store_check(result: types.StoreCheckResult) -> str:
+    lines = [f"{p.path}: {p.problem}" for p in result.problems]
+    if result.orphaned:
+        lines.append(
+            f"note: {result.orphaned} orphaned store file(s) "
+            "('utrain store gc' reclaims them)"
+        )
+    # The verbose listing: each checked data file beside the store file it
+    # shares an inode with.
+    lines += [f"{link.data}  {link.store}" for link in result.links]
+    summary = (
+        f"checked {result.data_files} data file(s) in {result.attempts} attempt(s) "
+        f"against {result.store_files} store file(s)"
+    )
+    if result.problems:
+        summary += f": {len(result.problems)} problem(s)"
+    else:
+        summary += ": ok"
+    lines.append(summary)
+    return "\n".join(lines)
+
+
 def phase_table(phases: list[types.PhaseRow]) -> str:
     return output.format_table(_PHASE_HEADERS, [_phase_cells(p) for p in phases])
 
