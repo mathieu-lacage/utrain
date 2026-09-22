@@ -14,7 +14,7 @@
   METRIC * (glob)
   $ utrain phase show "$RID/pretrain" | grep "^---"
   --- logs/pretrain_output.log (tail 20) ---
-  $ utrain run logs "$RID" --phase pretrain | grep stderr
+  $ utrain run logs "$RID/pretrain" | grep stderr
   pretrain: note on stderr
   $ utrain phase show "$RID/tokenizer" --metric vocab_coverage | head -2
   STEP  VALUE

@@ -10,7 +10,18 @@ import typing
 
 import sqlalchemy.orm
 
-from .. import attempts, compute, config, exceptions, images, orchestrator, phases, runs, store
+from .. import (
+    address,
+    attempts,
+    compute,
+    config,
+    exceptions,
+    images,
+    orchestrator,
+    phases,
+    runs,
+    store,
+)
 from .. import db as dbmod
 from . import chat, debug, output, render
 
@@ -28,6 +39,18 @@ def db_command(
 
 # How much of a phase's stdout log `phase show` echoes.
 _PHASE_LOG_TAIL = 20
+
+
+def _run_id(arg: str) -> str:
+    """A positional that has to be a bare run id, not a longer address.
+
+    `run show` and friends have nothing to say to an attempt or a phase, so a
+    slash in the positional is answered with a clear refusal rather than the
+    silent mis-resolution of taking everything before the slash as the prefix.
+    """
+    if "/" in arg:
+        raise exceptions.UI(f"expected a run id, got '{arg}' (this command takes RUN only)")
+    return arg
 
 
 def _print_run_row(run_id: str, session: sqlalchemy.orm.Session) -> None:
@@ -150,13 +173,13 @@ def _cmd_run_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 @db_command
 def _cmd_run_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     if args.edit:
-        config_path = runs.config_path(args.id, session)
+        config_path = runs.config_path(_run_id(args.id), session)
         editor = os.environ.get("EDITOR", "vi")
         with runs.writable(config_path):
             subprocess.run([editor, str(config_path)])
         return
 
-    detail = runs.get_run_detail(args.id, session, wait=args.wait, timeout=args.timeout)
+    detail = runs.get_run_detail(_run_id(args.id), session, wait=args.wait, timeout=args.timeout)
     print(render.run_detail(detail))
 
 
@@ -178,35 +201,39 @@ def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
 
 @db_command
 def _cmd_run_start(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(runs.start_run(args.id, session), session)
+    _print_run_row(runs.start_run(_run_id(args.id), session), session)
 
 
 @db_command
 def _cmd_run_stop(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(runs.stop_run(args.id, session), session)
+    _print_run_row(runs.stop_run(_run_id(args.id), session), session)
 
 
 @db_command
 def _cmd_run_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(runs.restart_run(args.id, getattr(args, "from_phase", None), session), session)
+    a = address.parse(args.addr, session)
+    if a.attempt is not None and a.phase is None:
+        raise exceptions.UI(f"restart takes RUN or RUN/PHASE, got '{args.addr}'")
+    _print_run_row(runs.restart_run(a.run_id, a.phase, session), session)
 
 
 def _cmd_run_delete(args: argparse.Namespace) -> None:
     for run_id_prefix in args.ids:
         settings = config.Settings()
         with dbmod.with_db(settings) as session:
-            run_id = runs.delete_run(run_id_prefix, force=args.force, session=session)
+            run_id = runs.delete_run(_run_id(run_id_prefix), force=args.force, session=session)
             print(f"removed run {run_id}")
 
 
 @db_command
 def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    a = address.parse(args.addr, session)
     lines = runs.read_log_tail(
-        args.id,
+        a.run_id,
         session,
-        attempt=getattr(args, "attempt", None),
-        phase=getattr(args, "phase", None),
-        tail=getattr(args, "tail", 200),
+        attempt=a.attempt,
+        phase=a.phase,
+        tail=args.tail,
     )
     for line in lines:
         print(line)
@@ -214,10 +241,12 @@ def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 
 @db_command
 def _cmd_run_chat(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    a = address.parse(args.addr, session)
     chat.chat_run(
-        args.id,
+        a.run_id,
         session,
-        phase=args.phase,
+        phase=a.phase,
+        attempt=a.attempt,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
     )
@@ -226,19 +255,19 @@ def _cmd_run_chat(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
 @db_command
 def _cmd_attempt_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     if args.quiet:
-        for addr in attempts.list_attempt_ids(args.run_id, session):
+        for addr in attempts.list_attempt_ids(args.addr, session):
             print(addr)
     else:
-        print(render.attempt_table(attempts.list_attempts(args.run_id, session)))
+        print(render.attempt_table(attempts.list_attempts(args.addr, session)))
 
 
 @db_command
 def _cmd_attempt_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    parts = args.addr.split("/")
-    if len(parts) != 2 or not parts[1].isdigit():
+    a = address.parse(args.addr, session)
+    if a.attempt is None:
         print(f"abort: expected <RUN_ID>/<N>, got '{args.addr}'", file=sys.stderr)
         sys.exit(2)
-    print(render.attempt_detail(attempts.show_attempt(parts[0], int(parts[1]), session)))
+    print(render.attempt_detail(attempts.show_attempt(a.run_id, a.attempt, session)))
 
 
 @db_command
@@ -357,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_list.set_defaults(func=_cmd_run_list)
 
     run_show = run_sub.add_parser("show", help="Show details about a run")
-    run_show.add_argument("id")
+    run_show.add_argument("id", metavar="RUN", help="a run id, or a unique prefix of one")
     run_show.add_argument("--wait", action="store_true")
     run_show.add_argument("--timeout", type=int, default=600)
     run_show.add_argument("--edit", action="store_true")
@@ -371,18 +400,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_create.set_defaults(func=_cmd_run_create)
 
     run_start = run_sub.add_parser("start", help="Start a run")
-    run_start.add_argument("id")
+    run_start.add_argument("id", metavar="RUN", help="a run id, or a unique prefix of one")
     run_start.set_defaults(func=_cmd_run_start)
 
     run_stop = run_sub.add_parser("stop", help="Stop a running run")
-    run_stop.add_argument("id")
+    run_stop.add_argument("id", metavar="RUN", help="a run id, or a unique prefix of one")
     run_stop.set_defaults(func=_cmd_run_stop)
 
     run_restart = run_sub.add_parser(
         "restart", help="Restart a run from a phase (create a new attempt)"
     )
-    run_restart.add_argument("id")
-    run_restart.add_argument("--from-phase", dest="from_phase", default=None)
+    run_restart.add_argument(
+        "addr", metavar="ADDR", help="RUN for a full restart, or RUN/PHASE to restart from there"
+    )
     run_restart.set_defaults(func=_cmd_run_restart)
 
     run_delete = run_sub.add_parser("delete", help="Delete one or more runs")
@@ -391,18 +421,20 @@ def build_parser() -> argparse.ArgumentParser:
     run_delete.set_defaults(func=_cmd_run_delete)
 
     run_logs = run_sub.add_parser("logs", help="Show logs for a run")
-    run_logs.add_argument("id")
-    run_logs.add_argument("--attempt", type=int, default=None)
-    run_logs.add_argument("--phase", default=None)
+    run_logs.add_argument(
+        "addr",
+        metavar="ADDR",
+        help="RUN (the orchestrator log), RUN/ATTEMPT, RUN/PHASE or RUN/ATTEMPT/PHASE",
+    )
     run_logs.add_argument("--tail", type=int, default=200)
     run_logs.set_defaults(func=_cmd_run_logs)
 
     run_chat = run_sub.add_parser("chat", help="Chat interactively with a run's trained model")
-    run_chat.add_argument("id")
     run_chat.add_argument(
-        "--phase",
-        default=None,
-        help="which phase's snapshot to talk to (default: the newest servable one)",
+        "addr",
+        metavar="ADDR",
+        help="RUN, RUN/PHASE, RUN/ATTEMPT or RUN/ATTEMPT/PHASE (a phase names whose"
+        " snapshot to talk to; default: the newest servable one)",
     )
     run_chat.add_argument("--max-tokens", type=int, default=200, dest="max_tokens")
     run_chat.add_argument("--temperature", type=float, default=0.8)
@@ -412,29 +444,29 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_p = sub.add_parser("attempt")
     attempt_sub = attempt_p.add_subparsers(dest="attempt_command", required=True)
     att_list = attempt_sub.add_parser("list")
-    att_list.add_argument("run_id")
+    att_list.add_argument("addr", metavar="ADDR", help="RUN, or RUN/ATTEMPT for one attempt")
     att_list.add_argument("-q", "--quiet", action="store_true")
     att_list.set_defaults(func=_cmd_attempt_list)
     att_show = attempt_sub.add_parser("show")
-    att_show.add_argument("addr")
+    att_show.add_argument("addr", metavar="ADDR", help="RUN/ATTEMPT")
     att_show.set_defaults(func=_cmd_attempt_show)
 
     # phase
     phase_p = sub.add_parser("phase", help="Individual phases of a run")
     phase_sub = phase_p.add_subparsers(dest="phase_command", required=True)
     ph_list = phase_sub.add_parser("list", help="List all phases of a run")
-    ph_list.add_argument("addr", help="Run id")
+    ph_list.add_argument("addr", metavar="ADDR", help="RUN, or RUN/ATTEMPT for one attempt")
     ph_list.add_argument("-q", "--quiet", action="store_true")
     ph_list.set_defaults(func=_cmd_phase_list)
     ph_show = phase_sub.add_parser("show", help="Show a single phase")
-    ph_show.add_argument("addr")
+    ph_show.add_argument("addr", metavar="ADDR", help="RUN/PHASE or RUN/ATTEMPT/PHASE")
     ph_show.add_argument("--metric", default=None)
     ph_show.add_argument("--since-step", type=int, default=0, dest="since_step")
     ph_show.set_defaults(func=_cmd_phase_show)
     ph_restart = phase_sub.add_parser(
         "restart", help="Restart a run from one of its phases (create a new attempt)"
     )
-    ph_restart.add_argument("addr", help="Phase address, e.g. RUN_ID/PHASE")
+    ph_restart.add_argument("addr", metavar="ADDR", help="RUN/PHASE or RUN/ATTEMPT/PHASE")
     ph_restart.set_defaults(func=_cmd_phase_restart)
 
     # store

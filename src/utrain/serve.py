@@ -101,17 +101,28 @@ def start(
     run_id_prefix: str,
     session: sqlalchemy.orm.Session,
     phase: str | None = None,
+    attempt: int | None = None,
 ) -> Server:
     """Spawn a serve container for one phase's snapshot of a finished run.
 
     `phase` names which snapshot to talk to; the default is the newest servable
-    phase that completed, which for a run of one model is the only one there is.
+    phase that completed, which for a run of one model is the only one there
+    is. `attempt` narrows both to one attempt of the run, as in the address
+    `RUN/ATTEMPT/PHASE`; the default is the newest attempt that ran the phase.
 
     Returns as soon as the process exists; call `Server.wait_for_port` to wait
     for it to become reachable.
     """
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
+    if attempt is not None:
+        found = session.execute(
+            sqlalchemy.select(dbmod.run_attempts.c.attempt).where(
+                (dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt)
+            )
+        ).scalar_one_or_none()
+        if found is None:
+            raise exceptions.UI(f"attempt {attempt} of run '{run_id}' not found")
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
         reconcile.reconcile_attempt(run_id, attempt_n, session)
@@ -143,7 +154,9 @@ def start(
         )
 
     run_dir = dbmod.run_dir(run_id, session)
-    attempt_dir, data_dir, phase = _model_location(run_id, run_dir, servable, phase, session)
+    attempt_dir, data_dir, phase = _model_location(
+        run_id, run_dir, servable, phase, attempt, session
+    )
     if not data_dir.exists():
         raise exceptions.UI(f"data dir for phase '{phase}' is missing: {data_dir}")
 
@@ -191,6 +204,7 @@ def _model_location(
     run_dir: pathlib.Path,
     servable: list[str],
     phase: str | None,
+    attempt: int | None,
     session: sqlalchemy.orm.Session,
 ) -> tuple[pathlib.Path, pathlib.Path, str]:
     """Locate the data dir holding one phase's model: attempt_dir, data_dir, phase.
@@ -203,12 +217,15 @@ def _model_location(
     Either way the attempt is the highest one that ran the chosen phase, not the
     run's newest: a `--from-phase` restart leaves the phases before it in the
     attempt that did run them, and `_init_phase_data` reads them from there too.
+    `attempt`, when given, pins that choice to one attempt instead.
     """
     where = (dbmod.run_phases.c.run_id == run_id) & (dbmod.run_phases.c.status == "done")
     if phase is not None:
         where = where & (dbmod.run_phases.c.phase == phase)
     else:
         where = where & dbmod.run_phases.c.phase.in_(servable)
+    if attempt is not None:
+        where = where & (dbmod.run_phases.c.attempt == attempt)
     row = (
         session.execute(
             sqlalchemy.select(dbmod.run_phases.c.phase, dbmod.run_phases.c.attempt)
@@ -220,6 +237,10 @@ def _model_location(
         .fetchone()
     )
     if row is None:
+        if phase is not None and attempt is not None:
+            raise exceptions.UI(
+                f"phase '{phase}' of attempt {attempt} of run '{run_id}' has not completed"
+            )
         if phase is not None:
             raise exceptions.UI(f"phase '{phase}' of run '{run_id}' has not completed")
         raise exceptions.UI(f"run '{run_id}' has no completed phase, so there is no model to serve")

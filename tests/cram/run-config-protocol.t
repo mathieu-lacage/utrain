@@ -16,7 +16,7 @@ Defaults: an unedited config runs with the schema defaults.
       batch_size: 32
   $ utrain run start "$DEF" >/dev/null
   $ utrain run show "$DEF" --wait >/dev/null
-  $ utrain run logs "$DEF" --phase pretrain | grep '^config:'
+  $ utrain run logs "$DEF/pretrain" | grep '^config:'
   config: num_layers=12 batch_size=32
 
 Edited: shrinking a nested global and a nested phase value both take effect.
@@ -25,5 +25,5 @@ Edited: shrinking a nested global and a nested phase value both take effect.
   $ sed -i 's/num_layers: 12/num_layers: 3/; s/batch_size: 32/batch_size: 7/' "$UTRAIN_DATA_DIR/runs/$RID/config.yaml"
   $ utrain run start "$RID" >/dev/null
   $ utrain run show "$RID" --wait >/dev/null
-  $ utrain run logs "$RID" --phase pretrain | grep '^config:'
+  $ utrain run logs "$RID/pretrain" | grep '^config:'
   config: num_layers=3 batch_size=7

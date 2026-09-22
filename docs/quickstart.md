@@ -132,13 +132,13 @@ is reachable by name — every phase's data dir is a snapshot of the run as it
 stood when that phase ended:
 
 ```console
-$ utrain run chat "$RID" --phase pretrain    # the base model
-$ utrain run chat "$RID" --phase sft         # after fine-tuning
+$ utrain run chat "$RID/pretrain"    # the base model
+$ utrain run chat "$RID/sft"         # after fine-tuning
 ```
 
-Without `--phase` you get the newest servable phase that completed, which for a
-one-model run like this one is the only one there is. In the TUI, `t` from the
-phases pane talks to the phase under the cursor.
+Without a phase in the address you get the newest servable phase that
+completed, which for a one-model run like this one is the only one there is.
+In the TUI, `t` from the phases pane talks to the phase under the cursor.
 
 ## 8. Use the TUI
 

@@ -30,14 +30,14 @@ Naming a phase talks to that phase's snapshot instead of the newest one, and
 the name reaches the container: it reports back the `--phase` it was started
 with, which is how it knows which model the mounted dir is meant to hold.
 
-  $ printf 'hello\n/quit\n' | utrain run chat "$RID" --phase pretrain | head -3 | grep -v endpoint
+  $ printf 'hello\n/quit\n' | utrain run chat "$RID/pretrain" | head -3 | grep -v endpoint
   serving chat (utrain-fake, phase 'pretrain')
   model: data_dir=/utrain/data, id=fake, owned_by=utrain, phase=pretrain
 
 A phase the image does not serve is refused by name, even though it ran: only
 `pretrain` leaves a model behind.
 
-  $ utrain run chat "$RID" --phase tokenizer
+  $ utrain run chat "$RID/tokenizer"
   abort: image 'utrain-fake' does not serve phase 'tokenizer'; it serves: pretrain
   [1]
 

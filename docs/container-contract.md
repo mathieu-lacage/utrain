@@ -168,7 +168,7 @@ The wire format is **not utrain's own**: it is the OpenAI
 Every phase's data dir is a complete snapshot of the run as it stood when that
 phase ended, so a container with several training phases has several different
 models to talk to. `can_serve` on a phase says that phase's snapshot is one of
-them, and `utrain run chat <RUN_ID> --phase <name>` serves it: utrain mounts
+them, and `utrain run chat <RUN_ID>/<name>` serves it: utrain mounts
 that phase's data dir at `<root>/data` and starts the image exactly as below.
 
 ```yaml

@@ -3,40 +3,8 @@ import pathlib
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import container, exceptions, logs, metrics, reconcile, runs, types
+from . import address, container, exceptions, logs, metrics, reconcile, runs, types
 from . import db as dbmod
-
-
-def _parse_phase_addr(
-    addr: str,
-    session: sqlalchemy.orm.Session,
-) -> tuple[str, int | None, str | None]:
-    """Parse <run_id_prefix>[/<attempt>][/<phase>] into (run_id, attempt, phase)."""
-    parts = addr.split("/")
-    run_id_prefix = parts[0]
-    run_id = dbmod.resolve_run_id(run_id_prefix, session)
-
-    attempt: int | None = None
-    phase: str | None = None
-
-    if len(parts) == 1:
-        pass
-    elif len(parts) == 2:
-        token = parts[1]
-        if token.isdigit():
-            attempt = int(token)
-        else:
-            phase = token
-    elif len(parts) == 3:
-        token1 = parts[1]
-        if not token1.isdigit():
-            raise exceptions.UI(f"expected attempt number, got '{token1}'")
-        attempt = int(token1)
-        phase = parts[2]
-    else:
-        raise exceptions.UI(f"invalid phase address '{addr}'")
-
-    return run_id, attempt, phase
 
 
 def describe_image(
@@ -61,7 +29,7 @@ def list_phases(
     session: sqlalchemy.orm.Session,
     described: container.schema.DescribeOutput | None = None,
 ) -> list[types.PhaseListEntry]:
-    run_id, attempt_n, _ = _parse_phase_addr(addr, session)
+    run_id, attempt_n, _ = address.parse(addr, session)
 
     if attempt_n is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
@@ -173,18 +141,18 @@ def restart_phase(
 
     The address is the same one `phase show` takes. The attempt in it, if any,
     says where the caller saw the phase; the restart always branches off the
-    run's latest state, exactly what `run restart --from-phase` does -- this is
+    run's latest state, exactly what `run restart RUN/PHASE` does -- this is
     that same operation spelled from the phase's side, so a failed run can be
     sent back to the phase that broke by pointing at the phase itself.
     """
-    run_id, _, phase = _parse_phase_addr(addr, session)
+    run_id, _, phase = address.parse(addr, session)
     if phase is None:
         raise exceptions.UI("phase address must include a phase name")
     return runs.restart_run(run_id, phase, session)
 
 
 def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
-    run_id, attempt_n, _ = _parse_phase_addr(addr, session)
+    run_id, attempt_n, _ = address.parse(addr, session)
 
     if attempt_n is None:
         attempt_n = dbmod.latest_attempt(run_id, session)
@@ -229,7 +197,7 @@ def _resolve_phase(
     session: sqlalchemy.orm.Session,
 ) -> tuple[str, int, str, pathlib.Path]:
     """Resolve a phase address to (run_id, attempt, phase, attempt_dir)."""
-    run_id, attempt_n, phase = _parse_phase_addr(addr, session)
+    run_id, attempt_n, phase = address.parse(addr, session)
 
     if phase is None:
         raise exceptions.UI("phase address must include a phase name")

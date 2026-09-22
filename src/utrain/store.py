@@ -4,7 +4,8 @@ import pathlib
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import config, db as dbmod, exceptions, types
+from . import address, config, exceptions, types
+from . import db as dbmod
 
 # How much of a file `_sha256` reads per iteration: big enough that model
 # snapshots do not turn into millions of tiny reads, small enough that a whole
@@ -28,33 +29,24 @@ def _resolve_scope(
 
     Three forms, the same addresses the CLI prints in its tables' first
     column: a run (`RUN_ID`, prefix ok), an attempt (`RUN_ID/N`) or a phase
-    (`RUN_ID/N/PHASE`). Unlike phases' addresses, a phase component always
-    carries its attempt: the check needs to know which attempt's data dir to
-    look in, so `RUN_ID/PHASE` is rejected rather than guessed.
+    (`RUN_ID/N/PHASE`). Unlike the phase commands' addresses, a phase
+    component always carries its attempt: the check needs to know which
+    attempt's data dir to look in, so `RUN_ID/PHASE` is rejected rather than
+    guessed. Which attempt and phase exist is checked against the database
+    below; the run prefix has been resolved by the shared parser already.
     """
-    parts = scope.split("/")
-    if len(parts) > 3:
-        raise exceptions.UI(f"invalid address '{scope}'")
+    run_id, attempt, phase = address.parse(scope, session, phase_needs_attempt=True)
 
-    run_id = dbmod.resolve_run_id(parts[0], session)
-
-    attempt: int | None = None
-    if len(parts) >= 2:
-        if not parts[1].isdigit():
-            raise exceptions.UI(f"expected attempt number, got '{parts[1]}'")
-        attempt = int(parts[1])
+    if attempt is not None:
         status = session.execute(
             sqlalchemy.select(dbmod.run_attempts.c.status).where(
-                (dbmod.run_attempts.c.run_id == run_id)
-                & (dbmod.run_attempts.c.attempt == attempt)
+                (dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt)
             )
         ).scalar_one_or_none()
         if status is None:
             raise exceptions.UI(f"attempt {attempt} of run '{run_id}' not found")
 
-    phase: str | None = None
-    if len(parts) == 3:
-        phase = parts[2]
+    if phase is not None:
         found = session.execute(
             sqlalchemy.select(dbmod.run_phases.c.phase).where(
                 (dbmod.run_phases.c.run_id == run_id)
@@ -63,9 +55,7 @@ def _resolve_scope(
             )
         ).scalar_one_or_none()
         if found is None:
-            raise exceptions.UI(
-                f"phase '{phase}' not found in attempt {attempt} of run '{run_id}'"
-            )
+            raise exceptions.UI(f"phase '{phase}' not found in attempt {attempt} of run '{run_id}'")
 
     return run_id, attempt, phase
 

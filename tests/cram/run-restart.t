@@ -3,7 +3,7 @@
   $ RID=$(utrain run create --name hello --image utrain-fake --compute cpu --print-id)
   $ utrain run start "$RID" >/dev/null
   $ utrain run show "$RID" --wait >/dev/null
-  $ utrain run restart "$RID" --from-phase pretrain
+  $ utrain run restart "$RID/pretrain"
   ID\s+NAME\s+IMAGE\s+COMPUTE\s+STATUS\s+ATTEMPT\s+PHASE\s+CREATED (re)
   [0-9a-f]+\s+hello  utrain-fake  cpu      running  2        pretrain  [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (re)
   $ utrain attempt list "$RID"

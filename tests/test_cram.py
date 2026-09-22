@@ -37,6 +37,10 @@ def test_id_prefix(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "id-prefix.t", fake_image)
 
 
+def test_addresses(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "addresses.t", fake_image)
+
+
 def test_gpu(gpu_passthrough: None, fake_gpu_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "gpu.t", fake_gpu_image)
 

@@ -83,10 +83,11 @@ def chat_run(
     session: sqlalchemy.orm.Session,
     *,
     phase: str | None = None,
+    attempt: int | None = None,
     max_tokens: int,
     temperature: float,
 ) -> None:
-    server = serve.start(run_id_prefix, session, phase)
+    server = serve.start(run_id_prefix, session, phase, attempt)
     # `cli.main` hands SIGPIPE back to SIG_DFL so `utrain run show | head` dies
     # the way any Unix tool does. A chat session cannot afford that: killed
     # mid-write it never reaches `_session`'s shutdown, and the container it

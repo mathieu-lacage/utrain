@@ -17,7 +17,7 @@
   
   logs: .* (re)
   data: .* (re)
-  $ utrain run restart "$RID" --from-phase pretrain >/dev/null
+  $ utrain run restart "$RID/pretrain" >/dev/null
   $ utrain run show "$RID" --wait >/dev/null
   $ utrain attempt show "$RID/2"
   run:        [0-9a-f]{32} \(hello\) (re)

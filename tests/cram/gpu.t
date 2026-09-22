@@ -7,5 +7,5 @@
 
 The gpu-check phase runs nvidia-smi inside the container; its output proves the
 host GPU is visible from within the container.
-  $ utrain run logs "$RID" --phase gpu-check | grep -q NVIDIA && echo "gpu visible"
+  $ utrain run logs "$RID/gpu-check" | grep -q NVIDIA && echo "gpu visible"
   gpu visible
