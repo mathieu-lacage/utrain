@@ -29,11 +29,12 @@ from .. import compute, config, exceptions, images, metrics, phases, runs, serve
 from .. import container as containermod
 from .. import db as dbmod
 
-# How much of a phase's output the log pane holds. `logs.tail_lines` seeks
+# How much of a phase's output each refresh reads. `logs.tail_lines` seeks
 # backwards from the end in blocks, so a deep tail costs no more to read than a
-# shallow one; this is how far the viewer can scroll back without leaving the
-# TUI.
-_LOG_LINES = 500
+# shallow one. The log pane keeps what it has been shown -- it writes only the
+# lines that grew onto the previous tail -- so this is the history a viewer has
+# the moment a phase is selected; from then on the pane accumulates.
+_LOG_LINES = 5000
 
 # `podman images` is cheap next to `describe`, but it still forks. The preset
 # list only changes when someone adds or removes an image, so a few seconds of

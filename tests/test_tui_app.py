@@ -1360,6 +1360,133 @@ async def test_the_log_pane_shows_the_tail(app: utrain.tui.app.UtrainApp) -> Non
         assert log.shown[-1] == "step 49"
 
 
+async def _settled_log_pane(
+    app: utrain.tui.app.UtrainApp, pilot: typing.Any
+) -> utrain.tui.widgets.LogTail:
+    """The seeded run's log pane, with the refresh timer stopped.
+
+    The tests below drive the widget directly, and a tick repainting the pane
+    halfway through would race them.
+    """
+    await _select_pretrain(app, pilot)
+    timer = _main(app).timer
+    assert timer is not None
+    timer.stop()
+    return app.screen.query_one("#log", utrain.tui.widgets.LogTail)
+
+
+async def test_a_growing_log_is_appended_not_rewritten(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The pane writes only the lines that grew onto the tail it has shown.
+
+    Clearing and rewriting on each refresh used to throw the pane's scrollback
+    away with every tick, which left the viewer unable to read anything past
+    the fetched tail -- the log showed only its end.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        log = await _settled_log_pane(app, pilot)
+        assert log.shown == [f"step {i}" for i in range(50)]
+
+        log.show([f"step {i}" for i in range(60)])
+        await _pause_until(pilot, lambda: len(log.lines) == 60, "the new lines to land")
+
+        assert log.shown == [f"step {i}" for i in range(60)]
+        # Sixty lines in the pane: the fifty it had, plus the ten that grew
+        # onto them, none of the old ones cleared away.
+        assert len(log.lines) == 60
+
+
+async def test_an_unchanged_log_writes_nothing(app: utrain.tui.app.UtrainApp) -> None:
+    """A re-read tail identical to what the pane has writes no lines.
+
+    The log is re-read every refresh; rewriting it would scroll the pane out
+    from under the viewer once a second.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        log = await _settled_log_pane(app, pilot)
+        assert len(log.lines) == 50
+
+        log.show(log.shown)
+        await pilot.pause()
+
+        assert log.shown == [f"step {i}" for i in range(50)]
+        assert len(log.lines) == 50
+
+
+async def test_a_log_the_pane_has_not_seen_starts_over(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A tail the pane's content does not extend cannot be appended to.
+
+    A different phase's output, or a new attempt's, arrives as the tail of a
+    file the pane has never seen; writing it onto the old lines would
+    interleave two logs.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        log = await _settled_log_pane(app, pilot)
+        assert len(log.lines) == 50
+
+        log.show(["vocab built"])
+        await _pause_until(pilot, lambda: len(log.lines) == 1, "the new log to replace the old")
+
+        assert log.shown == ["vocab built"]
+        assert len(log.lines) == 1
+
+
+async def test_growth_leaves_a_viewer_who_scrolled_up_where_they_are(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Reading further back is not undone by the phase writing more output.
+
+    A viewer scrolled up holds their place while the pane grows under them;
+    one sitting at the bottom keeps following.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        log = await _settled_log_pane(app, pilot)
+        log.show([f"step {i}" for i in range(200)])
+        await _pause_until(pilot, lambda: len(log.lines) == 200, "the tail to be written")
+        log.scroll_to(y=0, animate=False, immediate=True)
+        await _pause_until(pilot, lambda: log.scroll_y == 0, "the pane to scroll to the top")
+
+        log.show([f"step {i}" for i in range(210)])
+        await _pause_until(pilot, lambda: len(log.lines) == 210, "the new lines to land")
+
+        assert log.scroll_y == 0
+
+        log.scroll_end(animate=False)
+        await _pause_until(
+            pilot, lambda: log.is_vertical_scroll_end, "the pane to reach the bottom"
+        )
+        log.show([f"step {i}" for i in range(220)])
+        await _pause_until(
+            pilot,
+            lambda: log.is_vertical_scroll_end and log.scroll_y > 0,
+            "the pane to follow the growth",
+        )
+
+        assert log.is_vertical_scroll_end
+
+
+async def test_a_growing_log_file_extends_the_pane(
+    app: utrain.tui.app.UtrainApp, tmp_path: pathlib.Path
+) -> None:
+    """A snapshot of a phase that wrote more output grows what the pane shows."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        log = screen.query_one("#log", utrain.tui.widgets.LogTail)
+        assert log.shown[-1] == "step 49"
+
+        log_file = tmp_path / "runs" / RUN_ID / "attempt" / "1" / "logs" / "pretrain_output.log"
+        with log_file.open("a") as f:
+            f.write("".join(f"step {i}\n" for i in range(50, 60)))
+        screen.apply(app.data.snapshot(RUN_ID, "pretrain", None))
+        await pilot.pause()
+
+        assert log.shown == [f"step {i}" for i in range(60)]
+
+
 async def test_an_inherited_phase_shows_the_attempt_that_ran_it(
     restarted_app: utrain.tui.app.UtrainApp,
 ) -> None:

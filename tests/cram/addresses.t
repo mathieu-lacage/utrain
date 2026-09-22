@@ -23,6 +23,13 @@ attempt's, and a phase's with and without its attempt spelled out.
   $ utrain run logs "$RID/1/pretrain" | grep stderr
   pretrain: note on stderr
 
+`run logs` prints the whole log; a viewer who wants less pipes through tail.
+
+  $ utrain run logs "$RID/pretrain" > "$UTRAIN_DATA_DIR/whole.log"
+  $ diff "$UTRAIN_DATA_DIR/runs/$RID/attempt/1/logs/pretrain_output.log" \
+  >   "$UTRAIN_DATA_DIR/whole.log" && echo whole
+  whole
+
 `attempt list` narrows to one attempt with RUN/N, and `phase list` takes the
 same form.
 

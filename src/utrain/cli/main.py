@@ -228,12 +228,15 @@ def _cmd_run_delete(args: argparse.Namespace) -> None:
 @db_command
 def _cmd_run_logs(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
     a = address.parse(args.addr, session)
+    # The whole log: training output is what this command exists for, and a
+    # viewer who wants less pipes through `tail`. `tail_lines` seeks backwards
+    # in blocks, so an unread prefix costs nothing.
     lines = runs.read_log_tail(
         a.run_id,
         session,
         attempt=a.attempt,
         phase=a.phase,
-        tail=args.tail,
+        tail=0,
     )
     for line in lines:
         print(line)
@@ -420,13 +423,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_delete.add_argument("--force", action="store_true")
     run_delete.set_defaults(func=_cmd_run_delete)
 
-    run_logs = run_sub.add_parser("logs", help="Show logs for a run")
+    run_logs = run_sub.add_parser(
+        "logs",
+        help="Show logs for a run (the whole log; pipe through tail(1) to limit it)",
+    )
     run_logs.add_argument(
         "addr",
         metavar="ADDR",
         help="RUN (the orchestrator log), RUN/ATTEMPT, RUN/PHASE or RUN/ATTEMPT/PHASE",
     )
-    run_logs.add_argument("--tail", type=int, default=200)
     run_logs.set_defaults(func=_cmd_run_logs)
 
     run_chat = run_sub.add_parser("chat", help="Chat interactively with a run's trained model")

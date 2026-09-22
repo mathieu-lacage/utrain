@@ -433,7 +433,13 @@ class MetricList(textual.widgets.OptionList):
 
 
 class LogTail(textual.widgets.RichLog):
-    """The tail of a phase's output, replaced wholesale on each refresh."""
+    """A phase's output, accumulated across refreshes.
+
+    Each refresh fetches a tail of the file, and the pane keeps everything it
+    has been shown: a log only grows, so the pane writes just the lines that
+    grew onto the previous tail and the scrollback reaches back through the
+    whole session, past the fetched tail.
+    """
 
     DEFAULT_CSS = """
     LogTail {
@@ -454,19 +460,25 @@ class LogTail(textual.widgets.RichLog):
         return list(self._shown)
 
     def show(self, lines: list[str]) -> None:
-        if lines == self._shown:
-            # The log is re-read every refresh; rewriting an unchanged tail
-            # would scroll the pane out from under the viewer once a second.
-            return
-        # Whether to jump to the newest line is decided before the rewrite:
+        # Whether to jump to the newest line is decided before the writes:
         # a viewer who has scrolled up to read something is not moved, and one
         # sitting at the bottom keeps following.
         following = self.is_vertical_scroll_end
+        # A log only grows, so the next tail is the previous one with newer
+        # lines in front of it. Writing just those keeps the pane from strobing
+        # -- and keeps the scrollback it has already shown, which clearing and
+        # rewriting would throw away every second.
+        if self._shown and lines[-len(self._shown) :] == self._shown:
+            fresh = lines[: len(lines) - len(self._shown)]
+        else:
+            # A different phase, a new attempt, or a file that shrank: nothing
+            # in the pane belongs to what arrived, so start over.
+            self.clear()
+            fresh = lines
         self._shown = list(lines)
-        self.clear()
-        for line in lines:
+        for line in fresh:
             self.write(line, scroll_end=False)
-        if following:
+        if fresh and following:
             self.scroll_end(animate=False)
 
 
