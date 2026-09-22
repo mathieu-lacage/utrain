@@ -22,9 +22,9 @@ import utrain.types
 
 
 @pytest.fixture()
-def root(tmp_path: pathlib.Path) -> typing.Iterator[
-    tuple[utrain.config.Settings, sqlalchemy.orm.Session]
-]:
+def root(
+    tmp_path: pathlib.Path,
+) -> typing.Iterator[tuple[utrain.config.Settings, sqlalchemy.orm.Session]]:
     settings = utrain.config.Settings(data_dir=tmp_path)
     with utrain.db.with_db(settings) as session:
         yield settings, session
@@ -270,9 +270,9 @@ def test_store_check_verbose_lists_a_link_per_file(
         ),
     ]
     rendered = utrain.cli.render.store_check(result)
+    h = hashlib.sha256(b"shared\n").hexdigest()
     assert rendered.splitlines()[0] == (
-        f"runs/{run_id}/attempt/1/data/pretrain/shared.txt"
-        f"  store/{hashlib.sha256(b'shared\n').hexdigest()}"
+        f"runs/{run_id}/attempt/1/data/pretrain/shared.txt  store/{h}"
     )
     # Not asked for, no links.
     assert utrain.store.check(settings, session).links == []
@@ -394,15 +394,11 @@ def test_store_check_scope_names_unfinished_work_instead_of_passing_silently(
     assert result.data_files == 1
 
     # Asked about the running attempt directly, silence would read as ok.
-    with pytest.raises(
-        utrain.exceptions.UI, match=f"attempt 2 of run '{run_id}' is not done"
-    ):
+    with pytest.raises(utrain.exceptions.UI, match=f"attempt 2 of run '{run_id}' is not done"):
         utrain.store.check(settings, session, scope=f"{run_id}/2")
 
     run_id = "6" * 32
     _insert_run(session, run_id, status="running")
     _insert_attempt(session, run_id, 1, "running")
-    with pytest.raises(
-        utrain.exceptions.UI, match=f"run '{run_id}' has no completed attempt"
-    ):
+    with pytest.raises(utrain.exceptions.UI, match=f"run '{run_id}' has no completed attempt"):
         utrain.store.check(settings, session, scope=run_id)

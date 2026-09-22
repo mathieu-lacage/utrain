@@ -273,9 +273,10 @@ def _dash(value: object | None) -> str:
 def x_axis_choices(columns: list[str]) -> list[str]:
     """What the x axis can be cycled through for a phase logging ``columns``.
 
-    Step and elapsed time are always available -- every row carries both. Any
-    logged metric can also serve as an x axis, which is how you plot one metric
-    against another rather than against time.
+    Step and elapsed time are always available -- every row carries both, and
+    "step" means the phase's own ``step`` column when it logs one (see
+    `build_plot`). Any logged metric can also serve as an x axis, which is how
+    you plot one metric against another rather than against time.
     """
     return [X_STEP, X_ELAPSED, *columns]
 
@@ -309,36 +310,47 @@ def build_plot(
 ) -> Plot | None:
     """Pair metric ``name`` against ``x_axis``, or None when it cannot be drawn.
 
-    Against step or elapsed time this is a straight read of the metric's own
-    points, because each carries both. Against another metric it is a join on
-    step: the two series are sparse and independently sampled -- a phase may log
-    ``loss`` every step and a validation metric every hundredth -- so only the
-    steps they share can be paired, and there may be none.
+    Against elapsed time this is a straight read of the metric's own points.
+    Anything else is a join on ``_step``: the two series are sparse and
+    independently sampled -- a phase may log ``loss`` every step and a
+    validation metric every hundredth -- so only the steps they share can be
+    paired, and there may be none. The step axis joins against the phase's own
+    ``step`` column when it logs one -- wandb's ``_step`` counts log calls, and
+    a phase logging its training step (nanochat does) means a viewer asking for
+    ``step`` means that column, whose values are a hundred apart where ``_step``
+    creeps up by one. A join against step that pairs nothing falls back to
+    ``_step``, so the curve survives a phase whose ``step`` column does not sit
+    on the rows its metrics are on; an explicit metric axis with nothing to pair
+    draws nothing instead, because a curve against a metric it shares no step
+    with would be a lie under that label.
     """
     series = points.get(name)
     if not series:
         return None
 
-    if x_axis == X_STEP:
-        xs = [float(p.step) for p in series]
-        ys = [p.value for p in series]
-        x_label = "step"
-    elif x_axis == X_ELAPSED:
+    if x_axis == X_ELAPSED:
         start = series[0].timestamp
         xs = [p.timestamp - start for p in series]
         ys = [p.value for p in series]
         x_label = "elapsed (s)"
     else:
         other = points.get(x_axis)
-        if not other:
+        pairs: list[tuple[float, float]] = []
+        if other:
+            by_step = {p.step: p.value for p in other}
+            pairs = [(by_step[p.step], p.value) for p in series if p.step in by_step]
+        if pairs:
+            xs = [x for x, _ in pairs]
+            ys = [y for _, y in pairs]
+        elif x_axis == X_STEP:
+            # No `step` column to pair against -- or none on the rows this
+            # metric is logged on -- leaves wandb's own counter to plot
+            # against. It is the only step a phase that logs none has.
+            xs = [float(p.step) for p in series]
+            ys = [p.value for p in series]
+        else:
             return None
-        by_step = {p.step: p.value for p in other}
-        pairs = [(by_step[p.step], p.value) for p in series if p.step in by_step]
-        if not pairs:
-            return None
-        xs = [x for x, _ in pairs]
-        ys = [y for _, y in pairs]
-        x_label = x_axis
+        x_label = "step" if x_axis == X_STEP else x_axis
 
     xs, ys = downsample(xs, ys, limit)
     return Plot(title=name, x_label=x_label, xs=xs, ys=ys, latest=format_value(series[-1].value))

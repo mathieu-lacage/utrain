@@ -290,6 +290,38 @@ def _seed_running(data_dir: pathlib.Path) -> None:
             )
 
 
+def _seed_restart_attempt(data_dir: pathlib.Path) -> None:
+    """A second attempt for the seeded run, which has logged nothing yet.
+
+    What `runs.restart_run` leaves behind: a new attempt directory, database
+    rows naming it the latest, and no output in it at all.
+    """
+    (data_dir / "runs" / RUN_ID / "attempt" / "2" / "logs").mkdir(parents=True)
+    with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_attempts).values(
+                run_id=RUN_ID,
+                attempt=2,
+                from_phase=None,
+                status="done",
+                pid=None,
+                started_at=300.0,
+                ended_at=400.0,
+            )
+        )
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_phases).values(
+                run_id=RUN_ID,
+                attempt=2,
+                phase="pretrain",
+                phase_order=1,
+                status="done",
+                started_at=300.0,
+                ended_at=400.0,
+            )
+        )
+
+
 RESTART_ID = "e" * 32
 
 
@@ -1027,6 +1059,48 @@ async def test_the_dashboard_reads_the_metric_points(app: utrain.tui.app.UtrainA
 
         assert len(points["loss"]) == 20
         assert points["loss"][0].value == pytest.approx(3.0)
+
+
+async def test_a_restart_starts_the_plots_over(
+    app: utrain.tui.app.UtrainApp, tmp_path: pathlib.Path
+) -> None:
+    """A restart's attempt is a new run of the phase, not a continuation.
+
+    The series the dashboard accumulates are keyed by `RUN/PHASE`, which keeps
+    meaning the latest attempt across a restart, and the Tail it holds was
+    opened on the previous attempt's file -- which nothing appends to any more,
+    so the curves would freeze there forever. The restart has to be seen: the
+    plots go empty until the new attempt logs, and what it logs is all there
+    is.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        screen = _main(app)
+        addr = f"{RUN_ID}/pretrain"
+        assert len(screen.points[addr]["loss"]) == 20
+
+        _seed_restart_attempt(tmp_path)
+        screen.refresh_data()
+        await _settle(app, pilot)
+
+        assert screen.points.get(addr) == {}
+        metrics = app.screen.query_one("#metrics", utrain.tui.widgets.MetricList)
+        assert metrics.columns == []
+
+        _write_metrics(
+            tmp_path / "runs" / RUN_ID / "attempt" / "2",
+            "pretrain",
+            RUN_ID,
+            [{"loss": 1.5, "mfu": 0.5}],
+        )
+        screen.refresh_data()
+        await _settle(app, pilot)
+        await _settle(app, pilot)
+
+        assert [p.value for p in screen.points[addr]["loss"]] == [1.5]
+        plot = screen.plots[("loss", "step")].plot
+        assert plot is not None
+        assert plot.ys == [1.5]
 
 
 async def test_every_selected_metric_gets_its_own_plot(app: utrain.tui.app.UtrainApp) -> None:

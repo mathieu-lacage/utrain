@@ -145,9 +145,9 @@ def check(
     if scope is not None:
         scope_run, scope_attempt, scope_phase = _resolve_scope(scope, session)
 
-    query = sqlalchemy.select(
-        dbmod.run_attempts.c.run_id, dbmod.run_attempts.c.attempt
-    ).where(dbmod.run_attempts.c.status == "done")
+    query = sqlalchemy.select(dbmod.run_attempts.c.run_id, dbmod.run_attempts.c.attempt).where(
+        dbmod.run_attempts.c.status == "done"
+    )
     if scope_run is not None:
         query = query.where(dbmod.run_attempts.c.run_id == scope_run)
     if scope_attempt is not None:

@@ -556,6 +556,10 @@ class MainScreen(_Screen):
         self.points: dict[str, dict[str, list[metrics.MetricPoint]]] = {}
         self.columns: dict[str, list[str]] = {}
         self._tails: dict[str, metrics.Tail] = {}
+        # The metrics file each address's series were read from, so that a
+        # restart -- which moves the phase's output to a new attempt directory
+        # without moving the address -- is seen and the series started over.
+        self._metric_paths: dict[str, pathlib.Path | None] = {}
         self.plots: dict[render.PlotKey, widgets.MetricPlot] = {}
         # What the footer was last built for; see `sync_bindings`.
         self._binding_state: tuple[str, str, str | None, bool, bool, str | None] | None = None
@@ -801,6 +805,20 @@ class MainScreen(_Screen):
             return
 
         self.adopt_tail(addr, snapshot.tail)
+        # The metrics file the series were read from can move underneath a held
+        # Tail: a restart starts a new attempt directory, and the two-part
+        # address this state is keyed by keeps meaning "the latest attempt".
+        # Points read from the old file are a previous run of the phase, not a
+        # prefix of this one, so the whole series -- columns and picker with
+        # them -- starts over. `path_changed` also forces the redraw below,
+        # because an attempt that has logged nothing yet arrives as an empty
+        # update, which would otherwise leave the previous run's curves up.
+        path_changed = snapshot.metrics_path != self._metric_paths.get(addr)
+        if path_changed:
+            self._metric_paths[addr] = snapshot.metrics_path
+            self.points.pop(addr, None)
+            self.columns.pop(addr, None)
+            metric_list.reset()
         series = self.points.setdefault(addr, {})
         for name, points in snapshot.update.points.items():
             series.setdefault(name, []).extend(points)
@@ -810,7 +828,8 @@ class MainScreen(_Screen):
         pinned = [] if self.overridden else [(spec.y, spec.x) for spec in snapshot.phase_plots]
         changed = pinned != self.pinned
         self.pinned = pinned
-        if metric_list.sync(seen, self.default_checked()) or snapshot.update.points or changed:
+        rechecked = metric_list.sync(seen, self.default_checked())
+        if path_changed or rechecked or snapshot.update.points or changed:
             self.update_plots()
         metric_list.show(
             render.metric_rows(
@@ -1051,6 +1070,7 @@ class MainScreen(_Screen):
             self._tails.pop(oldest).close()
             self.points.pop(oldest, None)
             self.columns.pop(oldest, None)
+            self._metric_paths.pop(oldest, None)
 
     def mount_plots(self, keys: list[render.PlotKey]) -> None:
         """Give each plot not on screen yet a widget of its own.

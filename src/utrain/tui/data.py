@@ -22,6 +22,7 @@ app, and `refresh()` drops it.
 """
 
 import dataclasses
+import pathlib
 import time
 
 from .. import compute, config, exceptions, images, metrics, phases, runs, serve, types
@@ -81,6 +82,12 @@ class Snapshot:
     # Opened by the fetch when the phase had not logged anything yet, so the
     # screen can adopt it; the same object it was handed otherwise.
     tail: metrics.Tail | None
+    # The metrics file `update` was read from, or None when the phase has not
+    # logged one (yet). The screen compares it with the tick before to notice
+    # the file moving under a held Tail -- a restart starts a new attempt
+    # directory, and the address the screen keys its series by follows the
+    # latest attempt -- and starts those series over.
+    metrics_path: pathlib.Path | None
 
 
 def _address(run_id: str, phase: str | None, attempt: int | None) -> str | None:
@@ -350,6 +357,7 @@ class Data:
                     log=[],
                     update=metrics.MetricUpdate(columns=[], points={}),
                     tail=tail,
+                    metrics_path=None,
                 )
 
             detail = runs.get_run_detail(run_id, session)
@@ -370,12 +378,26 @@ class Data:
                 except exceptions.UI:
                     log = []
 
-            if address is not None and tail is None:
+            metrics_path: pathlib.Path | None = None
+            if address is not None:
                 try:
-                    path = phases.metrics_path(address, session)
+                    metrics_path = phases.metrics_path(address, session)
                 except exceptions.UI:
-                    path = None
-                tail = None if path is None else metrics.Tail(path)
+                    metrics_path = None
+                if tail is not None and tail.path != metrics_path:
+                    # The tail follows a file that is no longer this phase's:
+                    # a restart has put the phase's output in a new attempt
+                    # directory, or this one has not written a metrics file
+                    # yet. The held tail would read the old file to the end of
+                    # time -- appending nothing, so the plots would freeze at
+                    # whatever the previous attempt logged -- so it is dropped
+                    # here and a fresh one opened on the current path. The
+                    # screen closes the tail it holds when it adopts the
+                    # replacement, and `Snapshot.metrics_path` is what tells it
+                    # to start its series over.
+                    tail = None
+                if tail is None and metrics_path is not None:
+                    tail = metrics.Tail(metrics_path)
 
         update = tail.read() if tail is not None else metrics.MetricUpdate(columns=[], points={})
         return Snapshot(
@@ -394,6 +416,7 @@ class Data:
             log=log,
             update=update,
             tail=tail,
+            metrics_path=metrics_path,
         )
 
     # -- the rest of the CLI's read surface -------------------------------

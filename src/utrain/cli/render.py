@@ -69,8 +69,7 @@ def store_check(result: types.StoreCheckResult) -> str:
     lines = [f"{p.path}: {p.problem}" for p in result.problems]
     if result.orphaned:
         lines.append(
-            f"note: {result.orphaned} orphaned store file(s) "
-            "('utrain store gc' reclaims them)"
+            f"note: {result.orphaned} orphaned store file(s) ('utrain store gc' reclaims them)"
         )
     # The verbose listing: each checked data file beside the store file it
     # shares an inode with.

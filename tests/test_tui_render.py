@@ -210,6 +210,42 @@ def test_build_plot_against_step() -> None:
     assert plot.x_label == "step"
 
 
+def test_build_plot_against_step_uses_a_logged_step_column() -> None:
+    """A phase that logs a ``step`` of its own means the axis to be that column.
+
+    wandb's ``_step`` counts log calls; nanochat logs its training step alongside
+    its losses, and 1, 2 on the axis where the run was at 100, 200 is not what a
+    viewer asking for `step` asked for.
+    """
+    points = {
+        "loss": _points([(0, 3.0), (1, 2.0)]),
+        "step": _points([(0, 100.0), (1, 200.0)]),
+    }
+    plot = render.build_plot("loss", points, render.X_STEP)
+
+    assert plot is not None
+    assert plot.xs == [100.0, 200.0]
+    assert plot.ys == [3.0, 2.0]
+    assert plot.x_label == "step"
+
+
+def test_build_plot_against_step_falls_back_when_the_column_does_not_pair() -> None:
+    """A step column none of whose rows carry the metric leaves `_step`.
+
+    Rare -- a phase logs its step on the same rows as its losses -- but the
+    curve surviving beats the plot disappearing over it.
+    """
+    points = {
+        "loss": _points([(1, 3.0), (3, 2.0)]),
+        "step": _points([(0, 100.0), (2, 200.0)]),
+    }
+    plot = render.build_plot("loss", points, render.X_STEP)
+
+    assert plot is not None
+    assert plot.xs == [1.0, 3.0]
+    assert plot.ys == [3.0, 2.0]
+
+
 def test_build_plot_against_elapsed_starts_at_zero() -> None:
     """Elapsed is measured from the phase's own first point, not the epoch."""
     points = _points([(0, 3.0), (5, 2.0)], t0=1_700_000_000.0)
