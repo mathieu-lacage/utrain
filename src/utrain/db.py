@@ -65,6 +65,10 @@ def _set_sqlite_pragmas(dbapi_conn: sqlite3.Connection, _record: object) -> None
 
 
 def create_engine(settings: config.Settings) -> sqlalchemy.Engine:
+    # SQLite creates the database file on first connect, but not the parent
+    # directories -- a fresh data_dir would otherwise fail with
+    # "unable to open database file" before anything could create it.
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{settings.db_path}"
     engine = sqlalchemy.create_engine(url, connect_args={"check_same_thread": False})
     sqlalchemy.event.listen(engine, "connect", _set_sqlite_pragmas)
