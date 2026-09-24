@@ -1504,7 +1504,19 @@ async def test_log_text_can_be_selected_and_copied(
 
         assert app.screen.get_selected_text() == "step 0"
 
+        # The highlight must keep its text readable: Textual's own selection
+        # colors are a solid-looking block over a transparent foreground,
+        # which renders the selected text in the highlight's color.
+        cells = list(log.render_line(0))
+        assert "".join(cell.text for cell in cells).startswith("step 0")
+        assert cells[0].style.color != cells[0].style.bgcolor
+
+        # Both of the copy keys a viewer will try.
         await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._clipboard == "step 0"
+
+        await pilot.press("ctrl+shift+c")
         await pilot.pause()
         assert app._clipboard == "step 0"
 

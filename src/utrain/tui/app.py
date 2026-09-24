@@ -5,6 +5,7 @@ marshalling a worker thread's result back onto the message loop. Screens ask for
 both through the `screens.Host` protocol, which this implements.
 """
 
+import base64
 import collections.abc
 import os
 
@@ -60,6 +61,16 @@ class UtrainApp(textual.app.App[None]):
     }
     #log {
         height: 1fr;
+    }
+    /* Textual draws a selection with a half-alpha primary background and a
+       transparent foreground. A terminal does not blend -- the block reads as
+       solid -- and a transparent foreground renders as the background it sits
+       on, so the selected text vanished into the highlight. A solid primary
+       with $text on top stays readable in the truecolor theme, and the ansi
+       theme's own pair is dark blue under a light text as well. */
+    Screen > .screen--selection {
+        background: $primary;
+        color: $text;
     }
     /* The tab strip: one line above the content panes, naming which of the
        three is up and the number that gets to the others. */
@@ -289,6 +300,11 @@ class UtrainApp(textual.app.App[None]):
 
     BINDINGS = [
         textual.binding.Binding("q", "quit", "quit"),
+        # Textual's own copy key is ctrl+c (or super+c). ctrl+shift+c is what
+        # a desktop terminal uses to copy its own selection, and the fingers
+        # bring it here -- where there is no terminal selection to copy, only
+        # the one the app made, so it copies that.
+        textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
     ]
 
     def __init__(self, source: data.Data | None = None) -> None:
@@ -326,6 +342,24 @@ class UtrainApp(textual.app.App[None]):
         if isinstance(self.screen, screens.ChatScreen):
             return False
         return not widgets.in_config_field(self.focused)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Copy the selection to the terminal's clipboard, and its primary too.
+
+        Textual's copy speaks OSC 52 to the terminal, which is the only way a
+        TUI running over ssh reaches the machine the terminal runs on. It asks
+        for the clipboard target alone, and the middle mouse button pastes the
+        primary selection -- a different target -- so the same text is offered
+        there as well. Whether either lands is the terminal emulator's call:
+        one that honors neither leaves these keys copying into the void, and
+        holding shift while dragging is then the way to select text with the
+        terminal's own machinery instead.
+        """
+        super().copy_to_clipboard(text)
+        if self._driver is None:
+            return
+        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        self._driver.write(f"\x1b]52;p;{encoded}\a")
 
     # -- screens.Host -----------------------------------------------------
 
