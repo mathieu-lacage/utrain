@@ -405,34 +405,6 @@ def compute_rows(info: compute.ComputeInfo) -> list[list[str]]:
     return rows
 
 
-# -- the destinations -----------------------------------------------------
-
-# The top-level views, in order, as (key, name, mode). Runs has no key of its
-# own because escape is how every other destination is left, and that is the
-# one it goes to.
-DESTINATIONS = (
-    ("", "Runs", "runs"),
-    ("i", "Images", "images"),
-    ("c", "Compute", "compute"),
-)
-
-
-def destinations(active: str) -> rich.text.Text:
-    """The strip under the header, with `active` picked out.
-
-    Runs, images and compute are siblings -- none of them is inside another --
-    so they are shown side by side rather than reached by pushing one over the
-    top of the next.
-    """
-    line = rich.text.Text("  ")
-    for key, name, mode in DESTINATIONS:
-        if line.plain != "  ":
-            line.append("   ")
-        label = f" {key} {name} " if key else f" {name} "
-        line.append(label, style="bold reverse" if mode == active else "dim")
-    return line
-
-
 # -- the content column's tabs --------------------------------------------
 
 # The tabs, in order, as (key, name, pane id). The key is the number that

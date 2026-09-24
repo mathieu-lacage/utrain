@@ -1,4 +1,4 @@
-"""The TUI's screens: one main screen, plus images and compute.
+"""The TUI's screens: one main screen, plus two panels over it and a chat.
 
 The layout is lazygit's. A narrow left column stacks the three lists that say
 what you are looking at -- runs, then that run's phases, then that phase's
@@ -10,6 +10,11 @@ Navigation is selection, not a screen stack. Everything is on screen at once, so
 one fetch fills all of it: `data.Data.snapshot` is a single worker producing a
 single `Snapshot`, applied in one pass. Five panes refreshing on five schedules
 would show five slightly different moments.
+
+Images and compute are the exception, and they are panels rather than screens
+of their own: the two resources a run is made of, glanced at from wherever the
+viewer was and closed with `escape`. They are pushed over the screen they were
+asked from, so nothing of what was being watched moves -- see `_Popover`.
 
 Every fetch runs in a thread worker. `podman describe` starts a container and
 `compute.collect_compute` shells out to nvidia-smi; either on the message loop
@@ -167,13 +172,13 @@ class Host(typing.Protocol):
         finished asks rather than reaches for `self.app`.
         """
 
-    def go(self, destination: str) -> None:
-        """Show a top-level destination, keeping the one being left alive.
+    def go(self, which: str) -> None:
+        """Show one of the resource panels -- `images` or `compute`.
 
-        Not `open`: runs, images and compute are siblings, so putting one over
-        another would make `escape` mean "off the thing I pushed" in a place
-        where nothing was pushed -- and would throw away the run the viewer had
-        selected every time they went to look at an image.
+        Over this screen, not instead of it: a panel is a modal, and `escape`
+        is how it is closed. The app owns the panel instances, so that one
+        stays alive while it is closed -- a pull does not fit in the time a
+        panel is open (see `ImagesScreen.add`).
         """
 
     def from_thread(
@@ -187,18 +192,9 @@ class Host(typing.Protocol):
 class _Screen(textual.screen.Screen[None]):
     """Shared chrome: a header, a footer, an error line and a refresh timer."""
 
-    # Which top-level destination this screen is, or None for one that was
-    # pushed over a destination rather than being one. It decides what escape
-    # does and which entry of the strip is picked out.
-    DESTINATION: typing.ClassVar[str | None] = None
-
     BINDINGS = [
         textual.binding.Binding("r", "force_refresh", "refresh"),
         textual.binding.Binding("escape", "back", "back", show=False),
-        # On the base screen rather than on `MainScreen`: the destinations are
-        # siblings, so each of them can reach the others.
-        textual.binding.Binding("i", "images", "images"),
-        textual.binding.Binding("c", "compute", "compute"),
         textual.binding.Binding("question_mark", "help", "help", key_display="?"),
     ]
 
@@ -218,8 +214,6 @@ class _Screen(textual.screen.Screen[None]):
 
     def compose(self) -> textual.app.ComposeResult:
         yield textual.widgets.Header()
-        if self.DESTINATION is not None:
-            yield textual.widgets.Static(render.destinations(self.DESTINATION), id="destinations")
         yield from self.compose_body()
         yield textual.widgets.Static("", id="error")
         yield textual.widgets.Footer()
@@ -234,17 +228,15 @@ class _Screen(textual.screen.Screen[None]):
         self.refresh_data()
 
     def action_back(self) -> None:
-        """`escape`: up one level, whatever "up" is for this screen.
+        """`escape`: leave this screen.
 
-        Off a pushed screen, or -- from a destination that is not the runs
-        browser -- back to the one every other destination is reached from.
-        `MainScreen` overrides this with its own ladder, since it is where the
-        ladder bottoms out.
+        MainScreen overrides this with its ladder, since it is where the ladder
+        bottoms out: out of the editor or the picker, out of the pane, up one
+        list level, and there it stops -- `q` is how the app is left. A panel
+        (see `_Popover`) is left the same way, which is the point of it being
+        pushed rather than switched to.
         """
-        if self.DESTINATION is None:
-            self.host.close()
-            return
-        self.host.go("runs")
+        self.host.close()
 
     def action_help(self) -> None:
         """`?`: the keys that are not in the footer.
@@ -255,22 +247,6 @@ class _Screen(textual.screen.Screen[None]):
         rest. This is where they are written down.
         """
         self.host.ask(HelpScreen(), lambda _answer: None)
-
-    def action_images(self) -> None:
-        self.host.go("images")
-
-    def action_compute(self) -> None:
-        self.host.go("compute")
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """The destination already showing is not offered as somewhere to go.
-
-        And neither is any of them from a screen that was pushed: chat is about
-        one run, so leaving it is `escape` rather than a sideways step.
-        """
-        if action in ("images", "compute"):
-            return self.DESTINATION is not None and self.DESTINATION != action
-        return True
 
     def on_screen_suspend(self) -> None:
         """Stop polling a screen nobody is looking at.
@@ -328,9 +304,17 @@ class _Screen(textual.screen.Screen[None]):
         self._status(message, hold=hold, ok=True)
 
     def _status(self, message: str, *, hold: bool, ok: bool) -> None:
+        # A screen can be gone by the time this runs: a fetch outlives the
+        # panel that started it, and a pop takes a screen's widgets away while
+        # the screen itself is kept. `is_mounted` still answers yes then -- it
+        # means "has been mounted", and never goes back -- so the line is
+        # looked up softly rather than asked for: no line, nothing to write on.
         self.error = message
         self._held_until = time.monotonic() + _MESSAGE_SECONDS if hold else 0.0
-        line = self.query_one("#error", textual.widgets.Static)
+        lines = self.query("#error")
+        if not lines:
+            return
+        line = typing.cast(textual.widgets.Static, lines.first())
         line.set_class(ok, _OK_CLASS)
         line.update(message)
 
@@ -355,9 +339,67 @@ class _Screen(textual.screen.Screen[None]):
             return
         self.error = ""
         self._held_until = 0.0
-        line = self.query_one("#error", textual.widgets.Static)
+        lines = self.query("#error")
+        if not lines:
+            return
+        line = typing.cast(textual.widgets.Static, lines.first())
         line.remove_class(_OK_CLASS)
         line.update("")
+
+
+class _Popover(_Screen, textual.screen.ModalScreen[None]):
+    """A panel over the screen beneath: the images, the compute devices.
+
+    Not destinations: they are the two resources a run is made of, glanced at
+    from wherever the viewer was, so `i` pushes one and `escape` closes it --
+    and closing it suspends the screen underneath rather than throwing it away,
+    which is what keeps the run, the phase and the tab the viewer had selected.
+
+    The app holds one instance of each panel rather than building one per
+    visit: `ImagesScreen.add` shells out to `podman pull`, which outlives the
+    panel being closed, and its callbacks are written on the instance. A pop
+    takes the panel's widgets away while the instance is kept, so callbacks
+    that arrive after the close check `_closed` before they touch any.
+    """
+
+    BINDINGS = [
+        # Shown, unlike on the screens it covers: the panel's footer is the
+        # only key list the panel has, and `escape` is the whole of how it is
+        # left. The `i`/`c` of the screen underneath stay there -- a modal
+        # keeps them from firing, so there is no sideways step to offer.
+        textual.binding.Binding("escape", "back", "close"),
+    ]
+
+    def __init__(self, host: Host, source: data.Data) -> None:
+        super().__init__(host, source)
+        # Set when the panel is closed, cleared when it is opened again.
+        # `is_mounted` is no use here: in this Textual it means "has been
+        # mounted", and stays yes after a pop has taken the widgets away --
+        # the same latch `ChatScreen` sets, for the same reason.
+        self._closed = False
+
+    def compose(self) -> textual.app.ComposeResult:
+        # A surface under the panes rather than a box around them: the list is
+        # framed and titled like every other pane in the app, and a second
+        # border around it would be chrome saying what the first already says.
+        with textual.containers.Vertical(id="panel"):
+            yield from self.compose_body()
+            yield textual.widgets.Static("", id="error")
+            yield textual.widgets.Footer()
+
+    def on_mount(self) -> None:
+        # After `super()`, which starts the first fetch: the list is where the
+        # keys go from the moment the panel is up, and there is nothing else
+        # here to focus.
+        self._closed = False
+        super().on_mount()
+        self.query(textual.widgets.DataTable).first().focus()
+
+    def on_unmount(self) -> None:
+        # Fired by the pop that takes the panel off the stack, after its
+        # widgets have gone -- which is what makes the latch answer the only
+        # question the callbacks ask: is there anything left to draw on?
+        self._closed = True
 
 
 def _table(
@@ -465,7 +507,6 @@ class MainScreen(_Screen):
     """
 
     TITLE = "utrain"
-    DESTINATION = "runs"
 
     BINDINGS = [
         # The pane and tab keys are `show=False`: the sidebar panes carry
@@ -478,6 +519,12 @@ class MainScreen(_Screen):
         textual.binding.Binding("2", "focus_tab('config')", "config", show=False),
         textual.binding.Binding("3", "focus_tab('plots')", "plots", show=False),
         textual.binding.Binding("4", "focus_tab('log')", "logs", show=False),
+        # The panels: the two resources a run is made of, opened over this
+        # screen and closed with escape. On this screen only -- chat is about
+        # one run, and a panel itself is left with escape, so neither carries
+        # a sideways step.
+        textual.binding.Binding("i", "images", "images"),
+        textual.binding.Binding("c", "compute", "compute"),
         # On the screen rather than on the form: you pick the run in the runs
         # pane, so that is where you want to be able to say "edit this one".
         # `check_action` greys it out unless the selected run can be edited.
@@ -1306,6 +1353,12 @@ class MainScreen(_Screen):
         # app is left, and an escape that quit would be a surprise.
         self.set_level("runs")
 
+    def action_images(self) -> None:
+        self.host.go("images")
+
+    def action_compute(self) -> None:
+        self.host.go("compute")
+
     def action_next_row(self) -> None:
         self.query_one("#config", widgets.ConfigPane).focus_row(1)
 
@@ -1829,11 +1882,11 @@ _HELP = (
         "getting around",
         (
             ("enter", "down a level: run, then phases, then content"),
-            ("escape", "up a level, as far as the runs"),
+            ("escape", "up a level; close the images or compute panel"),
             ("tab / shift+tab", "the next pane on screen, and the previous"),
             ("1", "the list, at whichever level it is at"),
             ("2 / 3 / 4", "the config, the plots, the logs"),
-            ("i / c", "the images and the compute devices"),
+            ("i / c", "the images and the compute devices, as panels over this screen"),
         ),
     ),
     (
@@ -2451,16 +2504,15 @@ class ChatScreen(_Screen):
         field.focus()
 
 
-class ImagesScreen(_Screen):
+class ImagesScreen(_Popover):
     """Images in the local store, as `utrain image list` shows them.
 
     And, on `a`, `utrain image add`: this is the list the added image appears
-    in, so it is where adding one belongs.
+    in, so it is where adding one belongs. A panel over the screen the viewer
+    came from rather than a place of its own: the pull it starts is theirs to
+    wait for or to walk away from, and the list is here again -- still pulling
+    -- whenever they look back.
     """
-
-    TITLE = "utrain"
-    SUB_TITLE = "images"
-    DESTINATION = "images"
 
     BINDINGS = [
         textual.binding.Binding("a", "add_image", "add"),
@@ -2490,6 +2542,12 @@ class ImagesScreen(_Screen):
         self.host.from_thread(self.apply, rows)
 
     def apply(self, rows: list[list[render.Cell]]) -> None:
+        # A fetch can land after the panel was closed: the instance is kept
+        # (see `UtrainApp.go`), but the pop took its widgets away, and
+        # `query_one` on them raises where nothing can catch it. The next
+        # `on_mount` fetches again, so the rows are not lost, only deferred.
+        if self._closed:
+            return
         if not self.pulling:
             self.clear_error()
         _fill(self.table("#images"), rows)
@@ -2532,6 +2590,11 @@ class ImagesScreen(_Screen):
 
     def pull_started(self, url: str) -> None:
         self.pulling = True
+        if self._closed:
+            # The panel was closed with the pull still running: the flag is
+            # kept for the next visit, where `on_mount`'s fetch will show the
+            # image whenever it lands.
+            return
         self.refresh_bindings()
         # Not held: a hold expires, and this has to stay up for as long as the
         # pull does. `apply` leaves it alone while `pulling` is set.
@@ -2539,6 +2602,8 @@ class ImagesScreen(_Screen):
 
     def pull_finished(self, name: str, error: str) -> None:
         self.pulling = False
+        if self._closed:
+            return
         self.refresh_bindings()
         if error:
             self.held_error(error)
@@ -2549,12 +2614,8 @@ class ImagesScreen(_Screen):
         self.refresh_data()
 
 
-class ComputeScreen(_Screen):
+class ComputeScreen(_Popover):
     """Host CPU and GPUs, as `utrain compute list` shows them."""
-
-    TITLE = "utrain"
-    SUB_TITLE = "compute"
-    DESTINATION = "compute"
 
     def compose_body(self) -> textual.app.ComposeResult:
         yield _table("compute", "compute", render.COMPUTE_COLUMNS, drill=False)
@@ -2574,5 +2635,8 @@ class ComputeScreen(_Screen):
         self.host.from_thread(self.apply, rows)
 
     def apply(self, rows: list[list[render.Cell]]) -> None:
+        # See `ImagesScreen.apply`: a fetch can land on a closed panel.
+        if self._closed:
+            return
         self.clear_error()
         _fill(self.table("#compute"), rows)

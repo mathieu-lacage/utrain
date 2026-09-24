@@ -336,6 +336,8 @@ def storyboard(rec: Recorder, gpu: bool) -> None:
         rec.expect(re.escape(PRESET))
 
     with rec.beat("compute", hold=2.4):
+        rec.send("escape")
+        rec.expect("runs")
         rec.send("c")
         rec.expect("RTX 2000 Ada")
 

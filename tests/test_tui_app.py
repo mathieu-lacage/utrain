@@ -796,40 +796,35 @@ async def test_coming_back_to_a_run_lands_on_the_phase_it_was_left_at(
         assert screen.selected_phase == "tokenizer"
 
 
-async def test_the_images_and_compute_screens_are_reachable(
-    app: utrain.tui.app.UtrainApp,
-) -> None:
+async def test_i_and_c_open_panels_over_the_run(app: utrain.tui.app.UtrainApp) -> None:
+    """The images and the compute are panels over whatever the viewer was
+    looking at, not places of their own: `i` or `c` pushes one, `escape`
+    closes it, and the screen is exactly what it was before it went up."""
     async with app.run_test(size=SIZE) as pilot:
+        await _select_pretrain(app, pilot)
+        await pilot.press("3")
         await _settle(app, pilot)
+
         await pilot.press("i")
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.ImagesScreen)
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
+        assert _main(app).address() == f"{RUN_ID}/pretrain"
+        assert _main(app).tab == "plots"
 
         await pilot.press("c")
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.ComputeScreen)
 
 
-async def test_escape_returns_to_the_runs_browser(app: utrain.tui.app.UtrainApp) -> None:
-    """The destinations are siblings, so leaving one goes to the one they are
-    all reached from rather than to whichever was visited last."""
-    async with app.run_test(size=SIZE) as pilot:
-        await _settle(app, pilot)
-        await pilot.press("i")
-        await pilot.press("c")
-        await _settle(app, pilot)
-
-        await pilot.press("escape")
-        await _settle(app, pilot)
-
-        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
-
-
-async def test_a_destination_keeps_its_state_while_another_is_showing(
+async def test_a_panel_leaves_the_screen_beneath_where_it_was(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
-    """The reason they are modes and not a stack: going to look at an image
-    must not throw away the phase the viewer had open."""
+    """The screen under a modal is suspended, not thrown away: going to look
+    at an image must not throw away the phase the viewer had open."""
     async with app.run_test(size=SIZE) as pilot:
         await _select_pretrain(app, pilot)
         await pilot.press("3")
@@ -847,18 +842,57 @@ async def test_a_destination_keeps_its_state_while_another_is_showing(
         assert before.tab == "plots"
 
 
-async def test_the_destination_showing_is_not_offered_as_somewhere_to_go(
-    app: utrain.tui.app.UtrainApp,
-) -> None:
+async def test_a_panel_dims_the_screen_beneath_it(app: utrain.tui.app.UtrainApp) -> None:
+    """A modal is only a modal if what is under it shows through: the panel's
+    background is translucent, and the run being watched is still composed
+    behind it, dimmed.
+
+    `_Popover` reaches `ModalScreen` through the MRO but not through the walk
+    Textual uses to gather DEFAULT_CSS, which follows the first DOMNode base
+    and lands on Screen's opaque background instead -- so the translucent
+    colour is restated in the app's CSS, and this is the test that notices if
+    it is dropped again.
+    """
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
-        assert "i" in _footer(app)
-
         await pilot.press("i")
         await _settle(app, pilot)
 
-        assert "i" not in _footer(app)
-        assert "c" in _footer(app)
+        assert app.screen.styles.background.a < 1
+        # And what that alpha buys: the runs browser, drawn behind the panel.
+        assert "tiny-shakespeare" in app.export_screenshot()
+
+
+async def test_a_panel_keeps_the_keys_of_the_screen_beneath_from_firing(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """A modal intercepts the keys: `2` aimed at the content tabs stays inside
+    the panel, and the main screen does not move under it."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        main = _main(app)
+
+        await pilot.press("i")
+        await _settle(app, pilot)
+        await pilot.press("2")
+        await _settle(app, pilot)
+
+        assert isinstance(app.screen, utrain.tui.screens.ImagesScreen)
+        assert main.tab == "config"
+
+
+async def test_q_does_not_quit_through_a_panel(app: utrain.tui.app.UtrainApp) -> None:
+    """`q` is off while a modal is up, panels included: they are left with
+    escape, the way every dialog is."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("i")
+        await _settle(app, pilot)
+        await pilot.press("q")
+        await _settle(app, pilot)
+
+        assert app.is_running
+        assert isinstance(app.screen, utrain.tui.screens.ImagesScreen)
 
 
 # -- the metrics pane -----------------------------------------------------
@@ -3734,6 +3768,31 @@ async def test_the_pull_message_outlives_the_refresh_that_would_clear_it(
         screen.pull_finished("utrain-big", "")
         await pilot.pause()
         assert _footer(app)["a"] is True
+
+
+async def test_a_pull_outlives_the_panel_being_closed(app: utrain.tui.app.UtrainApp) -> None:
+    """The app keeps the panel instance: a pull does not fit in the time the
+    panel is open, so closing it cannot be what cancels it -- and the
+    callbacks it reports on land on a screen whose widgets a close has taken
+    away, which is what the `_closed` latch is for."""
+    async with app.run_test(size=SIZE) as pilot:
+        await _open_images(app, pilot)
+        screen = _images_screen(app)
+        screen.pull_started("docker://example.org/big")
+        assert screen.pulling
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
+
+        # A report from the pull, landing on the closed panel: guarded, so
+        # nothing is raised and nothing is drawn.
+        screen.pull_finished("utrain-big", "")
+        assert not screen.pulling
+
+        await _open_images(app, pilot)
+        assert app.screen is screen
+        assert _image_names(app) == CHOICE_IMAGES
 
 
 async def test_question_mark_opens_the_key_map(app: utrain.tui.app.UtrainApp) -> None:

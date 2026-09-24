@@ -7,28 +7,12 @@ both through the `screens.Host` protocol, which this implements.
 
 import collections.abc
 import os
-import typing
 
 import textual.app
 import textual.binding
 import textual.screen
 
 from . import data, render, screens, widgets
-
-
-class _Modes(typing.Protocol):
-    """`App.add_mode`, with the screen its factory returns spelled out.
-
-    Textual types it against a bare `Screen`, whose result type is
-    unparameterised; every screen here is a `Screen[None]`. Saying so here is
-    what lets the call site stay typed.
-    """
-
-    def add_mode(
-        self,
-        mode: str,
-        base_screen: collections.abc.Callable[[], textual.screen.Screen[None]],
-    ) -> None: ...
 
 
 class UtrainApp(textual.app.App[None]):
@@ -83,11 +67,6 @@ class UtrainApp(textual.app.App[None]):
         height: 1;
         padding: 0 1;
     }
-    /* The destinations, one line under the header on every one of them. */
-    #destinations {
-        height: 1;
-        padding: 0 1;
-    }
     #sidebar > *:focus, #content > *:focus, #content > *:focus-within {
         border: round $accent;
     }
@@ -116,6 +95,53 @@ class UtrainApp(textual.app.App[None]):
         border: round $accent;
         border-title-align: left;
         background: $surface;
+    }
+    /* The resource panels -- images, compute -- are modals over whatever the
+       viewer was looking at, not destinations: `i` pushes one, `escape`
+       closes it, and the screen beneath is suspended rather than replaced, so
+       the run being watched is still there when it closes. A surface under
+       the panes rather than a box around them: the list is framed and titled
+       like every other pane, and a second border would say what the first
+       already says.
+
+       Width rather than `auto`, for the trap `#confirm` dodges: the table
+       inside is `1fr` wide, and an `auto` container around a `1fr` child
+       resolves each other to nothing. Height is `auto`, which works because
+       a `DataTable` hugs its rows -- but capped, so a long list scrolls
+       inside the table instead of pushing the error line and the footer off
+       the bottom of the terminal.
+
+       The dim has to be restated here. ModalScreen would supply a
+       translucent background, but Textual gathers DEFAULT_CSS by walking
+       __bases__ and following only the first DOMNode base -- which from
+       `_Popover` is `_Screen`, taking the chain to Screen and its opaque
+       `background: $background`, and never to ModalScreen at all. The
+       translucent colour is what tells the compositor to draw the screen
+       beneath; without it the panel floats on a blank one. In an ANSI
+       terminal, where alpha is not to be had, ModalScreen's answer is no
+       background at all and a dim text-style on the suspended screen
+       beneath -- which Screen's own DEFAULT_CSS supplies. */
+    ImagesScreen, ComputeScreen {
+        align: center middle;
+        background: $background 60%;
+        &:ansi {
+            background: transparent;
+        }
+    }
+    #panel {
+        width: 70%;
+        max-width: 100;
+        min-width: 44;
+        height: auto;
+        max-height: 85%;
+        padding: 1;
+        background: $surface;
+    }
+    #panel DataTable {
+        max-height: 20;
+    }
+    #panel > *:focus, #panel > *:focus-within {
+        border: round $accent;
     }
     ConfirmScreen {
         align: center middle;
@@ -268,17 +294,17 @@ class UtrainApp(textual.app.App[None]):
     def __init__(self, source: data.Data | None = None) -> None:
         super().__init__()
         self.data = source if source is not None else data.Data()
+        # The panels, built once and kept. A screen popped off the stack is
+        # unmounted -- its widgets are gone -- but `ImagesScreen.add` starts a
+        # pull that outlives the panel being closed, and its callbacks are
+        # written on the instance; keeping it here means the pull is not lost
+        # with the view, and the next `i` mounts the same screen again. See
+        # `_Popover` for the `_closed` latch that makes that safe.
+        self._panels: dict[str, textual.screen.Screen[None]] = {}
 
-    def on_mount(self) -> None:
-        # A mode per destination rather than a screen pushed over the last one.
-        # Each keeps its own screen and its own stack, so going to look at an
-        # image and coming back lands on the run that was selected -- and the
-        # metric readers that run had open are still open.
-        modes = typing.cast(_Modes, self)
-        modes.add_mode("runs", lambda: screens.MainScreen(self, self.data))
-        modes.add_mode("images", lambda: screens.ImagesScreen(self, self.data))
-        modes.add_mode("compute", lambda: screens.ComputeScreen(self, self.data))
-        self.switch_mode("runs")
+    def get_default_screen(self) -> textual.screen.Screen[None]:
+        """Runs is the whole app; everything else is a panel over it."""
+        return screens.MainScreen(self, self.data)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """`q` is off while a config field's editor or a confirm prompt is open.
@@ -324,8 +350,19 @@ class UtrainApp(textual.app.App[None]):
     def close(self) -> None:
         self.pop_screen()
 
-    def go(self, destination: str) -> None:
-        self.switch_mode(destination)
+    def go(self, which: str) -> None:
+        """Show a panel -- `images` or `compute` -- over the screen showing.
+
+        The same instance every time, so that a pull in flight survives the
+        panel being closed; the remount refetches the list, which is all the
+        state the panels have.
+        """
+        panel = self._panels.get(which)
+        if panel is None:
+            factory = {"images": screens.ImagesScreen, "compute": screens.ComputeScreen}[which]
+            panel = factory(self, self.data)
+            self._panels[which] = panel
+        self.push_screen(panel)
 
     def from_thread(
         self,

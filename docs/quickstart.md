@@ -152,8 +152,9 @@ model it produced.
 ### What goes past
 
 **`i` and `c`** are the other two things utrain knows about: the images you have
-pulled, and the CPU and GPUs it can put a run on. Both are a keypress from
-anywhere, and `escape` comes back.
+pulled, and the CPU and GPUs it can put a run on. Each opens as a panel over
+whatever you were looking at -- the run stays where it was underneath it -- and
+`escape` closes it again.
 
 **`n`** creates a run. A run needs three things — a name, an image and something
 to run on — and everything else about it is config.
