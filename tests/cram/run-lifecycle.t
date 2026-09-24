@@ -21,7 +21,7 @@ started and then blocks until the gate file appears in the attempt dir.
   $ utrain run show "$RID" --wait
   id:       [0-9a-f]{32} (re)
   name:     hello
-  image:    utrain-fake
+  image:    utrain-fake \([0-9a-f]{12}\) (re)
   compute:  cpu
   status:   done
   attempts: 1 (latest: done)

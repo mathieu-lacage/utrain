@@ -10,6 +10,8 @@ import uuid
 
 import pytest
 
+import utrain.container.podman
+
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 _CONTAINERS_DIR = pathlib.Path(__file__).parent / "containers"
 
@@ -85,12 +87,12 @@ def _image_namespace(monkeypatch: pytest.MonkeyPatch) -> typing.Iterator[None]:
     tag = f"utrain-t-{uuid.uuid4().hex[:12]}"
     monkeypatch.setenv("UTRAIN_IMAGE_TAG", tag)
     yield
-    # One `podman images` for every test, as before; the container sweep costs a
-    # second call, so it is skipped for the many tests that never tagged
+    # One `podman images` for every test, as before; the container sweep costs
+    # a second call, so it is skipped for the many tests that never tagged
     # anything. A container on this tag implies an image carrying it.
     refs = _tagged_images(tag)
     if refs:
-        _remove_containers(refs)
+        _remove_containers(tag)
         _remove_tags(refs)
 
 
@@ -105,27 +107,39 @@ def _tagged_images(tag: str) -> list[str]:
     return [ref for ref in listed.stdout.split() if ref.endswith(f":{tag}")]
 
 
-def _remove_containers(refs: list[str]) -> None:
-    """Remove any container still running one of this test's images.
+def _remove_containers(tag: str) -> None:
+    """Remove any container utrain started for this test's tag namespace.
 
-    Nothing should reach here with a container up: chat sessions stop theirs and
-    phase containers are waited on. But a test killed in between -- an xdist
+    Matched by the label utrain puts on every container it starts, not by the
+    image a `podman ps` listing reports: a container started by image *id* --
+    what runs freeze at creation -- is reported under whichever tag of that
+    image podman picks, and several namespaces tag the same content in this
+    store. An image-name match would have one test's sweep force-removing
+    another's live phase container.
+
+    Nothing should reach here with a container up: chat sessions stop theirs
+    and phase containers are waited on. But a test killed in between -- an xdist
     worker torn down, a cram script that died -- would leave one running
-    forever, holding the tag `_remove_tags` is about to reclaim. A test's images
-    are private to it, so anything running on them is its own leak.
+    forever, holding the tag `_remove_tags` is about to reclaim. A test's
+    containers are private to it, so anything left is its own leak.
     """
-    wanted = set(refs)
     listed = subprocess.run(
-        ["podman", "ps", "--all", "--format", "{{.ID}} {{.Image}}"],
+        [
+            "podman",
+            "ps",
+            "--all",
+            "--filter",
+            f"label={utrain.container.podman.CONTAINER_LABEL}={tag}",
+            "--format",
+            "{{.ID}}",
+        ],
         capture_output=True,
         text=True,
     )
-    for line in listed.stdout.splitlines():
-        container_id, _, image = line.partition(" ")
-        if image in wanted:
-            subprocess.run(
-                ["podman", "rm", "--force", "--time", "0", container_id], capture_output=True
-            )
+    for container_id in listed.stdout.split():
+        subprocess.run(
+            ["podman", "rm", "--force", "--time", "0", container_id], capture_output=True
+        )
 
 
 def _remove_tags(refs: list[str]) -> None:

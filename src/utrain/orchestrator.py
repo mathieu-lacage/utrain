@@ -285,7 +285,7 @@ def _init_phase_data(
 
 
 def _start_phase(
-    image_key: str,
+    image: str,
     attempt_dir: pathlib.Path,
     phase: str,
     compute: str,
@@ -322,9 +322,10 @@ def _start_phase(
             "--network=host",
             "--security-opt=label=disable",
             *gpu_args,
+            *container.podman.container_label_args(),
             *_wandb_mount_args(),
             *_mount_args(attempt_dir, data_dir, phase, data_ro=False),
-            container.podman.image_ref(image_key),
+            image,
             "--utrain-root",
             _RUN_MOUNT,
             "run",
@@ -338,7 +339,7 @@ def _start_phase(
 
 
 def serve_argv(
-    image_key: str,
+    image: str,
     attempt_dir: pathlib.Path,
     data_dir: pathlib.Path,
     phase: str,
@@ -385,10 +386,11 @@ def serve_argv(
         "--cidfile",
         str(cid_file(attempt_dir, phase)),
         *gpu_args,
+        *container.podman.container_label_args(),
         *_mount_args(attempt_dir, data_dir, phase, data_ro=True),
         "-v",
         f"{host_serve_dir}:{_SERVE_MOUNT}",
-        container.podman.image_ref(image_key),
+        image,
         "--utrain-root",
         _RUN_MOUNT,
         "serve",
@@ -400,7 +402,7 @@ def serve_argv(
 
 
 def _check_cache(
-    image_key: str,
+    image: str,
     attempt_dir: pathlib.Path,
     phase: str,
     data_dir: pathlib.Path,
@@ -424,8 +426,9 @@ def _check_cache(
                 "--security-opt=label=disable",
                 "--cidfile",
                 str(cid_path),
+                *container.podman.container_label_args(),
                 *_mount_args(attempt_dir, data_dir, phase, data_ro=True),
-                container.podman.image_ref(image_key),
+                image,
                 "--utrain-root",
                 _RUN_MOUNT,
                 "check-cache",
@@ -507,12 +510,16 @@ def run_orchestrator(
             sys.exit(1)
 
         run_dir = settings.runs_dir / run_id
-        image_key = str(run_row["image"])
         compute = str(run_row["compute"])
-        presets = container.podman.list_presets()
-        if image_key not in presets:
-            print(f"orchestrator: image '{image_key}' not found", file=sys.stderr)
+        # Resolve to the run's frozen image id, pinning a legacy row on first
+        # touch. The detached process has nowhere to raise a UI error, so say
+        # it in the log and leave the attempt for reconcile to mark failed.
+        try:
+            image = dbmod.run_image_ref(run_row, session)
+        except exceptions.UI as exc:
+            print(f"orchestrator: {exc}", file=sys.stderr)
             sys.exit(1)
+        session.commit()
 
         phase_rows = (
             session.execute(
@@ -538,7 +545,7 @@ def run_orchestrator(
     phases_to_run = [str(r["phase"]) for r in phase_rows]
     phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 
-    describe_output = container.podman.describe(container.podman.image_ref(image_key))
+    describe_output = container.podman.describe(image)
     cacheable_phases = {p.name for p in describe_output.phases if p.cacheable}
     store_dir = settings.data_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -556,7 +563,7 @@ def run_orchestrator(
         with sqlalchemy.orm.Session(engine) as session:
             _init_phase_data(run_id, attempt, phase, phase_orders[phase], run_dir, session)
             if phase in cacheable_phases:
-                manifest = _check_cache(image_key, attempt_dir, phase, data_dir)
+                manifest = _check_cache(image, attempt_dir, phase, data_dir)
                 if manifest is not None:
                     cache_hit = _try_serve_from_cache(manifest, data_dir, store_dir)
             values: dict[str, object] = {
@@ -581,7 +588,7 @@ def run_orchestrator(
             sys.stdout.flush()
             continue
 
-        current_proc = _start_phase(image_key, attempt_dir, phase, compute)
+        current_proc = _start_phase(image, attempt_dir, phase, compute)
         exit_code = current_proc.wait()
         current_proc = None
 

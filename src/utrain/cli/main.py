@@ -158,6 +158,7 @@ def _cmd_run_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> 
                         "id": r.id,
                         "name": r.name,
                         "image": r.image,
+                        "image_id": r.image_id,
                         "compute": r.compute,
                         "status": r.status,
                         "created_at": datetime.datetime.fromtimestamp(r.created_at).isoformat(),

@@ -1044,7 +1044,8 @@ class MainScreen(_Screen):
         self.pinned = [
             (spec.y, spec.x)
             for spec in data.phase_plots(
-                None if run is None else self.data.described(run.image), self.selected_phase
+                None if run is None else self.data.described(self.data.image_ref(run)),
+                self.selected_phase,
             )
         ]
         self.query_one("#metrics", widgets.MetricList).reset()
@@ -1788,7 +1789,7 @@ class MainScreen(_Screen):
         """Start, stop, restart or delete, off the message loop.
 
         A thread because all four shell out: `runs.start_run` and
-        `runs.restart_run` call `container.podman.list_presets` and
+        `runs.restart_run` resolve the run's frozen image id and call
         `container.podman.describe`, and the latter starts a container. On the
         loop that would freeze the app for seconds. They go through the query
         layer's own uncached describe rather than this app's cache -- what
@@ -1837,7 +1838,7 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         if run is None:
             return "no run selected"
-        described = self.data.described(run.image)
+        described = self.data.described(self.data.image_ref(run))
         if described is None:
             return f"still reading image '{run.image}'"
         # The image's answer first, and in the same order `serve.start` asks:

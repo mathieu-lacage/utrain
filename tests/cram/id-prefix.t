@@ -5,7 +5,7 @@
   $ utrain run show "${A:0:8}"
   id:       [0-9a-f]{32} (re)
   name:     a
-  image:    utrain-fake
+  image:    utrain-fake \([0-9a-f]{12}\) (re)
   compute:  cpu
   status:   configuring
   attempts: 0

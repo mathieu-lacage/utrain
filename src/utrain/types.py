@@ -23,6 +23,9 @@ class RunRow:
     id: str
     name: str
     image: str
+    # Podman image id frozen when the run was created; None on legacy rows
+    # that have not been pinned by runs.run_image_ref yet.
+    image_id: str | None
     compute: str
     status: str
     created_at: float

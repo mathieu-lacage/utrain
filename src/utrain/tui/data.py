@@ -203,7 +203,7 @@ class Data:
             self._presets_at = now
         return self._presets
 
-    def described(self, image: str) -> containermod.schema.DescribeOutput | None:
+    def described(self, ref: str) -> containermod.schema.DescribeOutput | None:
         """What is already known about an image, or None -- never a container.
 
         `describe` shells out on a miss, which is right everywhere it is called
@@ -212,22 +212,34 @@ class Data:
         would freeze the app. The cache is warmed by every snapshot fetch, so
         the answer is at worst one tick late.
         """
-        return self._describe.get(image)
+        return self._describe.get(ref)
 
-    def describe(self, image: str) -> containermod.schema.DescribeOutput:
+    def describe(self, ref: str) -> containermod.schema.DescribeOutput:
         """An image's phase list, fetched at most once per image per app."""
-        cached = self._describe.get(image)
+        cached = self._describe.get(ref)
         if cached is not None:
             return cached
-        described = phases.describe_image(image)
-        self._describe[image] = described
+        described = phases.describe_image(ref)
+        self._describe[ref] = described
         return described
 
-    def phase_order(self, image: str) -> list[str]:
-        return list(self.describe(image).phase_order)
+    def image_ref(self, run: types.RunRow) -> str:
+        """What a run's image resolves to, without touching podman or the db.
 
-    def phase_label(self, image: str, phase: str) -> str:
-        for info in self.describe(image).phases:
+        The frozen id when the run has one, the bare preset key otherwise --
+        `phases.describe_image` resolves a bare key through the preset list,
+        exactly as every run did before ids were frozen, so a legacy run is
+        described (and cached) under its name as it always was.
+        """
+        if run.image_id is not None:
+            return run.image_id
+        return run.image
+
+    def phase_order(self, ref: str) -> list[str]:
+        return list(self.describe(ref).phase_order)
+
+    def phase_label(self, ref: str, phase: str) -> str:
+        for info in self.describe(ref).phases:
             if info.name == phase:
                 return f"{phase} ({info.label})"
         return phase
@@ -246,21 +258,21 @@ class Data:
 
     def list_phases(self, run_id: str) -> list[types.PhaseListEntry]:
         with dbmod.with_db(self._settings) as session:
-            image = runs.get_run(run_id, session).image
-            return phases.list_phases(run_id, session, self.describe(image))
+            run = runs.get_run(run_id, session)
+            return phases.list_phases(run_id, session, self.describe(self.image_ref(run)))
 
     def phase_detail(self, addr: str) -> types.PhaseDetail:
         with dbmod.with_db(self._settings) as session:
-            image = runs.get_run(addr.split("/")[0], session).image
-            return phases.show_phase(addr, session, self.describe(image))
+            run = runs.get_run(addr.split("/")[0], session)
+            return phases.show_phase(addr, session, self.describe(self.image_ref(run)))
 
     def phase_log_tail(self, detail: types.PhaseDetail, n: int) -> list[str]:
         return phases.read_log_tail(detail, n)
 
     def write_run_config(self, run_id: str, values: dict[str, object]) -> None:
         with dbmod.with_db(self._settings) as session:
-            image = runs.get_run(run_id, session).image
-            runs.write_config(run_id, values, session, self.describe(image))
+            run = runs.get_run(run_id, session)
+            runs.write_config(run_id, values, session, self.describe(self.image_ref(run)))
             session.commit()
 
     # -- lifecycle --------------------------------------------------------
@@ -362,7 +374,7 @@ class Data:
                 )
 
             detail = runs.get_run_detail(run_id, session)
-            described = self.describe(detail.run.image)
+            described = self.describe(self.image_ref(detail.run))
             config = runs.read_config(run_id, session)
             try:
                 entries = phases.list_phases(run_id, session, described)
@@ -412,7 +424,9 @@ class Data:
             config=config,
             phase_order=list(described.phase_order),
             phase=_snapshot_phase(entries, phase),
-            phase_label="" if phase is None else self.phase_label(detail.run.image, phase),
+            phase_label=""
+            if phase is None
+            else self.phase_label(self.image_ref(detail.run), phase),
             phase_plots=phase_plots(described, phase),
             log=log,
             update=update,

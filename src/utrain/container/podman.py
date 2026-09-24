@@ -19,6 +19,18 @@ from . import schema
 _TAG = os.environ.get("UTRAIN_IMAGE_TAG", "utrain")
 _PREFIX = "utrain-"
 
+# Every container utrain starts carries this label, naming the preset-tag
+# namespace the image came from. A container started by image *id* is reported
+# by `podman ps` under whichever tag of that image podman picks, and several
+# namespaces can tag the same content -- so the tag a ps listing shows proves
+# nothing about who started it, while the label does.
+CONTAINER_LABEL = "utrain.image-tag"
+
+
+def container_label_args() -> list[str]:
+    """`--label` args branding a container with this namespace."""
+    return ["--label", f"{CONTAINER_LABEL}={_TAG}"]
+
 
 class _Image(typing.TypedDict, total=False):
     Names: list[str]
@@ -29,9 +41,48 @@ def image_ref(key: str) -> str:
     return f"localhost/{key}:{_TAG}"
 
 
+def image_id(ref: str) -> str:
+    """The content id of an image reference, as bare hex.
+
+    Stored on a run when it is created (or first touched after the upgrade), so
+    the run keeps pointing at exactly that content even if the preset tag is
+    later moved. Bare hex rather than `sha256:...` because `podman run <hex-id>`
+    works everywhere `podman run <ref>` does -- describe, phases, serve.
+    """
+    result = subprocess.run(
+        ["podman", "image", "inspect", ref, "--format", "{{.Id}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"podman image inspect failed: {result.stderr.strip()}")
+    return result.stdout.strip().removeprefix("sha256:")
+
+
+def image_exists(ref: str) -> bool:
+    result = subprocess.run(
+        ["podman", "image", "exists", ref],
+        capture_output=True,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
 def preset_key(name: str) -> str:
     """Namespaced preset key for a bare image name, avoiding a doubled prefix."""
     return name if name.startswith(_PREFIX) else f"{_PREFIX}{name}"
+
+
+def is_preset_key(name: str) -> bool:
+    """Whether `name` is a bare preset key rather than a reference or an id.
+
+    Preset keys are the `utrain-` prefixed strings `list_presets` returns.
+    Everything a caller may pass in their place -- a full reference, which
+    carries a registry or a tag, or a frozen image id, which is bare hex --
+    never has that prefix.
+    """
+    return name.startswith(_PREFIX)
 
 
 def list_presets() -> dict[str, str]:
@@ -57,7 +108,7 @@ def list_presets() -> dict[str, str]:
 
 def _run_cmd(image: str, args: list[str], timeout: int = 60) -> str:
     result = subprocess.run(
-        ["podman", "run", "--rm", image] + args,
+        ["podman", "run", "--rm", *container_label_args(), image] + args,
         capture_output=True,
         text=True,
         timeout=timeout,

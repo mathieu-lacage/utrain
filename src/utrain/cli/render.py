@@ -101,7 +101,9 @@ def run_detail(detail: types.RunDetail) -> str:
     lines = [
         f"id:       {run.id}",
         f"name:     {run.name}",
-        f"image:    {run.image}",
+        # The frozen image id, so what a run is pinned to is visible; a run
+        # that predates the freeze shows the name only.
+        f"image:    {run.image}" + (f" ({run.image_id[:12]})" if run.image_id is not None else ""),
         f"compute:  {run.compute}",
         f"status:   {run.status}",
         f"attempts: {attempts_str}",

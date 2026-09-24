@@ -59,9 +59,11 @@ An image that does not implement serve
 No container outlives a chat session. That includes the one piped to `head`
 above, which closes the pipe mid-banner: the BrokenPipeError still has to reach
 the shutdown, and the shutdown removes the container by the id podman wrote at
-startup rather than only signalling the client.
-
-  $ podman ps --format '{{.Image}}' | grep -c ":$UTRAIN_IMAGE_TAG" || true
+startup rather than only signalling the client. Matched by the label utrain
+puts on its containers: a container started by image id -- what runs freeze at
+creation -- is reported by `podman ps` under whichever tag of that image
+podman picks, not necessarily this test's.
+  $ podman ps --filter "label=utrain.image-tag=$UTRAIN_IMAGE_TAG" --format '{{.ID}}' | wc -l
   0
 
 A plain OpenAI-compatible server, curl style.

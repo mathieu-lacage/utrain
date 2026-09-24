@@ -36,7 +36,6 @@ def test_check_cache_leaves_no_container_when_it_times_out(
     # means that fixture sweeps up if this test dies mid-run.
     image = f"localhost/fake:{os.environ['UTRAIN_IMAGE_TAG']}"
     subprocess.run(["podman", "tag", "fake:utrain", image], check=True)
-    monkeypatch.setattr(utrain.container.podman, "image_ref", lambda key: image)
     monkeypatch.setattr(utrain.orchestrator, "_MANIFEST_TIMEOUT_S", 3)
 
     config = tmp_path / "config.yaml"
@@ -47,7 +46,7 @@ def test_check_cache_leaves_no_container_when_it_times_out(
     data_dir = attempt_dir / "data" / "tokenizer"
     data_dir.mkdir(parents=True)
 
-    manifest = utrain.orchestrator._check_cache("utrain-fake", attempt_dir, "tokenizer", data_dir)
+    manifest = utrain.orchestrator._check_cache(image, attempt_dir, "tokenizer", data_dir)
 
     # A timeout is a cache miss as far as the caller is concerned.
     assert manifest is None

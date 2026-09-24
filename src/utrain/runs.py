@@ -102,6 +102,7 @@ def _run_row(
         id=run_id,
         name=str(row["name"]),
         image=str(row["image"]),
+        image_id=None if row["image_id"] is None else str(row["image_id"]),
         compute=str(row["compute"]),
         status=str(row["status"]),
         created_at=float(row["created_at"]),
@@ -278,7 +279,7 @@ def write_config(
         raise exceptions.UI(f"run '{run_id}' is {status}; only a configuring run can be edited")
 
     if described is None:
-        described = container.podman.describe(container.podman.list_presets()[str(row["image"])])
+        described = container.podman.describe(dbmod.run_image_ref(row, session))
     schema = described.config_schema
 
     path = dbmod.run_dir(run_id, session) / "config.yaml"
@@ -413,7 +414,10 @@ def create_run(
     if image not in presets:
         raise exceptions.UI(f"image '{image}' not found")
 
-    describe = container.podman.describe(presets[image])
+    # Freeze the id before describing: the run must keep pointing at exactly
+    # this content even if the name is re-tagged to another image later.
+    image_id = container.podman.image_id(presets[image])
+    describe = container.podman.describe(image_id)
     if not describe.phase_order:
         raise exceptions.UI(f"image '{image}' has no phases")
 
@@ -430,6 +434,7 @@ def create_run(
             id=run_id,
             name=name,
             image=image,
+            image_id=image_id,
             compute=compute_value,
             status="configuring",
             config_hash=None,
@@ -477,7 +482,6 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     logs_dir.mkdir(parents=True, exist_ok=True)
     orchestrator.init_mount_dir(attempt_dir, config_path)
 
-    image_key = str(row["image"])
     now = time.time()
     session.execute(
         sqlalchemy.insert(dbmod.run_attempts).values(
@@ -491,9 +495,8 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
         )
     )
 
-    # Determine phase order from image
-    presets = container.podman.list_presets()
-    describe = container.podman.describe(presets[image_key])
+    # Determine phase order from the frozen image id
+    describe = container.podman.describe(dbmod.run_image_ref(row, session))
     for i, phase in enumerate(describe.phase_order):
         session.execute(
             sqlalchemy.insert(dbmod.run_phases).values(
@@ -633,14 +636,12 @@ def restart_run(
     if str(row["status"]) == "running" and attempt_n is not None:
         _stop_attempt(run_id, attempt_n, session)
 
-    image_key = str(row["image"])
     run_dir = dbmod.run_dir(run_id, session)
     config_path = run_dir / "config.yaml"
 
-    # Validate from_phase
+    # Validate from_phase against the frozen image id
     from_phase_order: int | None = None
-    presets = container.podman.list_presets()
-    describe = container.podman.describe(presets[image_key])
+    describe = container.podman.describe(dbmod.run_image_ref(row, session))
 
     if from_phase is not None:
         if from_phase not in describe.phase_order:

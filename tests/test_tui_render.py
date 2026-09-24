@@ -29,6 +29,7 @@ def test_run_cells_truncate_the_id() -> None:
         id="abcdef0123",
         name="shake",
         image="img",
+        image_id=None,
         compute="cpu",
         status="running",
         created_at=0.0,

@@ -18,10 +18,17 @@ def describe_image(
     can pass in a cached description instead -- an image's phase list does not
     change while it is being watched. Passing nothing keeps the CLI's
     behaviour, which is to ask podman every time.
+
+    `image` is either what podman accepts directly -- a run's frozen id
+    (`db.run_image_ref`) or a full reference -- or a bare preset key, which is
+    resolved through the preset list, the shape every run was described by
+    before ids were frozen.
     """
     if described is not None:
         return described
-    return container.podman.describe(container.podman.list_presets()[image])
+    if container.podman.is_preset_key(image):
+        return container.podman.describe(container.podman.list_presets()[image])
+    return container.podman.describe(image)
 
 
 def list_phases(
@@ -52,8 +59,9 @@ def list_phases(
 
     # Get all phases from the image to show pre-from_phase entries
     run_row = dbmod.get_run(run_id, session)
-    image_key = str(run_row["image"])
-    all_phases = describe_image(image_key, described).phase_order
+    if described is None:
+        described = describe_image(dbmod.run_image_ref(run_row, session))
+    all_phases = described.phase_order
 
     from_phase_order = 0
     if from_phase and from_phase in all_phases:
@@ -160,9 +168,7 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
         raise exceptions.UI("run has no attempts yet")
 
     run_row = dbmod.get_run(run_id, session)
-    image_key = str(run_row["image"])
-    presets = container.podman.list_presets()
-    describe = container.podman.describe(presets[image_key])
+    describe = container.podman.describe(dbmod.run_image_ref(run_row, session))
 
     return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
 
@@ -236,9 +242,10 @@ def show_phase(
         raise exceptions.UI(f"phase '{phase}' not found in attempt {attempt_n}")
 
     # Resolve phase label from image describe
-    image_key = str(run_row["image"])
+    if described is None:
+        described = describe_image(dbmod.run_image_ref(run_row, session))
     phase_label = phase
-    for pi in describe_image(image_key, described).phases:
+    for pi in described.phases:
         if pi.name == phase:
             phase_label = f"{phase} ({pi.label})"
             break

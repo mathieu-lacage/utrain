@@ -357,6 +357,9 @@ def chat_env(
         "list_presets",
         lambda: {"utrain-fake": "localhost/utrain-fake:utrain"},
     )
+    # The runs here are legacy rows with no frozen image id, so resolving one
+    # inspects the image; answer with a fixed id rather than the local store's.
+    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: "f" * 64)
     _patch_describe(monkeypatch, can_serve=True)
 
     def fake_serve_argv(

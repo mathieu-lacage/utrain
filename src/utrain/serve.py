@@ -129,12 +129,10 @@ def start(
 
     # What the image can do comes first: it is a fact about the image, true
     # whatever state the run is in, so an image that will never serve should say
-    # so rather than send the caller off to wait for a run to finish.
+    # so rather than send the caller off to wait for a run to finish. Asked of
+    # the run's frozen image id, so a re-tagged name cannot change the answer.
     image_key = str(row["image"])
-    presets = container.podman.list_presets()
-    if image_key not in presets:
-        raise exceptions.UI(f"image '{image_key}' not found")
-    describe = container.podman.describe(presets[image_key])
+    describe = container.podman.describe(dbmod.run_image_ref(row, session))
     servable = servable_phases(describe)
     if not servable:
         raise exceptions.UI(f"image '{image_key}' does not support serve")
@@ -166,7 +164,7 @@ def start(
     session.commit()
 
     argv, env = orchestrator.serve_argv(
-        image_key, attempt_dir, data_dir, phase, str(row["compute"])
+        dbmod.run_image_ref(row, session), attempt_dir, data_dir, phase, str(row["compute"])
     )
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)

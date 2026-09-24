@@ -45,7 +45,7 @@ Step 6: start it and wait for it to finish.
   $ utrain run show "$RID" --wait
   id:       [0-9a-f]{32} (re)
   name:     demo
-  image:    utrain-demo
+  image:    utrain-demo \([0-9a-f]{12}\) (re)
   compute:  cpu
   status:   done
   attempts: 1 (latest: done)
