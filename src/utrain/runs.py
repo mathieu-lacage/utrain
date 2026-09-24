@@ -102,7 +102,7 @@ def _run_row(
         id=run_id,
         name=str(row["name"]),
         image=str(row["image"]),
-        image_id=None if row["image_id"] is None else str(row["image_id"]),
+        image_id=str(row["image_id"]),
         compute=str(row["compute"]),
         status=str(row["status"]),
         created_at=float(row["created_at"]),
@@ -279,7 +279,7 @@ def write_config(
         raise exceptions.UI(f"run '{run_id}' is {status}; only a configuring run can be edited")
 
     if described is None:
-        described = container.podman.describe(dbmod.run_image_ref(row, session))
+        described = container.podman.describe(dbmod.run_image_ref(row))
     schema = described.config_schema
 
     path = dbmod.run_dir(run_id, session) / "config.yaml"
@@ -496,7 +496,7 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     )
 
     # Determine phase order from the frozen image id
-    describe = container.podman.describe(dbmod.run_image_ref(row, session))
+    describe = container.podman.describe(dbmod.run_image_ref(row))
     for i, phase in enumerate(describe.phase_order):
         session.execute(
             sqlalchemy.insert(dbmod.run_phases).values(
@@ -641,7 +641,7 @@ def restart_run(
 
     # Validate from_phase against the frozen image id
     from_phase_order: int | None = None
-    describe = container.podman.describe(dbmod.run_image_ref(row, session))
+    describe = container.podman.describe(dbmod.run_image_ref(row))
 
     if from_phase is not None:
         if from_phase not in describe.phase_order:

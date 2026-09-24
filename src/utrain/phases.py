@@ -19,15 +19,11 @@ def describe_image(
     change while it is being watched. Passing nothing keeps the CLI's
     behaviour, which is to ask podman every time.
 
-    `image` is either what podman accepts directly -- a run's frozen id
-    (`db.run_image_ref`) or a full reference -- or a bare preset key, which is
-    resolved through the preset list, the shape every run was described by
-    before ids were frozen.
+    `image` is what podman accepts directly -- a run's frozen id
+    (`db.run_image_ref`), which is how every run-scoped caller asks.
     """
     if described is not None:
         return described
-    if container.podman.is_preset_key(image):
-        return container.podman.describe(container.podman.list_presets()[image])
     return container.podman.describe(image)
 
 
@@ -60,7 +56,7 @@ def list_phases(
     # Get all phases from the image to show pre-from_phase entries
     run_row = dbmod.get_run(run_id, session)
     if described is None:
-        described = describe_image(dbmod.run_image_ref(run_row, session))
+        described = describe_image(dbmod.run_image_ref(run_row))
     all_phases = described.phase_order
 
     from_phase_order = 0
@@ -168,7 +164,7 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
         raise exceptions.UI("run has no attempts yet")
 
     run_row = dbmod.get_run(run_id, session)
-    describe = container.podman.describe(dbmod.run_image_ref(run_row, session))
+    describe = container.podman.describe(dbmod.run_image_ref(run_row))
 
     return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
 
@@ -243,7 +239,7 @@ def show_phase(
 
     # Resolve phase label from image describe
     if described is None:
-        described = describe_image(dbmod.run_image_ref(run_row, session))
+        described = describe_image(dbmod.run_image_ref(run_row))
     phase_label = phase
     for pi in described.phases:
         if pi.name == phase:

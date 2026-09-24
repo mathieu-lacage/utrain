@@ -306,6 +306,7 @@ def _make_run(
             id=run_id,
             name="chat",
             image="utrain-fake",
+            image_id="f" * 64,
             compute="cpu",
             status=run_status,
             created_at=0.0,
@@ -357,9 +358,9 @@ def chat_env(
         "list_presets",
         lambda: {"utrain-fake": "localhost/utrain-fake:utrain"},
     )
-    # The runs here are legacy rows with no frozen image id, so resolving one
-    # inspects the image; answer with a fixed id rather than the local store's.
-    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: "f" * 64)
+    # Resolving a run's image checks the frozen id against the local store;
+    # answer yes rather than shelling out to podman.
+    monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: True)
     _patch_describe(monkeypatch, can_serve=True)
 
     def fake_serve_argv(

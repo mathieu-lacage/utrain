@@ -20,8 +20,8 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("image", sqlalchemy.Text, nullable=False),
     # The podman image id frozen when the run was created, so a later re-tag of
     # the name cannot change what the run sees (config schema, phase order) or
-    # runs. NULL on legacy rows; pinned on first touch by runs.run_image_ref.
-    sqlalchemy.Column("image_id", sqlalchemy.Text, nullable=True),
+    # runs. Resolved through db.run_image_ref.
+    sqlalchemy.Column("image_id", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("compute", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("status", sqlalchemy.Text, nullable=False, default="configuring"),
     sqlalchemy.Column("config_hash", sqlalchemy.Text, nullable=True),
@@ -95,7 +95,6 @@ def _migrate(engine: sqlalchemy.Engine) -> None:
             for col, ddl in [
                 ("name", "TEXT NOT NULL DEFAULT ''"),
                 ("image", "TEXT NOT NULL DEFAULT ''"),
-                ("image_id", "TEXT"),
                 ("compute", "TEXT NOT NULL DEFAULT 'cpu'"),
                 ("config_hash", "TEXT"),
                 ("created_at", "REAL NOT NULL DEFAULT 0"),
@@ -190,36 +189,26 @@ def get_run(run_id: str, session: sqlalchemy.orm.Session) -> sqlalchemy.engine.R
     return row
 
 
-def run_image_ref(
-    row: sqlalchemy.engine.RowMapping,
-    session: sqlalchemy.orm.Session,
-) -> str:
-    """The podman reference a run's image resolves to: its frozen id.
+def run_image_ref(row: sqlalchemy.engine.RowMapping) -> str:
+    """The podman image id a run is frozen to, checked against the store.
 
     A run stores the id of the image it was created against, so that re-tagging
     the image name later cannot silently move the run to different content:
     the config UI, the phase list and every container the run starts all
-    resolve through here. Legacy rows whose id is still NULL resolve by name
-    once and are pinned on that first touch -- whatever the name points at
-    then is what the run keeps.
+    resolve through here. An id that has left the local store is an error
+    rather than a fall back to the name, which would quietly run the run
+    against different content -- exactly what freezing exists to prevent.
 
     `podman run <bare hex id>` works anywhere `podman run <ref>` does, so the
     id can stand in for a reference in every container invocation.
     """
     run_id = str(row["id"])
     name = str(row["image"])
-    frozen = row["image_id"]
-    if frozen is not None:
-        image_id = str(frozen)
-        if not container.podman.image_exists(image_id):
-            raise exceptions.UI(
-                f"image '{name}' ({image_id[:12]}) frozen for run '{run_id}' "
-                "is not in the local store"
-            )
-        return image_id
-
-    image_id = container.podman.image_id(container.podman.image_ref(name))
-    session.execute(sqlalchemy.update(runs).where(runs.c.id == run_id).values(image_id=image_id))
+    image_id = str(row["image_id"])
+    if not container.podman.image_exists(image_id):
+        raise exceptions.UI(
+            f"image '{name}' ({image_id[:12]}) frozen for run '{run_id}' is not in the local store"
+        )
     return image_id
 
 

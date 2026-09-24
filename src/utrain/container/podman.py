@@ -74,17 +74,6 @@ def preset_key(name: str) -> str:
     return name if name.startswith(_PREFIX) else f"{_PREFIX}{name}"
 
 
-def is_preset_key(name: str) -> bool:
-    """Whether `name` is a bare preset key rather than a reference or an id.
-
-    Preset keys are the `utrain-` prefixed strings `list_presets` returns.
-    Everything a caller may pass in their place -- a full reference, which
-    carries a registry or a tag, or a frozen image id, which is bare hex --
-    never has that prefix.
-    """
-    return name.startswith(_PREFIX)
-
-
 def list_presets() -> dict[str, str]:
     result = subprocess.run(
         ["podman", "images", "--format", "json"],

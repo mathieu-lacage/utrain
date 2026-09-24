@@ -132,7 +132,8 @@ def start(
     # so rather than send the caller off to wait for a run to finish. Asked of
     # the run's frozen image id, so a re-tagged name cannot change the answer.
     image_key = str(row["image"])
-    describe = container.podman.describe(dbmod.run_image_ref(row, session))
+    image = dbmod.run_image_ref(row)
+    describe = container.podman.describe(image)
     servable = servable_phases(describe)
     if not servable:
         raise exceptions.UI(f"image '{image_key}' does not support serve")
@@ -163,9 +164,7 @@ def start(
     # run needs to write meanwhile.
     session.commit()
 
-    argv, env = orchestrator.serve_argv(
-        dbmod.run_image_ref(row, session), attempt_dir, data_dir, phase, str(row["compute"])
-    )
+    argv, env = orchestrator.serve_argv(image, attempt_dir, data_dir, phase, str(row["compute"]))
     logs_dir = attempt_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / f"{phase}_serve.log"

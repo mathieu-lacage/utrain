@@ -511,15 +511,14 @@ def run_orchestrator(
 
         run_dir = settings.runs_dir / run_id
         compute = str(run_row["compute"])
-        # Resolve to the run's frozen image id, pinning a legacy row on first
-        # touch. The detached process has nowhere to raise a UI error, so say
-        # it in the log and leave the attempt for reconcile to mark failed.
+        # Resolve to the run's frozen image id. The detached process has
+        # nowhere to raise a UI error, so say it in the log and leave the
+        # attempt for reconcile to mark failed.
         try:
-            image = dbmod.run_image_ref(run_row, session)
+            image = dbmod.run_image_ref(run_row)
         except exceptions.UI as exc:
             print(f"orchestrator: {exc}", file=sys.stderr)
             sys.exit(1)
-        session.commit()
 
         phase_rows = (
             session.execute(

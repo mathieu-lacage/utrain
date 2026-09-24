@@ -63,6 +63,7 @@ def _seed_run(data_dir: pathlib.Path) -> pathlib.Path:
                 id=RUN_ID,
                 name="hello",
                 image="utrain-fake",
+                image_id="ab" * 32,
                 compute="cpu",
                 status="done",
                 config_hash=None,

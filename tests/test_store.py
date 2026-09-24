@@ -40,6 +40,7 @@ def _insert_run(
             id=run_id,
             name="run",
             image="img",
+            image_id="ab" * 32,
             compute="cpu",
             status=status,
             config_hash=None,

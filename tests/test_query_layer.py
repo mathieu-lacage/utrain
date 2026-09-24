@@ -32,6 +32,9 @@ import utrain.phases
 import utrain.runs
 import utrain.types
 
+# A plausible podman image id, for seeds and frozen-id assertions.
+FROZEN_ID = "ab" * 32
+
 
 @pytest.fixture()
 def session(tmp_path: pathlib.Path) -> typing.Iterator[sqlalchemy.orm.Session]:
@@ -46,7 +49,7 @@ def _insert_run(
     name: str,
     created_at: float,
     status: str = "configuring",
-    image_id: str | None = None,
+    image_id: str = FROZEN_ID,
 ) -> None:
     session.execute(
         sqlalchemy.insert(utrain.db.runs).values(
@@ -370,6 +373,7 @@ def _configurable_run(
             id=run_id,
             name="draft",
             image="img",
+            image_id=FROZEN_ID,
             compute="cpu",
             status=status,
             config_hash=None,
@@ -557,10 +561,8 @@ def test_start_run_refuses_a_gpu_run_without_the_container_toolkit(
 
 # -- frozen image ids ------------------------------------------------------
 
-_FROZEN_ID = "ab" * 32
 
-
-def test_run_image_ref_prefers_the_frozen_id(
+def test_run_image_ref_returns_the_frozen_id(
     session: sqlalchemy.orm.Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run resolves to the id it was created with, never the name's target.
@@ -568,34 +570,13 @@ def test_run_image_ref_prefers_the_frozen_id(
     The id is what makes a re-tag of the image name invisible to the run, so
     resolving must not even look at the preset list.
     """
-    _insert_run(session, "f0ee" * 8, "pinned", 1.0, image_id=_FROZEN_ID)
+    _insert_run(session, "f0ee" * 8, "pinned", 1.0, image_id=FROZEN_ID)
     monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: True)
     monkeypatch.setattr(utrain.container.podman, "list_presets", typing.cast(typing.Any, None))
 
-    ref = utrain.db.run_image_ref(utrain.db.get_run("f0ee" * 8, session), session)
+    ref = utrain.db.run_image_ref(utrain.db.get_run("f0ee" * 8, session))
 
-    assert ref == _FROZEN_ID
-
-
-def test_run_image_ref_pins_a_legacy_run_on_first_touch(
-    session: sqlalchemy.orm.Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A run created before ids were frozen is pinned to what its name says now.
-
-    Whatever the preset tag points at on the first touch after the upgrade is
-    frozen into the row, so the run never silently moves afterwards.
-    """
-    _insert_run(session, "e1e1" * 8, "legacy", 1.0)
-    monkeypatch.setattr(utrain.container.podman, "image_ref", lambda key: f"localhost/{key}:utrain")
-    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: _FROZEN_ID)
-
-    ref = utrain.db.run_image_ref(utrain.db.get_run("e1e1" * 8, session), session)
-
-    assert ref == _FROZEN_ID
-    pinned = session.execute(
-        sqlalchemy.select(utrain.db.runs.c.image_id).where(utrain.db.runs.c.id == "e1e1" * 8)
-    ).scalar_one()
-    assert pinned == _FROZEN_ID
+    assert ref == FROZEN_ID
 
 
 def test_run_image_ref_refuses_a_frozen_image_that_is_gone(
@@ -606,11 +587,11 @@ def test_run_image_ref_refuses_a_frozen_image_that_is_gone(
     Falling back to the name would quietly run the run against different
     content -- exactly what freezing exists to prevent.
     """
-    _insert_run(session, "d2d2" * 8, "gone", 1.0, image_id=_FROZEN_ID)
+    _insert_run(session, "d2d2" * 8, "gone", 1.0, image_id=FROZEN_ID)
     monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: False)
 
     with pytest.raises(utrain.exceptions.UI, match="not in the local store"):
-        utrain.db.run_image_ref(utrain.db.get_run("d2d2" * 8, session), session)
+        utrain.db.run_image_ref(utrain.db.get_run("d2d2" * 8, session))
 
 
 def test_create_run_freezes_the_image_id(
@@ -622,7 +603,7 @@ def test_create_run_freezes_the_image_id(
         "list_presets",
         lambda: {"utrain-fake": "localhost/utrain-fake:utrain"},
     )
-    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: _FROZEN_ID)
+    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: FROZEN_ID)
     described = _described()
     described_calls: list[str] = []
 
@@ -636,7 +617,7 @@ def test_create_run_freezes_the_image_id(
     run_id = utrain.runs.create_run("hello", "utrain-fake", "cpu", settings, session)
 
     row = utrain.db.get_run(run_id, session)
-    assert row["image_id"] == _FROZEN_ID
+    assert row["image_id"] == FROZEN_ID
     # Describing went to the id, not the tag: whatever the tag does later, the
     # config this run was seeded from is the frozen image's.
-    assert described_calls == [_FROZEN_ID]
+    assert described_calls == [FROZEN_ID]

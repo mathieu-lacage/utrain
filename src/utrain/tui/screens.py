@@ -1044,7 +1044,7 @@ class MainScreen(_Screen):
         self.pinned = [
             (spec.y, spec.x)
             for spec in data.phase_plots(
-                None if run is None else self.data.described(self.data.image_ref(run)),
+                None if run is None else self.data.described(run.image_id),
                 self.selected_phase,
             )
         ]
@@ -1838,7 +1838,7 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         if run is None:
             return "no run selected"
-        described = self.data.described(self.data.image_ref(run))
+        described = self.data.described(run.image_id)
         if described is None:
             return f"still reading image '{run.image}'"
         # The image's answer first, and in the same order `serve.start` asks:

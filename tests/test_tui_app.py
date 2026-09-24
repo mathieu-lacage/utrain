@@ -101,6 +101,9 @@ RUN_ID = "a" * 32
 DRAFT_ID = "b" * 32
 LIVE_ID = "c" * 32
 IMAGE = "utrain-fake"
+# The podman image id every seeded run is frozen to; the describe cache is keyed
+# by it, since that is what a run's image resolves to.
+IMAGE_ID = "f" * 64
 
 # Big enough that the sidebar, the plots and the log all lay out.
 SIZE = (140, 45)
@@ -185,6 +188,7 @@ def _seed(data_dir: pathlib.Path) -> None:
                 id=RUN_ID,
                 name="tiny-shakespeare",
                 image=IMAGE,
+                image_id=IMAGE_ID,
                 compute="cpu",
                 status="done",
                 config_hash=None,
@@ -235,6 +239,7 @@ def _seed_draft(data_dir: pathlib.Path) -> None:
                 id=DRAFT_ID,
                 name="draft",
                 image=IMAGE,
+                image_id=IMAGE_ID,
                 compute="cpu",
                 status="configuring",
                 config_hash=None,
@@ -259,6 +264,7 @@ def _seed_running(data_dir: pathlib.Path) -> None:
                 id=LIVE_ID,
                 name="live",
                 image=IMAGE,
+                image_id=IMAGE_ID,
                 compute="cpu",
                 status="running",
                 config_hash="deadbeef",
@@ -346,6 +352,7 @@ def _seed_restarted(data_dir: pathlib.Path) -> None:
                 id=RESTART_ID,
                 name="restarted",
                 image=IMAGE,
+                image_id=IMAGE_ID,
                 compute="cpu",
                 status="done",
                 config_hash=None,
@@ -532,6 +539,7 @@ class _RecordingData(utrain.tui.data.Data):
                     id=NEW_ID,
                     name=name,
                     image=IMAGE,
+                    image_id=IMAGE_ID,
                     compute=compute_spec,
                     status="configuring",
                     config_hash=None,
@@ -575,7 +583,7 @@ def _app(
     """
     source = _RecordingData(
         settings=utrain.config.Settings(data_dir=data_dir, tui_charset=charset),
-        describe_cache={IMAGE: described if described is not None else _describe()},
+        describe_cache={IMAGE_ID: described if described is not None else _describe()},
     )
     return utrain.tui.app.UtrainApp(source)
 
@@ -3415,7 +3423,7 @@ def chat_app(
     _seed_draft(tmp_path)
     source = _ServingData(
         settings=utrain.config.Settings(data_dir=tmp_path),
-        describe_cache={IMAGE: _describe()},
+        describe_cache={IMAGE_ID: _describe()},
     )
     source.spawn = spawn_serve
     return utrain.tui.app.UtrainApp(source)
@@ -3839,6 +3847,7 @@ def _seed_other(data_dir: pathlib.Path) -> None:
                 id=OTHER_ID,
                 name="other",
                 image=IMAGE,
+                image_id=IMAGE_ID,
                 compute="cpu",
                 status="done",
                 config_hash="deadbeef",

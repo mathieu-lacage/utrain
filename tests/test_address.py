@@ -28,7 +28,13 @@ def _add_run(session: sqlalchemy.orm.Session, run_id: str) -> None:
 
     session.execute(
         sqlalchemy.insert(utrain.db.runs).values(
-            id=run_id, name="r", image="img", compute="cpu", status="done", created_at=0.0
+            id=run_id,
+            name="r",
+            image="img",
+            image_id="ab" * 32,
+            compute="cpu",
+            status="done",
+            created_at=0.0,
         )
     )
     session.execute(
