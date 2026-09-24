@@ -432,13 +432,19 @@ class MetricList(textual.widgets.OptionList):
         return names
 
 
-class LogTail(textual.widgets.RichLog):
+class LogTail(textual.widgets.Log):
     """A phase's output, accumulated across refreshes.
 
     Each refresh fetches a tail of the file, and the pane keeps everything it
     has been shown: a log only grows, so the pane writes just the lines that
     grew onto the previous tail and the scrollback reaches back through the
     whole session, past the fetched tail.
+
+    A `Log` rather than the superficially closer `RichLog`: the log pane's
+    lines are plain text, and `Log` is the one Textual gives working text
+    selection to -- drag to highlight, `ctrl+c` to copy. A `RichLog` accepts
+    the drag but can extract no text from its rendered strips, so the
+    selection copies nothing.
     """
 
     DEFAULT_CSS = """
@@ -476,8 +482,10 @@ class LogTail(textual.widgets.RichLog):
             self.clear()
             fresh = lines
         self._shown = list(lines)
-        for line in fresh:
-            self.write(line, scroll_end=False)
+        # One write per line would append onto the previous one: `Log` only
+        # starts a new line at a newline, so hand the batch over whole.
+        if fresh:
+            self.write_lines(fresh, scroll_end=False)
         if fresh and following:
             self.scroll_end(animate=False)
 

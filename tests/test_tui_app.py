@@ -1476,6 +1476,39 @@ async def test_a_log_the_pane_has_not_seen_starts_over(
         assert len(log.lines) == 1
 
 
+async def test_log_text_can_be_selected_and_copied(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """Dragging across the log selects the text under it, and ctrl+c copies it.
+
+    The pane is a `Log` rather than a `RichLog` for exactly this: a RichLog
+    accepts the drag but can extract no text from its rendered strips, so the
+    selection it made copied nothing.
+    """
+    async with app.run_test(size=SIZE) as pilot:
+        log = await _settled_log_pane(app, pilot)
+        # The pane is only on screen while its tab is; the widget-level tests
+        # above drive it hidden, but a drag needs it displayed.
+        await pilot.press("4")
+        await pilot.pause()
+        log.scroll_to(y=0, animate=False, immediate=True)
+        await _pause_until(pilot, lambda: log.scroll_y == 0, "the pane to scroll to the top")
+
+        # Drag across the first line's text. The border is the outer cell, so
+        # the first content cell sits at offset (1, 1) and the offsets below
+        # cover the whole of `step 0`.
+        await pilot.mouse_down(log, offset=(1, 1))
+        await pilot.hover(log, offset=(1 + len("step 0"), 1))
+        await pilot.mouse_up(log, offset=(1 + len("step 0"), 1))
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() == "step 0"
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._clipboard == "step 0"
+
+
 async def test_growth_leaves_a_viewer_who_scrolled_up_where_they_are(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
