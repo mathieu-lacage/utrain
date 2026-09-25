@@ -369,6 +369,23 @@ def compute_options(info: compute.ComputeInfo) -> list[tuple[str, str]]:
     return options
 
 
+def default_compute(info: compute.ComputeInfo) -> str:
+    """The compute a new run dialog opens on: the first gpu, or the cpu.
+
+    A machine built for training usually has a gpu, and a run that should
+    have had one and silently went to the cpu wastes a queue slot before
+    anyone notices, so the picker starts on the gpu and moving to the cpu
+    is the deliberate act. `compute_options` still lists the cpu first:
+    this decides the selection, not the order. The first gpu rather than
+    the least busy one because a second gpu on the host is usually busy
+    with someone else's run, and picking among them would be a policy the
+    dialog is not asked to have.
+    """
+    if info.gpus:
+        return f"gpu{info.gpus[0].index}"
+    return "cpu"
+
+
 def compute_rows(info: compute.ComputeInfo) -> list[list[str]]:
     """Host CPU and GPUs, one row each, as `compute list` shows them."""
     cpu = info.cpu

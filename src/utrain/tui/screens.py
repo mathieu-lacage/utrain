@@ -2040,6 +2040,11 @@ class NewRunScreen(textual.screen.ModalScreen[NewRun | None]):
                 yield textual.widgets.Label("compute")
                 yield textual.widgets.Select[str](
                     render.compute_options(self.choices.compute),
+                    # Left alone, the `Select` defaults to its first option --
+                    # the cpu -- and a run meant for the gpu would train on the
+                    # cpu unless the viewer noticed (#44). No extra probing:
+                    # the choices are in hand.
+                    value=render.default_compute(self.choices.compute),
                     allow_blank=False,
                     compact=True,
                     id="new-run-compute",

@@ -445,6 +445,10 @@ class _RecordingData(utrain.tui.data.Data):
         # and appended to by `add_image` -- an image added is an image the
         # new-run dialog can then pick, which is true of the real one too.
         self.images = list(CHOICE_IMAGES)
+        # Likewise a gpu-bearing host by default, emptied by the test that
+        # wants the dialog to find no gpu to open on. Not `compute`: the
+        # seam has a method by that name.
+        self.compute_info = _compute_info()
         self.added: list[str] = []
         # Set by the test that wants to see a failure marshalled back.
         self.fail = ""
@@ -494,7 +498,7 @@ class _RecordingData(utrain.tui.data.Data):
             session.execute(sqlalchemy.delete(utrain.db.runs).where(utrain.db.runs.c.id == run_id))
 
     def new_run_choices(self) -> utrain.tui.data.NewRunChoices:
-        return utrain.tui.data.NewRunChoices(images=self.images, compute=_compute_info())
+        return utrain.tui.data.NewRunChoices(images=self.images, compute=self.compute_info)
 
     def list_images(self) -> list[utrain.images.ImageInfo]:
         """The real one shells out to `podman images` and `podman image inspect`."""
@@ -2696,10 +2700,26 @@ async def test_n_opens_the_new_run_dialog(draft_app: utrain.tui.app.UtrainApp) -
         # nothing to default to.
         assert draft_app.focused is not None
         assert draft_app.focused.id == "new-run-name"
-        # Both `Select`s answer for themselves from the moment they open.
+        # Both `Select`s answer for themselves from the moment they open, and
+        # the compute one opens on the gpu the host has (#44).
         assert screen.query_one("#new-run-image", textual.widgets.Select).value == IMAGE
-        assert screen.query_one("#new-run-compute", textual.widgets.Select).value == "cpu"
+        assert screen.query_one("#new-run-compute", textual.widgets.Select).value == "gpu0"
         assert _recording(draft_app).created == []
+
+
+async def test_the_dialog_opens_on_the_cpu_when_the_host_has_no_gpu(
+    draft_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The gpu preference has nothing to prefer on a cpu-only host."""
+    async with draft_app.run_test(size=SIZE) as pilot:
+        await _settle(draft_app, pilot)
+        _recording(draft_app).compute_info.gpus = []
+
+        await pilot.press("n")
+        await _settle(draft_app, pilot)
+
+        screen = await _dialog(draft_app)
+        assert screen.query_one("#new-run-compute", textual.widgets.Select).value == "cpu"
 
 
 async def test_escape_closes_the_dialog_and_creates_nothing(
@@ -2732,7 +2752,7 @@ async def test_filling_the_dialog_creates_the_run_and_selects_it(
         await _settle(draft_app, pilot)
 
         assert isinstance(draft_app.screen, utrain.tui.screens.MainScreen)
-        assert _recording(draft_app).created == [("fresh", IMAGE, "cpu")]
+        assert _recording(draft_app).created == [("fresh", IMAGE, "gpu0")]
         # The run the viewer just made is the one under the cursor, so its
         # config -- the only thing there is to do with it next -- is on screen.
         await _settle(draft_app, pilot)

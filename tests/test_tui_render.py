@@ -457,6 +457,22 @@ def test_compute_options_always_offer_the_cpu() -> None:
     assert [value for _, value in render.compute_options(_compute(0))] == ["cpu"]
 
 
+def test_default_compute_opens_on_the_first_gpu() -> None:
+    """A host with gpus gets a gpu, and the first one when there is a choice (#44)."""
+    assert render.default_compute(_compute(2)) == "gpu0"
+
+
+def test_default_compute_falls_back_to_the_cpu() -> None:
+    assert render.default_compute(_compute(0)) == "cpu"
+
+
+def test_default_compute_answers_from_options() -> None:
+    """What it defaults to must be among what is offered, on either host."""
+    for gpus in (0, 1, 2):
+        options = render.compute_options(_compute(gpus))
+        assert render.default_compute(_compute(gpus)) in [value for _, value in options]
+
+
 def test_compute_option_values_are_what_the_query_layer_accepts() -> None:
     """The dialog must not offer a spec `runs._resolve_compute` would reject.
 
