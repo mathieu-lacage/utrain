@@ -189,6 +189,16 @@ class PhaseDetail:
 
 
 @dataclasses.dataclass(frozen=True)
+class StoreSummary:
+    """The content-addressed store's size, and what `store gc` would reclaim."""
+
+    files: int
+    bytes: int
+    orphaned: int
+    orphaned_bytes: int
+
+
+@dataclasses.dataclass(frozen=True)
 class GcResult:
     removed: int
     reclaimed_bytes: int

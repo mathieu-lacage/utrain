@@ -25,7 +25,19 @@ import dataclasses
 import pathlib
 import time
 
-from .. import compute, config, exceptions, images, metrics, phases, runs, serve, types
+from .. import (
+    compute,
+    config,
+    exceptions,
+    images,
+    metrics,
+    phases,
+    runs,
+    serve,
+    store,
+    tuistate,
+    types,
+)
 from .. import container as containermod
 from .. import db as dbmod
 
@@ -151,6 +163,17 @@ def _snapshot_phase(
         if entry.phase == phase:
             return entry
     return None
+
+
+@dataclasses.dataclass(frozen=True)
+class SystemSnapshot:
+    """One tick of the System workspace."""
+
+    compute: compute.ComputeInfo
+    images: list[images.ImageInfo]
+    # For what is running on each device, and what is queued for it.
+    runs: list[types.RunRow]
+    store: types.StoreSummary
 
 
 @dataclasses.dataclass(frozen=True)
@@ -441,3 +464,70 @@ class Data:
 
     def compute(self) -> compute.ComputeInfo:
         return compute.collect_compute()
+
+    def system(self) -> "SystemSnapshot":
+        """Everything the System workspace shows, read in one worker."""
+        # Through this class's own seams rather than the modules underneath,
+        # so that a test which stubs them stubs this too.
+        info = self.compute()
+        image_list = self.list_images()
+        rows = self.list_runs()
+        return SystemSnapshot(
+            compute=info, images=image_list, runs=rows, store=store.summary(self._settings)
+        )
+
+    def remove_image(self, name: str) -> None:
+        """Never forced: an image a run still uses is refused, and says so."""
+        with dbmod.with_db(self._settings) as session:
+            images.remove_image(name, session, force=False)
+        self.refresh()
+
+    def store_summary(self) -> types.StoreSummary:
+        return store.summary(self._settings)
+
+    def store_check(self) -> types.StoreCheckResult:
+        with dbmod.with_db(self._settings) as session:
+            return store.check(self._settings, session)
+
+    def store_gc(self) -> types.GcResult:
+        return store.gc(self._settings)
+
+    # -- what the TUI keeps -----------------------------------------------
+
+    def tray(self) -> list[str]:
+        with dbmod.with_db(self._settings) as session:
+            return tuistate.tray(session)
+
+    def toggle_mark(self, run_id: str) -> bool:
+        with dbmod.with_db(self._settings) as session:
+            return tuistate.toggle_mark(session, run_id)
+
+    def set_tray(self, run_ids: list[str]) -> None:
+        with dbmod.with_db(self._settings) as session:
+            tuistate.set_tray(session, run_ids)
+
+    def get_state(self, key: str) -> object:
+        with dbmod.with_db(self._settings) as session:
+            return tuistate.get(session, key)
+
+    def put_state(self, key: str, value: object) -> None:
+        with dbmod.with_db(self._settings) as session:
+            tuistate.put(session, key, value)
+
+    def status_line(self) -> str:
+        """The top row's right-hand side: marked runs, then each GPU's load.
+
+        The GPUs are left off rather than failing the line when they cannot be
+        read: a host without `nvidia-smi` has none to show.
+        """
+        parts: list[str] = []
+        marked = len(self.tray())
+        if marked:
+            parts.append(f"{marked} marked")
+        try:
+            gpus = self.compute().gpus
+        except (exceptions.UI, OSError, ValueError):
+            gpus = []
+        if gpus:
+            parts.append("  ".join(f"gpu{g.index} {g.util}%" for g in gpus))
+        return "    ".join(parts)

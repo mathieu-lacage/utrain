@@ -44,7 +44,7 @@ import textual.widgets
 
 from .. import chat as chatmod
 from .. import exceptions, metrics, reconcile, serve, types
-from . import data, export, render, widgets
+from . import commands, data, export, menus, render, widgets
 
 # The screen's actions that a single key reaches, and which are therefore
 # switched off while an editor has the focus (`q` is the app's, and
@@ -212,11 +212,27 @@ class _Screen(textual.screen.Screen[None]):
         # somebody says something and not on a clock.
         self.timer: textual.timer.Timer | None = None
 
+    # The workspace this screen belongs to, which is the title the top row
+    # picks out. A screen pushed within a workspace -- a chat -- keeps its
+    # workspace's.
+    WORKSPACE = "runs"
+
     def compose(self) -> textual.app.ComposeResult:
-        yield textual.widgets.Header()
+        bar = menus.TopBar(self.WORKSPACE, menus.available(self.host))
+        yield bar
         yield from self.compose_body()
         yield textual.widgets.Static("", id="error")
         yield textual.widgets.Footer()
+
+    def show_top_status(self) -> None:
+        """Put the app's latest status on this screen's top row.
+
+        The app refreshes it on a timer of its own and draws it on the screen
+        in front; a screen coming back into view has missed those draws.
+        """
+        line = str(getattr(self.host, "status_line", ""))
+        for bar in self.query(menus.TopBar):
+            bar.show_status(line)
 
     def compose_body(self) -> textual.app.ComposeResult:
         return iter(())
@@ -260,6 +276,7 @@ class _Screen(textual.screen.Screen[None]):
             self.timer.pause()
 
     def on_screen_resume(self) -> None:
+        self.show_top_status()
         if self.timer is None:
             return
         self.timer.resume()
@@ -1874,44 +1891,34 @@ class MainScreen(_Screen):
         self.host.open(ChatScreen(self.host, self.data, run.id, run.name, self.chat_phase()))
 
 
-# What `?` writes down: the keys the footer has no room for, grouped by what
-# they are for. The lifecycle and plot keys are deliberately not here -- those
-# are in the footer, where they answer for the run and the pane in front of
-# you, and a second list of them would be the one that went stale.
-_HELP = (
-    (
-        "getting around",
-        (
-            ("enter", "down a level: run, then phases, then content"),
-            ("escape", "up a level; close the images or compute panel"),
-            ("tab / shift+tab", "the next pane on screen, and the previous"),
-            ("1", "the list, at whichever level it is at"),
-            ("2 / 3 / 4", "the config, the plots, the logs"),
-            ("i / c", "the images and the compute devices, as panels over this screen"),
-        ),
-    ),
-    (
-        "the plots",
-        (
-            ("m", "the metric picker: which curves are drawn"),
-            ("space", "draw this metric, or stop drawing it"),
-            ("y / x", "solo this metric; change the x axis"),
-            ("l / b", "log y scale; braille instead of blocks"),
-            ("E", "write the curve out as csv, png, svg or pdf"),
-        ),
-    ),
-    (
-        "runs",
-        (
-            ("n / d", "new run; delete this one"),
-            ("s / S", "start; stop"),
-            ("R", "restart, from the selected phase if there is one"),
-            ("e", "edit the field the cursor is on"),
-            ("t", "talk to what this run produced"),
-            ("r", "refresh now, dropping the image caches"),
-        ),
-    ),
-)
+def help_sections(
+    workspaces: collections.abc.Sequence[commands.Workspace],
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """What `?` writes down, built from the same registry the menus are.
+
+    The keys that move between places first, since no menu has them; then
+    each workspace's menu, submenus flattened into `Run > Start`. An item with
+    no key of its own is listed as reachable from the menu, which it is.
+    """
+    sections: list[tuple[str, list[tuple[str, str]]]] = [
+        ("getting around", list(commands.NAVIGATION)),
+        ("panes", list(commands.PANE_KEYS)),
+    ]
+
+    def flatten(
+        entries: collections.abc.Sequence[commands.Entry], prefix: str
+    ) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = []
+        for entry in entries:
+            if isinstance(entry, commands.Submenu):
+                lines += flatten(entry.items, f"{prefix}{entry.label} > ")
+            elif isinstance(entry, commands.Item) and not entry.action.startswith("app.workspace"):
+                lines.append((entry.key or "menu", f"{prefix}{entry.label.rstrip('.')}"))
+        return lines
+
+    for ws in workspaces:
+        sections.append((f"{ws.title} ({ws.key_display})", flatten(commands.MENUS[ws.name], "")))
+    return sections
 
 
 class HelpScreen(textual.screen.ModalScreen[bool]):
@@ -1924,7 +1931,7 @@ class HelpScreen(textual.screen.ModalScreen[bool]):
 
     def compose(self) -> textual.app.ComposeResult:
         with textual.containers.VerticalScroll(id="help"):
-            for heading, entries in _HELP:
+            for heading, entries in help_sections(menus.available(menus.app_of(self))):
                 yield textual.widgets.Static(render.help_heading(heading))
                 for keys, what in entries:
                     yield textual.widgets.Static(render.help_line(keys, what))
@@ -2646,3 +2653,206 @@ class ComputeScreen(_Popover):
             return
         self.clear_error()
         _fill(self.table("#compute"), rows)
+
+
+class SystemScreen(_Screen):
+    """The machine: its compute devices, its images, and the data store.
+
+    What `i` and `c` show as panels, as a workspace of its own, with the
+    commands that manage them: adding and deleting images, checking and
+    cleaning the store. The panels stay, for a quick look from wherever the
+    viewer is; this is where the housekeeping is done.
+    """
+
+    WORKSPACE = "system"
+
+    BINDINGS = [
+        textual.binding.Binding("1", "focus_pane('compute')", "compute", show=False),
+        textual.binding.Binding("2", "focus_pane('images')", "images", show=False),
+        textual.binding.Binding("a", "add_image", "add image"),
+        textual.binding.Binding("d", "delete_image", "delete image"),
+        textual.binding.Binding("G", "gc_store", "clean store"),
+    ]
+
+    DEFAULT_CSS = """
+    SystemScreen #compute {
+        height: auto;
+        max-height: 12;
+        border: round $panel;
+        border-title-align: left;
+    }
+    SystemScreen #images {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+    }
+    SystemScreen #store {
+        height: 3;
+        border: round $panel;
+        border-title-align: left;
+        padding: 0 1;
+    }
+    SystemScreen DataTable:focus {
+        border: round $accent;
+    }
+    """
+
+    def __init__(self, host: Host, source: data.Data) -> None:
+        super().__init__(host, source)
+        self.image_names: list[str] = []
+        self.pulling = False
+
+    def compose_body(self) -> textual.app.ComposeResult:
+        yield _table("compute", "1 compute", render.SYSTEM_COMPUTE_COLUMNS, drill=False)
+        yield _table("images", "2 images", render.IMAGE_COLUMNS, drill=False)
+        store = textual.widgets.Static("", id="store")
+        store.border_title = "data store"
+        yield store
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.table("#images").focus()
+
+    def refresh_data(self) -> None:
+        self.fetch()
+
+    @textual.work(thread=True, exclusive=True, group="system")
+    def fetch(self) -> None:
+        try:
+            snapshot = self.data.system()
+        except exceptions.UI as e:
+            self.host.from_thread(self.show_error, str(e))
+            return
+        self.host.from_thread(self.apply, snapshot)
+
+    def apply(self, snapshot: data.SystemSnapshot) -> None:
+        if not self.pulling:
+            self.clear_error()
+        _fill(self.table("#compute"), render.system_compute_rows(snapshot.compute, snapshot.runs))
+        self.image_names = [i.name for i in snapshot.images]
+        _fill(
+            self.table("#images"),
+            [[i.name, i.size_str, str(i.run_count)] for i in snapshot.images],
+        )
+        self.query_one("#store", textual.widgets.Static).update(render.store_line(snapshot.store))
+
+    def action_focus_pane(self, pane: str) -> None:
+        self.query_one(f"#{pane}").focus()
+
+    def selected_image(self) -> str | None:
+        table = self.table("#images")
+        if 0 <= table.cursor_row < len(self.image_names):
+            return self.image_names[table.cursor_row]
+        return None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "add_image":
+            return None if self.pulling else True
+        if action == "delete_image":
+            return True if self.selected_image() is not None else None
+        return super().check_action(action, parameters)
+
+    # -- images -----------------------------------------------------------
+
+    def action_add_image(self) -> None:
+        if self.pulling:
+            return
+
+        def answered(answer: str | None) -> None:
+            if answer is not None:
+                self.add(answer)
+
+        self.host.ask(AddImageScreen(), answered)
+
+    @textual.work(thread=True, group="image-add")
+    def add(self, url: str) -> None:
+        self.host.from_thread(self.pull_started, url)
+        try:
+            name = self.data.add_image(url)
+        except exceptions.UI as e:
+            self.host.from_thread(self.pull_finished, "", str(e))
+            return
+        self.host.from_thread(self.pull_finished, name, "")
+
+    def pull_started(self, url: str) -> None:
+        self.pulling = True
+        self.refresh_bindings()
+        self.show_message(f"pulling {url}...")
+
+    def pull_finished(self, name: str, error: str) -> None:
+        self.pulling = False
+        self.refresh_bindings()
+        if error:
+            self.held_error(error)
+        else:
+            self.held_message(f"added {name}")
+        self.refresh_data()
+
+    def action_delete_image(self) -> None:
+        """`d`: remove the image under the cursor, once. Refused while a run uses it."""
+        name = self.selected_image()
+        if name is None:
+            return
+
+        def answered(answer: bool | None) -> None:
+            if answer:
+                self.remove_image(name)
+
+        self.host.ask(ConfirmScreen(f"delete image '{name}'?"), answered)
+
+    @textual.work(thread=True, group="image-remove")
+    def remove_image(self, name: str) -> None:
+        try:
+            self.data.remove_image(name)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.held_message, f"deleted {name}")
+        self.host.from_thread(self.refresh_data)
+
+    # -- the store --------------------------------------------------------
+
+    def action_check_store(self) -> None:
+        self.check_store()
+
+    @textual.work(thread=True, group="store")
+    def check_store(self) -> None:
+        """Hashes every store file, which takes a while on a big store."""
+        self.host.from_thread(self.show_message, "checking the data store...")
+        try:
+            result = self.data.store_check()
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        verdict = f"{len(result.problems)} problem(s)" if result.problems else "ok"
+        message = (
+            f"checked {result.data_files} data file(s) against "
+            f"{result.store_files} store file(s): {verdict}"
+        )
+        if result.problems:
+            self.host.from_thread(self.held_error, message)
+        else:
+            self.host.from_thread(self.held_message, message)
+
+    def action_gc_store(self) -> None:
+        """`G`: reclaim what no run links to any more, once asked."""
+
+        def answered(answer: bool | None) -> None:
+            if answer:
+                self.gc()
+
+        self.host.ask(ConfirmScreen("delete the store files no run uses any more?"), answered)
+
+    @textual.work(thread=True, group="store")
+    def gc(self) -> None:
+        try:
+            result = self.data.store_gc()
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(
+            self.held_message,
+            f"removed {result.removed} file(s), reclaimed "
+            f"{render.human_size(result.reclaimed_bytes)}",
+        )
+        self.host.from_thread(self.refresh_data)

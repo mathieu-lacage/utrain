@@ -60,6 +60,29 @@ def _resolve_scope(
     return run_id, attempt, phase
 
 
+def summary(settings: config.Settings) -> types.StoreSummary:
+    """How big the store is, and how much of it `gc` would reclaim.
+
+    A stat per file and no hashing, so it is cheap enough to show on a screen
+    that refreshes: `check` is the thorough one.
+    """
+    store_dir = settings.data_dir / "store"
+    files = size = orphaned = orphaned_bytes = 0
+    if store_dir.exists():
+        for fpath in store_dir.iterdir():
+            if not fpath.is_file():
+                continue
+            stat = fpath.stat()
+            files += 1
+            size += stat.st_size
+            if stat.st_nlink == 1:
+                orphaned += 1
+                orphaned_bytes += stat.st_size
+    return types.StoreSummary(
+        files=files, bytes=size, orphaned=orphaned, orphaned_bytes=orphaned_bytes
+    )
+
+
 def gc(settings: config.Settings) -> types.GcResult:
     """Drop store files no run still hardlinks, and report what was reclaimed."""
     store_dir = settings.data_dir / "store"

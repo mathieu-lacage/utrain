@@ -3879,7 +3879,10 @@ async def test_question_mark_opens_the_key_map(app: utrain.tui.app.UtrainApp) ->
         assert isinstance(app.screen, utrain.tui.screens.HelpScreen)
         text = " ".join(str(s.render()) for s in app.screen.query(textual.widgets.Static))
         assert "tab / shift+tab" in text
-        assert "2 / 3 / 4" in text
+        # Written from the same registry the menus are drawn from: the keys
+        # that move between places, then each workspace's menu.
+        assert "F10" in text
+        assert "Run > Start" in text
 
         await pilot.press("escape")
         await _settle(app, pilot)

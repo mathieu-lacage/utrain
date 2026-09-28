@@ -9,11 +9,13 @@ import base64
 import collections.abc
 import os
 
+import textual
 import textual.app
 import textual.binding
 import textual.screen
 
-from . import data, render, screens, widgets
+from .. import exceptions
+from . import commands, data, menus, render, screens, widgets
 
 
 class UtrainApp(textual.app.App[None]):
@@ -230,6 +232,16 @@ class UtrainApp(textual.app.App[None]):
         min-width: 0;
         padding: 0 2;
     }
+    /* A menu's box. Here rather than in `MenuScreen`'s own CSS because an
+       `OptionList` brings a border of its own, and the app's stylesheet is
+       what outranks a widget's defaults. */
+    MenuScreen > OptionList {
+        height: auto;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 0;
+    }
     ExportScreen {
         align: center middle;
     }
@@ -305,7 +317,22 @@ class UtrainApp(textual.app.App[None]):
         # bring it here -- where there is no terminal selection to copy, only
         # the one the app made, so it copies that.
         textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
+        # The workspaces, and the menus. No `alt` shortcuts: over ssh an
+        # `alt+x` arrives as `escape` then `x`, which is also "back" then a
+        # key, split by a timeout that network latency makes unreliable.
+        *(
+            textual.binding.Binding(ws.key, f"workspace_key('{ws.name}')", ws.title, show=False)
+            for ws in commands.WORKSPACES
+        ),
+        textual.binding.Binding("f10", "menu", "menu", show=False),
     ]
+
+    # The workspace the app opens on, before a saved session says otherwise.
+    DEFAULT_MODE = "runs"
+
+    # How often the top row's status is read: the marked-run count and the
+    # GPUs' utilisation. `nvidia-smi` forks, so not every second.
+    _STATUS_SECONDS = 3.0
 
     def __init__(self, source: data.Data | None = None) -> None:
         super().__init__()
@@ -317,10 +344,57 @@ class UtrainApp(textual.app.App[None]):
         # with the view, and the next `i` mounts the same screen again. See
         # `_Popover` for the `_closed` latch that makes that safe.
         self._panels: dict[str, textual.screen.Screen[None]] = {}
+        # One mode per workspace, each with its own screen stack: a dialog or
+        # a chat opened in one stays there while another is looked at.
+        self.workspaces: dict[str, collections.abc.Callable[[], textual.screen.Screen[None]]] = {
+            "runs": lambda: screens.MainScreen(self, self.data),
+            "system": lambda: screens.SystemScreen(self, self.data),
+        }
+        for name, factory in self.workspaces.items():
+            # Textual types a mode's factory as returning `Screen[Unknown]`.
+            self.add_mode(name, factory)  # pyright: ignore[reportUnknownMemberType]
+        # What the top row's right-hand side says; see `refresh_status`.
+        self.status_line = ""
 
-    def get_default_screen(self) -> textual.screen.Screen[None]:
-        """Runs is the whole app; everything else is a panel over it."""
-        return screens.MainScreen(self, self.data)
+    def on_mount(self) -> None:
+        self.set_interval(self._STATUS_SECONDS, self.refresh_status)
+        self.refresh_status()
+
+    @textual.work(thread=True, exclusive=True, group="status")
+    def refresh_status(self) -> None:
+        try:
+            line = self.data.status_line()
+        except exceptions.UI:
+            return
+        self.call_from_thread(self.show_status, line)
+
+    def show_status(self, line: str) -> None:
+        self.status_line = line
+        for bar in self.screen.query(menus.TopBar):
+            bar.show_status(line)
+
+    def action_workspace(self, name: str) -> None:
+        """Go to a workspace. From a menu's "Go to" item, or its function key."""
+        menus.close_menus(self)
+        if name in self.workspaces and name != self.current_mode:
+            self.switch_mode(name)
+
+    def action_workspace_key(self, name: str) -> None:
+        """`F1`-`F4`: go to that workspace; in it already, drop its menu.
+
+        So `F2 F2` reads "go to Sweeps and show me what I can do there".
+        """
+        if name == self.current_mode and not isinstance(self.screen, menus.MenuScreen):
+            menus.open_menu(self, name)
+            return
+        self.action_workspace(name)
+
+    def action_menu(self) -> None:
+        """`F10`: the menu of the workspace in front of the viewer."""
+        menus.open_menu(self, self.current_mode)
+
+    def on_top_bar_menu_requested(self, event: menus.TopBar.MenuRequested) -> None:
+        menus.open_menu(self, event.workspace)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """`q` is off while a config field's editor or a confirm prompt is open.
@@ -328,7 +402,16 @@ class UtrainApp(textual.app.App[None]):
         An `Input` swallows the key, but the option list a `Select` drops does
         not, so without this a `q` aimed at an enum would quit the app instead
         of picking an option. The screen switches off its own keys the same way.
+
+        The function keys are off under a dialog, which has to be answered
+        before the viewer goes anywhere, but not under a menu, which they
+        close on the way.
         """
+        if action in ("workspace_key", "menu"):
+            screen = self.screen
+            return not isinstance(screen, textual.screen.ModalScreen) or isinstance(
+                screen, menus.MenuScreen
+            )
         if action != "quit":
             return True
         # App bindings are global, so `q` at a dialog would quit instead of

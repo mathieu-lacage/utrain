@@ -424,6 +424,53 @@ def compute_rows(info: compute.ComputeInfo) -> list[list[str]]:
     return rows
 
 
+# The System workspace's compute table: `compute list`'s columns, then what is
+# on each device now and how many sweep runs wait for it.
+SYSTEM_COMPUTE_COLUMNS = (*COMPUTE_COLUMNS, "RUNNING", "QUEUED")
+
+
+def system_compute_rows(info: compute.ComputeInfo, runs: list[types.RunRow]) -> list[list[Cell]]:
+    """`compute_rows`, with the run on each device and its queue beside it."""
+    running: dict[str, list[str]] = {}
+    queued: dict[str, int] = {}
+    for run in runs:
+        if run.status == "running":
+            running.setdefault(run.compute, []).append(run.name)
+        elif run.status == "queued":
+            queued[run.compute] = queued.get(run.compute, 0) + 1
+    rows: list[list[Cell]] = []
+    for row in compute_rows(info):
+        device = row[0]
+        names = running.get(device, [])
+        rows.append(
+            [
+                *row,
+                ", ".join(names) if names else "--",
+                str(queued[device]) if device in queued else "--",
+            ]
+        )
+    return rows
+
+
+def store_line(summary: types.StoreSummary) -> str:
+    """The data store in one line: its size, and what a cleanup would reclaim."""
+    line = f"{summary.files} file(s), {human_size(summary.bytes)}"
+    if summary.orphaned:
+        line += (
+            f"; {summary.orphaned} orphaned ({human_size(summary.orphaned_bytes)}), reclaimed by G"
+        )
+    return line
+
+
+def human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
 # -- the content column's tabs --------------------------------------------
 
 # The tabs, in order, as (key, name, pane id). The key is the number that
@@ -460,9 +507,9 @@ def content_tabs(active: str) -> rich.text.Text:
 
 # -- the help screen ------------------------------------------------------
 
-# Wide enough for the longest key spelling in `screens._HELP`, so the
+# Wide enough for the longest key spelling in `screens.help_sections`, so the
 # descriptions line up in one column.
-_HELP_KEY_WIDTH = 16
+_HELP_KEY_WIDTH = 18
 
 
 def help_heading(heading: str) -> rich.text.Text:
