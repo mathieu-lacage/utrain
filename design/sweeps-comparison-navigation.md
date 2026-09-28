@@ -40,7 +40,8 @@ VisiData-style sheets.
   found without a second bar. Add a **`:` goto line** that accepts the
   CLI's own addresses. All of these are driven by a single
   **command registry**. A global **run tray** holds the set being compared.
-  Today's `MainScreen` becomes the `Runs` workspace almost as-is.
+  The `Runs` workspace keeps today's list-and-plots idea, reorganised as a
+  sweep ▸ run ▸ phase tree beside fixed plot and log panes.
 
 ---
 
@@ -660,6 +661,13 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   item, and `escape` or `F10` closes it. Each menu's first item is "Go to
   …" with the workspace's F-key, and every item shows its shortcut, which
   is how the keys are learned.
+* **Menus can have submenus** (`Run ▸`, `Plot ▸`), opened with `→` or
+  `enter` and closed with `←` or `escape`, so a menu stays short enough to
+  fit the screen. Textual has no menu widget, so the bar, menus and
+  submenus are built here: each menu is a modal screen holding an
+  `OptionList`, positioned under its title, and a submenu is a second one
+  pushed beside its item. The existing `^p` palette stays as a fuzzy
+  search over every command, however deep it sits in a menu.
 * **A menu drops down over the workspace**, under its title, like any DOS
   menu. The workspace does not move or resize, keeps refreshing underneath,
   and is not dimmed, so the live state you may be acting on stays visible
@@ -670,9 +678,8 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   workspace, and only the "Go to" items do. So a run's commands are
   reachable from every workspace, not only from Runs.
 * **Workspaces:**
-  * **Runs:** today's `MainScreen`, plus sweep grouping rows in the list
-    (the §4.A tree, which costs little here). Unchanged for single-run
-    work.
+  * **Runs:** a sweep ▸ run ▸ phase tree on the left, and fixed plot and
+    log panes for the selected phase on the right.
   * **Sweeps:** a list of sweeps, and for the selected one the status and
     heatmap matrix, the queue, and the spec. Creation opens a form derived
     from the config schema: each field gets a "sweep this" toggle, and a
@@ -716,76 +723,102 @@ current screen already uses:
 
 #### Runs
 
-Today's screen with three additions: sweep rows, a `POINT` column,
-and marks.
+Today's screen has a list that switches between runs and a run's phases
+when you drill in, and a content pane whose view (Config, Plots or Logs)
+you pick and which is remembered per phase. That makes it the odd one out:
+every other workspace shows a list on the left and fixed panes for the
+selection on the right. Runs follows the same shape:
 
 ```
- [Runs]  Sweeps  Compare  System                           2 marked    gpu0 97%  gpu1 12%
-                                            2 Config   [3 Plots]   4 Logs
-╭─ 1 runs ───────────────────────────────╮╭─ lr-depth-04 · pretrain · lr=3e-4 L4 · attempt 1 ─────╮
-│    NAME          POINT      STATUS     ││ val/loss vs step · latest 1.29                        │
+ [Runs]  Sweeps  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ 1 runs ───────────────────────────────╮╭─ 2 plots · lr-depth-04/pretrain · lr=3e-4 L4 ─────────╮
+│  NAME            POINT      STATUS     ││ val/loss vs step · latest 1.29                        │
 │  ▾ lr-depth      ▰▰▰▰▱▱▱▱   4/12       ││ 3.2┤⠑⢄                                                │
-│ ◆├ lr-depth-01   lr=1e-4 L4 done       ││    │  ⠈⠢⡀                                             │
-│  ├ lr-depth-02   lr=1e-4 L6 done       ││    │     ⠈⠑⠢⢄⡀                                        │
-│  ├ lr-depth-03   lr=1e-4 L8 running    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
-│▶◆├ lr-depth-04   lr=3e-4 L4 done       ││    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀           │
-│  ├ lr-depth-05   lr=3e-4 L6 running    ││ 1.2┤                                                  │
-│  ├ lr-depth-07   lr=1e-3 L4 failed     ││    └────────────────────────────────────── step 5000  │
-│  └ 6 queued                            ││                                                       │
-│  ▸ warmup        ▰▰▰▰▰▰▰▰   8/8        ││ train/loss vs step · latest 1.11                      │
-│    baseline-0921            done       ││ 3.0┤⠑⠢⣀                                               │
-│    live                     running    ││    │   ⠈⠉⠒⠤⢄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀               │
-│    draft                    configuring││ 1.0┤                                                  │
-│                                        ││                                                       │
+│ ◆  ▸ lr-depth-01 lr=1e-4 L4 done       ││    │  ⠈⠢⡀                                             │
+│    ▸ lr-depth-02 lr=1e-4 L6 done       ││    │     ⠈⠑⠢⢄⡀                                        │
+│    ▸ lr-depth-03 lr=1e-4 L8 running    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
+│ ◆  ▾ lr-depth-04 lr=3e-4 L4 done       ││    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀             │
+│        tokenizer            done       ││ 1.2┤                                                  │
+│▶       pretrain             done       ││    └──────────────────────────────────── step 5000    │
+│    ▸ lr-depth-05 lr=3e-4 L6 running    ││ train/loss · latest 1.11   (m: pick metrics)          │
+│    ▸ lr-depth-07 lr=1e-3 L4 failed     │╰───────────────────────────────────────────────────────╯
+│      6 queued                          │╭─ 3 log · lr-depth-04/pretrain ────────────────────────╮
+│  ▸ warmup        ▰▰▰▰▰▰▰▰   8/8        ││ step 4800  loss 1.118  val 1.294  lr 3.0e-4           │
+│  ▸ baseline-0921            done       ││ step 4900  loss 1.113  val 1.291  lr 3.0e-4           │
+│  ▸ live                     running    ││ step 5000  loss 1.109  val 1.290  lr 3.0e-4           │
+│  ▸ draft                    configuring││ saved checkpoint data/pretrain/ckpt.pt                │
 ╰────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
- lr-depth 4/12 · 1 failed          enter phases  space mark  e edit  : goto  ? help  F10 menu
+                    tab pane  enter expand  space mark  e config  z zoom  : goto  ? help  F10 menu
 ```
 
-* **A sweep is a collapsible row** (`▾`/`▸`) with a progress bar and a
-  done count, and its runs are indented under it. A finished sweep can be
-  collapsed out of the way. Runs outside any sweep are listed below, as
-  today. With the cursor on a sweep row, the content pane shows that
-  sweep's status grid, the same one as in Sweeps.
-* **`POINT`** shows each sweep run's parameter values, using a short label
-  per axis (`L` for `n_layer`). Outside a sweep the column is empty. The
-  sidebar keeps its 42-cell width.
-* **`◆` marks a run for comparison** (`space`); here the top row counts
-  two. `▶` is the cursor, as the highlighted row is today.
-* **Everything else is unchanged:** `enter` drills into the run's phases,
-  `2`/`3`/`4` pick Config, Plots or Logs, and moving the cursor updates the
-  content pane.
+* **The list is a tree:** sweep ▸ run ▸ phase. `enter` (or `→`/`←`)
+  expands and collapses a row in place, instead of the list switching to
+  one run's phases. Runs outside any sweep sit at the top level.
+* **The right side is always plots above the log**, for the selected
+  phase. On a run row it shows the phase the run is on now, as today; on a
+  sweep row, the sweep's status grid. There is no view to pick and no
+  per-phase view state.
+* **`z` zooms the focused pane** (plots or log) to the whole right side,
+  and `z` again restores it, like tmux's zoom. That covers reading a long
+  log or a detailed plot.
+* **Moving the cursor still updates everything**, so stepping down a
+  sweep's runs is still a flip-book of their curves.
+* **`POINT`** shows each sweep run's parameter values with a short label
+  per axis (`L` for `n_layer`); the sidebar keeps its 42-cell width.
+  **`◆`** marks a run for comparison (`space`), and `▶` is the cursor.
 
-The Runs menu (`F1` again, or `F10`):
+Config is only edited before a run starts, so it does not need a
+permanent place. `e` opens it as an editor over the right side, and a run
+that is still configuring shows its config there instead of the plots it
+does not have yet:
 
 ```
- [Runs]  Sweeps  Compare  System                           2 marked    gpu0 97%  gpu1 12%
-  ┌────────────────────────────┐            2 Config   [3 Plots]   4 Logs
-╭─│ Go to Runs              F1 │─────────╮╭─ lr-depth-04 · pretrain · lr=3e-4 L4 · attempt 1 ─────╮
-│ │ ────────────────────────── │ATUS     ││ val/loss vs step · latest 1.29                        │
-│ │ New run…                 n │12       ││ 3.2┤⠑⢄                                                │
-│ │ Edit config              e │ne       ││    │  ⠈⠢⡀                                             │
-│ │ Start                    s │ne       ││    │     ⠈⠑⠢⢄⡀                                        │
-│ │ Stop                     S │nning    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
-│▶│ Restart…                 R │ne       ││    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀           │
-│ │ Delete…                  d │nning    ││ 1.2┤                                                  │
-│ │ ────────────────────────── │iled     ││    └────────────────────────────────────── step 5000  │
-│ │ Mark for compare     space │         ││                                                       │
-│ │ Chat with model          t │8        ││ train/loss vs step · latest 1.11                      │
-│ │ New sweep from run…      N │ne       ││ 3.0┤⠑⠢⣀                                               │
-│ │ Show in Sweeps             │nning    ││    │   ⠈⠉⠒⠤⢄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀               │
-│ │ ────────────────────────── │nfiguring││ 1.0┤                                                  │
-│ │ Pick metrics…            m │         ││                                                       │
-╰─└────────────────────────────┘─────────╯╰───────────────────────────────────────────────────────╯
- lr-depth 4/12 · 1 failed          enter phases  space mark  e edit  : goto  ? help  F10 menu
+ [Runs]  Sweeps  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ 1 runs ───────────────────────────────╮╭─ 2 config · draft ────────────────────────────────────╮
+│  NAME            POINT      STATUS     ││ draft · utrain-fake on cpu · configuring              │
+│  ▾ lr-depth      ▰▰▰▰▱▱▱▱   4/12       ││                                                       │
+│ ◆  ▸ lr-depth-01 lr=1e-4 L4 done       ││ globals: Model                                        │
+│    ▸ lr-depth-02 lr=1e-4 L6 done       ││   Layers                 4                            │
+│    ▸ lr-depth-03 lr=1e-4 L8 running    ││   Precision              fp32                         │
+│ ◆  ▾ lr-depth-04 lr=3e-4 L4 done       ││                                                       │
+│        tokenizer            done       ││ phase: pretrain                                       │
+│        pretrain             done       ││   Learning rate          0.001                        │
+│    ▸ lr-depth-05 lr=3e-4 L6 running    ││   Resume                 false                        │
+│    ▸ lr-depth-07 lr=1e-3 L4 failed     ││                                                       │
+│      6 queued                          ││ e edit · s start · N new sweep from this run          │
+│  ▸ warmup        ▰▰▰▰▰▰▰▰   8/8        ││                                                       │
+│  ▸ baseline-0921            done       ││                                                       │
+│  ▸ live                     running    ││                                                       │
+│▶ ▸ draft                    configuring││                                                       │
+╰────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
+                            tab pane  e edit config  s start  space mark  : goto  ? help  F10 menu
 ```
 
-* It holds the run lifecycle (`n e s S R d`), then what else can be done
-  with the selected run, then the plot's metric picker. Items that don't
-  apply are greyed rather than hidden: on this finished run, `Start` and
-  `Stop` are grey.
-* `Show in Sweeps` jumps to the run's cell in its sweep's status grid.
-  The plot's display keys (`x`, `l`, `b`, `E`) stay in the plot pane's
-  footer rather than in the menu, which is capped to fit the screen.
+The Runs menu (`F1` again, or `F10`), with its `Plot` submenu open. The
+run lifecycle (`e s S R d t`) is under `Run ▸`, and the plot settings
+that used to crowd the footer are under `Plot ▸`:
+
+```
+ [Runs]  Sweeps  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─┌──────────────────────────┐───────────╮╭─ 2 plots · lr-depth-04/pretrain · lr=3e-4 L4 ─────────╮
+│ │ Go to Runs            F1 │STATUS     ││ val/loss vs step · latest 1.29                        │
+│ │ ──────────────────────── │4/12       ││ 3.2┤⠑⢄                                                │
+│ │ New run…               n │done       ││    │  ⠈⠢⡀                                             │
+│ │ New sweep from run…    N │done       ││    │     ⠈⠑⠢⢄⡀                                        │
+│ │ ──────────────────────── │running    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
+│ │ Run                    ▸ │┌──────────────────────┐           ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀             │
+│ │▶Plot                   ▸ ││ Metrics…           m │                                            │
+│▶│ ──────────────────────── ││ Cycle x axis       x │────────────────────────────── step 5000    │
+│ │ Mark for compare   space ││ Log y axis         l │ · latest 1.11   (m: pick metrics)          │
+│ │ Show in Sweeps           ││ Braille / blocks   b │────────────────────────────────────────────╯
+│ │ Expand / collapse  enter ││ Export plot…       E │r-depth-04/pretrain ────────────────────────╮
+│ │ Zoom pane              z │└──────────────────────┘ loss 1.118  val 1.294  lr 3.0e-4           │
+│ └──────────────────────────┘done       ││ step 4900  loss 1.113  val 1.291  lr 3.0e-4           │
+│  ▸ live                     running    ││ step 5000  loss 1.109  val 1.290  lr 3.0e-4           │
+│  ▸ draft                    configuring││ saved checkpoint data/pretrain/ckpt.pt                │
+╰────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
+                    tab pane  enter expand  space mark  e config  z zoom  : goto  ? help  F10 menu
+```
 
 #### Sweeps
 
@@ -826,8 +859,20 @@ The Runs menu (`F1` again, or `F10`):
 * **Spec:** image, base run, axes, pool, and an estimate of the time left
   from the durations of finished points.
 * `enter` on a cell opens that run in Runs, `space` marks it, and `C`
-  opens the sweep in Compare. Creating a sweep (`N`) opens the form over
-  this screen.
+  opens the sweep in Compare.
+* **Creating a sweep** needs an image first, because the form is built
+  from the image's config schema. There are two ways in:
+  * **Runs ▸ New sweep from run… (`N`)** takes the image and the starting
+    config from the selected run and goes straight to the form. This is
+    the common case: sweeping around a run you already like.
+  * **Sweeps ▸ New sweep… (`N`)** first asks, in a dialog shaped like
+    today's new-run dialog, for a name, the image, the base config (the
+    image's defaults or one of its runs), the compute pool and how many
+    runs at once.
+
+  Both then open the same form: the config fields, each with a "sweep
+  this" toggle that turns its value into a list or range, and a live grid
+  size (`4 × 3 = 12 runs`).
 
 The Sweeps menu is the one shown open at the top of this section.
 
@@ -977,10 +1022,10 @@ How the reference tasks play out:
 
 | Task | Today | Proposed |
 |---|---|---|
-| T1 live run loss | select, `enter`, `3` | same, in `F1` |
+| T1 live run loss | select, `enter`, `3` | `F1`, select the run: its plots and log are already there |
 | T2 launch sweep | *not possible* | `F2`, `N`, then form (or Sweeps ▸ New sweep from run… from any workspace) |
 | T3 monitor sweep and GPUs | *not possible*, and GPUs are modal | `F2`: matrix, queue, GPU meters |
-| T4 best run, then its log | *not possible* | `F3`, sort the metric, `enter` (jumps to `F1` on that phase), `4` |
+| T4 best run, then its log | *not possible* | `F3`, sort the metric, `enter` (jumps to `F1` on that run's phase, log under the plots) |
 | T5 baseline vs best | *not possible* | `space` on the baseline in `F1`, `space` on the best in `F3`, `C` |
 | T6 retry failed | `R` on each failed run | `F2`, `R` (Sweeps ▸ Retry failed runs) |
 
@@ -1017,15 +1062,17 @@ Each step can be shipped on its own:
 2. **Sweep backend and CLI:** the tables, the `queued` status, the
    dispatcher, `utrain sweep …`, and `run_metric_summary`. Testable with
    cram against the fake containers, as run lifecycle is today.
-3. **Shell:** the top row (workspaces and their menus), via `App.MODES`. `Runs` holds
-   `MainScreen`, and `System` holds compute and images.
-4. **Sweeps workspace:** the list, matrix, queue and create form. Sweep
-   grouping rows are added to the Runs list.
-5. **Tray and Compare workspace:** table and curves first, then heatmap,
+3. **Shell:** the top row, with its menus and submenus, and workspaces
+   via `App.MODES`. `Runs` starts as today's `MainScreen`, and `System`
+   holds compute and images.
+4. **Runs as a tree:** the sweep ▸ run ▸ phase tree, fixed plot and log
+   panes with `z` zoom, and config as an editor.
+5. **Sweeps workspace:** the list, matrix, queue and create form.
+6. **Tray and Compare workspace:** table and curves first, then heatmap,
    response and diff.
-6. **Goto line:** addresses, `@sweep`, and resource kinds, with
+7. **Goto line:** addresses, `@sweep`, and resource kinds, with
    completion.
-7. *(later)* Named comparisons, filter-defined sets, random and zip sweep
+8. *(later)* Named comparisons, filter-defined sets, random and zip sweep
    modes, and a saved tiling "board".
 
 ---
