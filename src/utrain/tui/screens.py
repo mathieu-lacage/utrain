@@ -42,11 +42,13 @@ import textual.screen
 import textual.timer
 import textual.widget
 import textual.widgets
+import textual.widgets.option_list
 
 from .. import chat as chatmod
-from .. import exceptions, metrics, reconcile, serve, types
+from .. import exceptions, metrics, reconcile, serve, tuistate, types
 from .. import sweeps as sweepsmod
 from . import commands, data, export, menus, render, widgets
+from . import compare as comparemod
 
 # The screen's actions that a single key reaches, and which are therefore
 # switched off while an editor has the focus (`q` is the app's, and
@@ -209,6 +211,9 @@ class Host(typing.Protocol):
     def show_sweep(self, sweep_id: str) -> None:
         """Go to Sweeps, with the cursor on this sweep."""
 
+    def compare_sweep(self, sweep_id: str) -> None:
+        """Go to Compare, comparing this sweep's runs."""
+
 
 class _Screen(textual.screen.Screen[None]):
     """Shared chrome: a header, a footer, an error line and a refresh timer."""
@@ -232,6 +237,10 @@ class _Screen(textual.screen.Screen[None]):
         # has nothing to poll -- `ChatScreen`, whose transcript changes when
         # somebody says something and not on a clock.
         self.timer: textual.timer.Timer | None = None
+
+    # How often the screen fetches. A class attribute so that a screen whose
+    # fetch is heavier -- Compare reads every run in its set -- can ask less.
+    REFRESH_SECONDS = _REFRESH_SECONDS
 
     # The workspace this screen belongs to, which is the title the top row
     # picks out. A screen pushed within a workspace -- a chat -- keeps its
@@ -261,7 +270,7 @@ class _Screen(textual.screen.Screen[None]):
     def on_mount(self) -> None:
         # The timer is in place before the first fetch, because `refresh_data`
         # restarts it.
-        self.timer = self.set_interval(_REFRESH_SECONDS, self.refresh_data)
+        self.timer = self.set_interval(self.REFRESH_SECONDS, self.refresh_data)
         self.refresh_data()
 
     def action_back(self) -> None:
@@ -1717,6 +1726,16 @@ class MainScreen(_Screen):
         if sweep_id is not None:
             self.host.show_sweep(sweep_id)
 
+    def restore(self, cursor_key: str | None, expanded: list[str]) -> None:
+        """Back to where the viewer was last session: the rows open, the cursor."""
+        self.expanded |= set(expanded)
+        if cursor_key is not None:
+            self.cursor_key = cursor_key
+        # Not mounted yet, the first fetch lays the tree out from these.
+        if self.nodes:
+            self.draw_tree()
+            self.refresh_data()
+
     def reveal_run(self, run_id: str) -> None:
         """Put the cursor on a run, opening its sweep if it has one."""
         self.select_when_listed(run_id)
@@ -3133,6 +3152,7 @@ class SweepsScreen(_Screen):
         textual.binding.Binding("R", "retry_sweep", "retry"),
         textual.binding.Binding("S", "cancel_sweep", "cancel", show=False),
         textual.binding.Binding("d", "delete_sweep", "delete", show=False),
+        textual.binding.Binding("C", "compare_sweep", "compare"),
     ]
 
     DEFAULT_CSS = """
@@ -3178,6 +3198,8 @@ class SweepsScreen(_Screen):
         # another workspace sent the viewer to. `apply` moves the cursor to it.
         self.wanted: str | None = None
         self.matrix: render.SweepMatrix | None = None
+        self.values: dict[str, str] = {}
+        self.value_label = ""
         # The grid's columns as last drawn: a different sweep has a different
         # shape, and a table's columns are rebuilt rather than updated.
         self._matrix_columns: list[str] = []
@@ -3208,7 +3230,7 @@ class SweepsScreen(_Screen):
     @textual.work(thread=True, exclusive=True, group="sweeps")
     def fetch(self) -> None:
         try:
-            snapshot = self.data.sweeps_snapshot()
+            snapshot = self.data.sweeps_snapshot(self.wanted or self.selected_sweep)
         except exceptions.UI as e:
             self.host.from_thread(self.show_error, str(e))
             return
@@ -3219,6 +3241,9 @@ class SweepsScreen(_Screen):
         self.sweeps = snapshot.sweeps
         self.runs = snapshot.runs
         self.marked = set(snapshot.marked)
+        # Scored for the sweep that was selected when the fetch started.
+        self.values = snapshot.values
+        self.value_label = snapshot.value_label
         table = self.table("#sweeps")
         _fill(table, [render.sweep_cells(s) for s in self.sweeps])
         ids = [s.id for s in self.sweeps]
@@ -3233,6 +3258,11 @@ class SweepsScreen(_Screen):
             index = ids.index(self.selected_sweep)
             if table.cursor_row != index:
                 table.move_cursor(row=index)
+        if snapshot.scored != self.selected_sweep:
+            # Scored for another sweep, or for none: not this one's scores.
+            self.values = {}
+            self.value_label = ""
+            self.refresh_data()
         self.apply_selected()
         self.refresh_bindings()
 
@@ -3259,7 +3289,7 @@ class SweepsScreen(_Screen):
         members = self.members(sweep)
         self.matrix = render.sweep_matrix(sweep, members)
         columns, rows = (
-            render.matrix_table(self.matrix, {}, self.marked)
+            render.matrix_table(self.matrix, self.values, self.marked)
             if self.matrix is not None
             else ([], [])
         )
@@ -3272,7 +3302,10 @@ class SweepsScreen(_Screen):
                 # The first column is the row labels; the cursor starts on a run.
                 grid.cursor_coordinate = textual.coordinate.Coordinate(0, 1)
         _fill(grid, rows)
-        grid.border_title = f"2 {sweep.name} · {sweep.status} · {render.sweep_progress(sweep)}"
+        title = f"2 {sweep.name} · {sweep.status} · {render.sweep_progress(sweep)}"
+        if self.value_label:
+            title += f" · cell: {self.value_label}"
+        grid.border_title = title
         grid.border_subtitle = render.sweep_legend()
         queue.update(render.sweep_queue(sweep, members, self.runs))
         base = next((r.name for r in self.runs if r.id == sweep.base), None)
@@ -3292,8 +3325,12 @@ class SweepsScreen(_Screen):
         sweep_id = self.sweeps[table.cursor_row].id
         if sweep_id != self.selected_sweep:
             self.selected_sweep = sweep_id
+            # The scores are the previous sweep's until the fetch brings these.
+            self.values = {}
+            self.value_label = ""
             self.apply_selected()
             self.refresh_bindings()
+            self.refresh_data()
 
     @textual.on(textual.widgets.DataTable.RowSelected, "#sweeps")
     def _sweep_selected(self) -> None:
@@ -3340,6 +3377,8 @@ class SweepsScreen(_Screen):
         sweep = self.selected()
         if action == "new_sweep":
             return True
+        if action == "compare_sweep":
+            return True if sweep is not None else None
         if action in ("open_run", "toggle_mark"):
             return True if self.cell_runs() else None
         if action == "start_sweep":
@@ -3398,6 +3437,12 @@ class SweepsScreen(_Screen):
 
     def action_new_sweep(self) -> None:
         self.host.new_sweep(None)
+
+    def action_compare_sweep(self) -> None:
+        """`C`: this sweep's runs, in Compare."""
+        sweep = self.selected()
+        if sweep is not None:
+            self.host.compare_sweep(sweep.id)
 
     def action_start_sweep(self) -> None:
         sweep = self.selected()
@@ -3921,3 +3966,738 @@ class ExtendSweepScreen(textual.screen.ModalScreen[dict[str, object] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+# -- comparing --------------------------------------------------------------
+
+
+class PickScreen(textual.screen.ModalScreen[str | None]):
+    """One choice from a short list: a phase, a metric, a sweep, a name.
+
+    Opens on the current choice, and comes back with the picked option's
+    value, or None on escape.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    PickScreen {
+        align: center middle;
+    }
+    #pick {
+        width: auto;
+        min-width: 30;
+        max-width: 80;
+        height: auto;
+        max-height: 80%;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    """
+
+    def __init__(self, title: str, options: list[tuple[str, str]], current: str | None) -> None:
+        super().__init__()
+        self.title_text = title
+        self.options = options
+        self.current = current
+
+    def compose(self) -> textual.app.ComposeResult:
+        box = textual.containers.Vertical(id="pick")
+        box.border_title = self.title_text
+        with box:
+            yield textual.widgets.OptionList(
+                *(
+                    textual.widgets.option_list.Option(label, id=value)
+                    for label, value in self.options
+                ),
+                id="pick-options",
+            )
+
+    def on_mount(self) -> None:
+        options = self.query_one("#pick-options", textual.widgets.OptionList)
+        values = [value for _, value in self.options]
+        if self.current in values:
+            options.highlighted = values.index(self.current)
+        options.focus()
+
+    def on_option_list_option_selected(
+        self, event: textual.widgets.OptionList.OptionSelected
+    ) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class NameScreen(textual.screen.ModalScreen[str | None]):
+    """A name for something: a saved comparison. The add-image dialog's shape."""
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    NameScreen {
+        align: center middle;
+    }
+    #name-box {
+        width: 52;
+        height: auto;
+        padding: 0 1;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    #name-error {
+        color: $error;
+        height: auto;
+    }
+    """
+
+    def __init__(self, title: str, value: str = "") -> None:
+        super().__init__()
+        self.title_text = title
+        self.value = value
+
+    def compose(self) -> textual.app.ComposeResult:
+        box = textual.containers.Vertical(id="name-box")
+        box.border_title = self.title_text
+        with box:
+            with textual.containers.Horizontal(classes="new-run-row"):
+                yield textual.widgets.Label("name")
+                yield textual.widgets.Input(self.value, id="name-field", compact=True)
+            yield textual.widgets.Static("", id="name-error")
+
+    def on_mount(self) -> None:
+        self.query_one("#name-field", textual.widgets.Input).focus()
+
+    @textual.on(textual.widgets.Input.Submitted, "#name-field")
+    def _submitted(self) -> None:
+        name = self.query_one("#name-field", textual.widgets.Input).value.strip()
+        if not name:
+            self.query_one("#name-error", textual.widgets.Static).update("it needs a name")
+            return
+        self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class CompareScreen(_Screen):
+    """The Compare workspace: a set of runs, through one lens at a time.
+
+    The set is the marked runs, a sweep's, or one saved under a name; the
+    title says which, and through what phase, metric and reduction. `[` and
+    `]` step through the lenses -- the curves over the table, the response of
+    the metric to an axis, the sweep's grid as a heatmap, and the config
+    fields that differ -- and `<` `>` sort the table. The table's cursor is
+    the run the curves highlight, `enter` opens it in Runs and `space` marks
+    it.
+
+    What is on screen is kept: the comparison is saved as it changes, and is
+    the one the app opens on next time.
+    """
+
+    WORKSPACE = "compare"
+
+    # Every run's config and phase list, and its curve's new points: heavier
+    # than the other workspaces' fetches, and a comparison is read rather
+    # than watched tick by tick.
+    REFRESH_SECONDS = 3.0
+
+    BINDINGS = [
+        textual.binding.Binding(
+            "left_square_bracket", "prev_lens", "lens", key_display="[", show=False
+        ),
+        textual.binding.Binding("right_square_bracket", "next_lens", "lens", key_display="]"),
+        textual.binding.Binding("less_than_sign", "prev_sort", "sort", key_display="<", show=False),
+        textual.binding.Binding("greater_than_sign", "next_sort", "sort", key_display=">"),
+        textual.binding.Binding("space", "toggle_mark", "mark"),
+        textual.binding.Binding("m", "pick_metric", "metric"),
+    ]
+
+    DEFAULT_CSS = """
+    CompareScreen #lenses {
+        height: 1;
+        padding: 0 1;
+    }
+    CompareScreen #compare-view {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+    }
+    CompareScreen #compare-legend {
+        height: auto;
+        padding: 0 1;
+    }
+    CompareScreen #compare-grid {
+        padding: 0 1;
+    }
+    CompareScreen #compare-table {
+        height: auto;
+        max-height: 40%;
+        border: round $panel;
+        border-title-align: left;
+    }
+    CompareScreen #compare-diff {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+    }
+    CompareScreen DataTable:focus {
+        border: round $accent;
+    }
+    CompareScreen #compare-empty {
+        padding: 1 2;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, host: Host, source: data.Data) -> None:
+        super().__init__(host, source)
+        # None until the saved one is read, which the first fetch does.
+        self.state: comparemod.State | None = None
+        self.snapshot: data.CompareSnapshot | None = None
+        # Bumped by every change the viewer makes, so that a fetch started
+        # before one does not put the old state back when it lands.
+        self._generation = 0
+        self.table_runs: list[str] = []
+        self.cursor_run: str | None = None
+        self._table_columns: list[str] = []
+        self._diff_columns: list[str] = []
+
+    def compose_body(self) -> textual.app.ComposeResult:
+        yield textual.widgets.Static("", id="lenses")
+        view = textual.containers.Vertical(id="compare-view")
+        view.border_title = "compare"
+        with view:
+            yield widgets.ComparePlot(id="compare-plot")
+            yield textual.widgets.Static("", id="compare-legend")
+            with textual.containers.VerticalScroll(id="compare-heatmap"):
+                yield textual.widgets.Static("", id="compare-grid")
+            yield textual.widgets.Static("", id="compare-empty")
+        runs = textual.widgets.DataTable[render.Cell](id="compare-table")
+        runs.cursor_type = "row"
+        runs.border_title = "runs"
+        yield runs
+        diff = textual.widgets.DataTable[render.Cell](id="compare-diff")
+        diff.cursor_type = "row"
+        diff.border_title = "config fields that differ"
+        yield diff
+
+    def on_mount(self) -> None:
+        self.query_one("#compare-plot", widgets.ComparePlot).charset = self.host.charset()
+        super().on_mount()
+        self.table("#compare-table").focus()
+
+    def refresh_data(self) -> None:
+        self.fetch(self.state, self._generation)
+
+    @textual.work(thread=True, exclusive=True, group="compare")
+    def fetch(self, state: comparemod.State | None, generation: int) -> None:
+        try:
+            if state is None:
+                state = comparemod.State.from_json(self.data.get_state(tuistate.COMPARE))
+            snapshot = self.data.compare(state)
+        except exceptions.UI as e:
+            self.host.from_thread(self.show_error, str(e))
+            return
+        self.host.from_thread(self.apply, snapshot, generation)
+
+    def apply(self, snapshot: data.CompareSnapshot, generation: int) -> None:
+        self.clear_error()
+        self.snapshot = snapshot
+        if generation == self._generation:
+            self.state = snapshot.state
+        elif self.state is not None and self.state.phase != snapshot.state.phase:
+            # The viewer changed what the fetch reads while it was reading;
+            # what landed is about the old phase, so the next one is fetched.
+            self.refresh_data()
+        self.draw()
+        self.refresh_bindings()
+
+    def change(self, **changes: typing.Any) -> None:
+        """Change the comparison: redraw now, keep it, and fetch what it needs."""
+        state = self.state if self.state is not None else comparemod.State()
+        self.state = dataclasses.replace(state, **changes)
+        self._generation += 1
+        self.draw()
+        self.keep(self.state)
+        self.refresh_data()
+        self.refresh_bindings()
+
+    @textual.work(thread=True, group="compare-keep")
+    def keep(self, state: comparemod.State) -> None:
+        try:
+            self.data.put_state(tuistate.COMPARE, state.to_json())
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+
+    # -- drawing --------------------------------------------------------
+
+    def reducer(self) -> str:
+        state = self.state or comparemod.State()
+        return state.reducer or comparemod.auto_reducer(state.metric)
+
+    def axes(self) -> list[str]:
+        snapshot = self.snapshot
+        if snapshot is None:
+            return []
+        return comparemod.axes_of(snapshot.sweep, [r.id for r in snapshot.runs], snapshot.configs)
+
+    def colour_axis(self) -> str | None:
+        axes = self.axes()
+        state = self.state or comparemod.State()
+        if state.colour in axes:
+            return state.colour
+        return axes[0] if axes else None
+
+    def reduced(self) -> dict[str, float]:
+        snapshot, state = self.snapshot, self.state
+        if snapshot is None or state is None or state.metric is None:
+            return {}
+        out: dict[str, float] = {}
+        for run_id, points in snapshot.points.items():
+            value = comparemod.reduce(points.get(state.metric, []), self.reducer())
+            if value is not None:
+                out[run_id] = value
+        return out
+
+    def set_label(self) -> str:
+        snapshot, state = self.snapshot, self.state or comparemod.State()
+        n = len(snapshot.runs) if snapshot is not None else 0
+        if state.name:
+            return f"{state.name} ({n})"
+        if state.source == "sweep" and snapshot is not None and snapshot.sweep is not None:
+            return f"sweep {snapshot.sweep.name} ({n})"
+        return f"marked runs ({n})"
+
+    def draw(self) -> None:
+        snapshot, state = self.snapshot, self.state
+        if snapshot is None or state is None:
+            return
+        view = self.query_one("#compare-view", textual.containers.Vertical)
+        plot = self.query_one("#compare-plot", widgets.ComparePlot)
+        legend = self.query_one("#compare-legend", textual.widgets.Static)
+        heatmap = self.query_one("#compare-heatmap", textual.containers.VerticalScroll)
+        empty = self.query_one("#compare-empty", textual.widgets.Static)
+        runs_table = self.table("#compare-table")
+        diff = self.table("#compare-diff")
+
+        reducer = self.reducer()
+        colour = self.colour_axis()
+        title = [f"compare · {self.set_label()}"]
+        if state.phase:
+            title.append(f"phase {state.phase}")
+        if state.metric:
+            title.append(f"{state.metric} ({reducer})")
+        if colour:
+            title.append(f"colour {comparemod.short(colour)}")
+        view.border_title = " · ".join(title)
+        self.draw_lenses()
+
+        lens = state.lens
+        nothing = not snapshot.runs
+        view.display = lens != "diff"
+        diff.display = lens == "diff" and not nothing
+        runs_table.display = lens != "diff" and not nothing
+        plot.display = lens in ("curves", "response") and not nothing
+        legend.display = plot.display
+        heatmap.display = lens == "heatmap" and not nothing
+        empty.display = nothing
+        if nothing:
+            view.display = True
+            empty.update(
+                "Nothing to compare yet. Mark runs with space in Runs or Sweeps, "
+                "or pick a sweep: Compare menu (F3 F3), Compare a sweep..."
+            )
+            return
+
+        reduced = self.reduced()
+        steps: dict[str, int] = {}
+        if state.metric is not None:
+            for run_id, points in snapshot.points.items():
+                series = points.get(state.metric)
+                if series:
+                    steps[run_id] = series[-1].step
+        axes = self.axes()
+        marked = set(snapshot.marked)
+        table = comparemod.table(
+            snapshot.runs,
+            axes,
+            snapshot.configs,
+            reduced,
+            steps,
+            snapshot.durations,
+            state.metric,
+            reducer,
+            state.sort,
+            marked,
+        )
+        self.fill_runs(table)
+        runs_table.border_title = "2 runs" + (
+            f" · sorted by {state.sort}" if state.sort in table.columns else ""
+        )
+        if lens == "curves":
+            self.draw_curves(colour)
+        elif lens == "response":
+            self.draw_response(axes, reduced, colour)
+        elif lens == "heatmap":
+            self.draw_heatmap(reduced, table.best)
+        else:
+            columns, rows = comparemod.diff_table(snapshot.runs, snapshot.configs)
+            if columns != self._diff_columns:
+                diff.clear(columns=True)
+                diff.add_columns(*columns)
+                self._diff_columns = columns
+            _fill(diff, rows)
+            if not rows:
+                diff.border_title = "config fields that differ: none"
+            else:
+                diff.border_title = f"config fields that differ ({len(rows)})"
+
+    def draw_lenses(self) -> None:
+        state = self.state or comparemod.State()
+        text = rich.text.Text()
+        for lens in comparemod.LENSES:
+            if lens == state.lens:
+                text.append(f"[{lens}]", style="bold reverse")
+            else:
+                text.append(f" {lens} ", style="dim")
+            text.append("  ")
+        best = self.best_text()
+        if best:
+            text.append("   ")
+            text.append(best)
+        self.query_one("#lenses", textual.widgets.Static).update(text)
+
+    def best_text(self) -> str:
+        snapshot = self.snapshot
+        reduced = self.reduced()
+        best = comparemod.best_of(reduced, self.reducer())
+        if snapshot is None or best is None:
+            return ""
+        name = next((r.name for r in snapshot.runs if r.id == best), best[:8])
+        return f"best {name} · {render.format_value(reduced[best])}"
+
+    def fill_runs(self, table: comparemod.Table) -> None:
+        grid = self.table("#compare-table")
+        if table.columns != self._table_columns:
+            grid.clear(columns=True)
+            grid.add_columns(*table.columns)
+            self._table_columns = table.columns
+        _fill(grid, table.rows)
+        self.table_runs = table.run_ids
+        # The cursor follows its run through a re-sort.
+        if self.cursor_run in table.run_ids:
+            row = table.run_ids.index(self.cursor_run)
+            if grid.cursor_row != row:
+                grid.move_cursor(row=row)
+        elif table.run_ids:
+            self.cursor_run = table.run_ids[min(max(grid.cursor_row, 0), len(table.run_ids) - 1)]
+
+    def draw_curves(self, colour: str | None) -> None:
+        snapshot, state = self.snapshot, self.state
+        assert snapshot is not None and state is not None
+        plot = self.query_one("#compare-plot", widgets.ComparePlot)
+        legend = self.query_one("#compare-legend", textual.widgets.Static)
+        by_run, key = comparemod.colours(snapshot.runs, colour, snapshot.configs)
+        series: list[tuple[list[float], list[float], str]] = []
+        on_top: tuple[list[float], list[float], str] | None = None
+        highlighted: str | None = None
+        for run in snapshot.runs:
+            if state.metric is None:
+                break
+            built = render.build_plot(state.metric, snapshot.points.get(run.id, {}), render.X_STEP)
+            if built is None or not built.xs:
+                continue
+            if run.id == self.cursor_run:
+                on_top = (built.xs, built.ys, comparemod.HIGHLIGHT)
+                highlighted = run.name
+            else:
+                series.append((built.xs, built.ys, by_run[run.id]))
+        if on_top is not None:
+            series.append(on_top)
+        plot.curves = widgets.Curves(
+            title=f"{state.metric} · {state.phase}", x_label="step", series=series
+        )
+        legend.update(comparemod.legend_text(key, highlighted))
+
+    def draw_response(self, axes: list[str], reduced: dict[str, float], colour: str | None) -> None:
+        snapshot, state = self.snapshot, self.state
+        assert snapshot is not None and state is not None
+        plot = self.query_one("#compare-plot", widgets.ComparePlot)
+        legend = self.query_one("#compare-legend", textual.widgets.Static)
+        x_axis, series = comparemod.response(snapshot.runs, axes, snapshot.configs, reduced, colour)
+        if x_axis is None:
+            plot.curves = None
+            legend.update(
+                rich.text.Text("the response needs an axis that is a number", style="dim")
+            )
+            return
+        xs = [x for s in series for x in s.xs]
+        plot.curves = widgets.Curves(
+            title=f"{state.metric} ({self.reducer()})",
+            x_label=comparemod.short(x_axis),
+            series=[(s.xs, s.ys, s.colour) for s in series],
+            x_log=comparemod.log_scale(xs),
+        )
+        legend.update(comparemod.legend_text([(s.label, s.colour) for s in series], None))
+
+    def draw_heatmap(self, reduced: dict[str, float], best: str | None) -> None:
+        snapshot = self.snapshot
+        assert snapshot is not None
+        grid = self.query_one("#compare-grid", textual.widgets.Static)
+        if snapshot.sweep is None:
+            grid.update(
+                rich.text.Text(
+                    "the heatmap is a sweep's grid: pick a sweep to compare", style="dim"
+                )
+            )
+            return
+        values = {
+            run_id: render.format_value(value) + (f" {comparemod.BEST}" if run_id == best else "")
+            for run_id, value in reduced.items()
+        }
+        grid.update(render.sweep_grid(snapshot.sweep, snapshot.runs, values))
+
+    @textual.on(textual.widgets.DataTable.RowHighlighted, "#compare-table")
+    def _row_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
+        table = self.table("#compare-table")
+        if _stale(event, table) or not 0 <= table.cursor_row < len(self.table_runs):
+            return
+        run_id = self.table_runs[table.cursor_row]
+        if run_id != self.cursor_run:
+            self.cursor_run = run_id
+            if self.state is not None and self.state.lens == "curves":
+                self.draw_curves(self.colour_axis())
+            self.refresh_bindings()
+
+    @textual.on(textual.widgets.DataTable.RowSelected, "#compare-table")
+    def _row_selected(self) -> None:
+        self.action_open_run()
+
+    # -- what can be done ----------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        snapshot = self.snapshot
+        has_runs = snapshot is not None and bool(snapshot.runs)
+        answers: dict[str, bool] = {
+            "open_run": self.cursor_run is not None and has_runs,
+            "toggle_mark": self.cursor_run is not None and has_runs,
+            "compare_tray": True,
+            "pick_sweep": snapshot is not None and bool(snapshot.sweeps),
+            "open_saved": snapshot is not None and bool(snapshot.saved),
+            "save_comparison": has_runs,
+            "clear_tray": snapshot is not None and bool(snapshot.marked),
+            "pick_phase": snapshot is not None and bool(snapshot.phases),
+            "pick_metric": snapshot is not None and bool(snapshot.metric_names),
+            "pick_reducer": has_runs,
+            "pick_colour": bool(self.axes()),
+            "next_lens": True,
+            "prev_lens": True,
+            "next_sort": has_runs,
+            "prev_sort": has_runs,
+        }
+        if action in answers:
+            return True if answers[action] else None
+        return super().check_action(action, parameters)
+
+    def action_open_run(self) -> None:
+        if self.cursor_run is not None:
+            self.host.show_run(self.cursor_run)
+
+    def action_toggle_mark(self) -> None:
+        if self.cursor_run is not None:
+            self.mark(self.cursor_run)
+
+    @textual.work(thread=True, group="mark")
+    def mark(self, run_id: str) -> None:
+        try:
+            self.data.toggle_mark(run_id)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.marked_changed)
+
+    def marked_changed(self) -> None:
+        self.refresh_data()
+        refresh = getattr(self.host, "refresh_status", None)
+        if callable(refresh):
+            refresh()
+
+    def action_compare_tray(self) -> None:
+        self.change(source="tray", sweep=None, runs=(), name=None, sort=None, colour=None)
+
+    def show_sweep(self, sweep_id: str) -> None:
+        """Compare a sweep's runs: from the Sweeps workspace, or the picker."""
+        self.change(source="sweep", sweep=sweep_id, runs=(), name=None, sort=None, colour=None)
+
+    def pick(
+        self,
+        title: str,
+        options: list[tuple[str, str]],
+        current: str | None,
+        then: collections.abc.Callable[[str], None],
+    ) -> None:
+        def answered(answer: str | None) -> None:
+            if answer is not None:
+                then(answer)
+
+        self.host.ask(PickScreen(title, options, current), answered)
+
+    def action_pick_sweep(self) -> None:
+        if self.snapshot is None:
+            return
+        self.pick(
+            "compare a sweep",
+            [
+                (f"{s.name}  ({s.counts.total} runs, {s.status})", s.id)
+                for s in self.snapshot.sweeps
+            ],
+            self.state.sweep if self.state else None,
+            self.show_sweep,
+        )
+
+    def action_pick_phase(self) -> None:
+        if self.snapshot is None:
+            return
+        self.pick(
+            "phase",
+            [(p, p) for p in self.snapshot.phases],
+            self.state.phase if self.state else None,
+            lambda phase: self.change(phase=phase, metric=None),
+        )
+
+    def action_pick_metric(self) -> None:
+        if self.snapshot is None:
+            return
+        self.pick(
+            "metric",
+            [(m, m) for m in self.snapshot.metric_names],
+            self.state.metric if self.state else None,
+            lambda metric: self.change(metric=metric),
+        )
+
+    def action_pick_reducer(self) -> None:
+        auto = comparemod.auto_reducer(self.state.metric if self.state else None)
+        options = [(f"automatic ({auto})", "")] + [
+            (f"{r}: {what}", r)
+            for r, what in (
+                ("min", "the lowest value"),
+                ("max", "the highest value"),
+                ("last", "where it ended"),
+            )
+        ]
+        self.pick(
+            "reduce each curve to",
+            options,
+            (self.state.reducer or "") if self.state else "",
+            lambda reducer: self.change(reducer=reducer or None),
+        )
+
+    def action_pick_colour(self) -> None:
+        self.pick(
+            "colour by",
+            [(path, path) for path in self.axes()],
+            self.colour_axis(),
+            lambda path: self.change(colour=path),
+        )
+
+    def step_lens(self, delta: int) -> None:
+        state = self.state or comparemod.State()
+        lenses = comparemod.LENSES
+        index = lenses.index(state.lens) if state.lens in lenses else 0
+        self.change(lens=lenses[(index + delta) % len(lenses)])
+
+    def action_next_lens(self) -> None:
+        self.step_lens(1)
+
+    def action_prev_lens(self) -> None:
+        self.step_lens(-1)
+
+    def step_sort(self, delta: int) -> None:
+        if not self._table_columns:
+            return
+        state = self.state or comparemod.State()
+        default = comparemod.metric_column(state.metric, self.reducer())
+        self.change(sort=comparemod.next_sort(self._table_columns, state.sort, delta, default))
+
+    def action_next_sort(self) -> None:
+        self.step_sort(1)
+
+    def action_prev_sort(self) -> None:
+        self.step_sort(-1)
+
+    def action_clear_tray(self) -> None:
+        self.clear_tray()
+
+    @textual.work(thread=True, group="mark")
+    def clear_tray(self) -> None:
+        try:
+            self.data.set_tray([])
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.held_message, "cleared the marks")
+        self.host.from_thread(self.marked_changed)
+
+    def action_save_comparison(self) -> None:
+        state, snapshot = self.state, self.snapshot
+        if state is None or snapshot is None:
+            return
+
+        def answered(name: str | None) -> None:
+            if not name:
+                return
+            saved = dataclasses.replace(state, name=name)
+            if saved.source == "tray":
+                # A tray changes; what was saved is these runs.
+                saved = dataclasses.replace(
+                    saved, source="runs", runs=tuple(r.id for r in snapshot.runs)
+                )
+            self.save(name, saved)
+
+        self.host.ask(NameScreen("save comparison as", state.name or ""), answered)
+
+    @textual.work(thread=True, group="compare-keep")
+    def save(self, name: str, state: comparemod.State) -> None:
+        try:
+            self.data.save_comparison(name, state.to_json())
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.saved, name, state)
+
+    def saved(self, name: str, state: comparemod.State) -> None:
+        self.held_message(f"saved as {name}")
+        self.change(**{f.name: getattr(state, f.name) for f in dataclasses.fields(state)})
+
+    def action_open_saved(self) -> None:
+        if self.snapshot is None:
+            return
+
+        def picked(name: str) -> None:
+            self.open_saved(name)
+
+        self.pick(
+            "open a saved comparison",
+            [(n, n) for n in self.snapshot.saved],
+            self.state.name if self.state else None,
+            picked,
+        )
+
+    @textual.work(thread=True, group="compare-keep")
+    def open_saved(self, name: str) -> None:
+        try:
+            value = self.data.saved_comparison(name)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        state = dataclasses.replace(comparemod.State.from_json(value), name=name)
+        self.host.from_thread(
+            self.change, **{f.name: getattr(state, f.name) for f in dataclasses.fields(state)}
+        )

@@ -7,14 +7,16 @@ both through the `screens.Host` protocol, which this implements.
 
 import base64
 import collections.abc
+import functools
 import os
+import typing
 
 import textual
 import textual.app
 import textual.binding
 import textual.screen
 
-from .. import exceptions
+from .. import exceptions, tuistate
 from . import commands, data, menus, render, screens, widgets
 
 
@@ -236,6 +238,12 @@ class UtrainApp(textual.app.App[None]):
     /* A menu's box. Here rather than in `MenuScreen`'s own CSS because an
        `OptionList` brings a border of its own, and the app's stylesheet is
        what outranks a widget's defaults. */
+    PickScreen OptionList {
+        height: auto;
+        max-height: 20;
+        border: none;
+        background: $surface;
+    }
     MenuScreen > OptionList {
         height: auto;
         max-height: 90%;
@@ -384,17 +392,102 @@ class UtrainApp(textual.app.App[None]):
         self.workspaces: dict[str, collections.abc.Callable[[], textual.screen.Screen[None]]] = {
             "runs": lambda: screens.MainScreen(self, self.data),
             "sweeps": lambda: screens.SweepsScreen(self, self.data),
+            "compare": lambda: screens.CompareScreen(self, self.data),
             "system": lambda: screens.SystemScreen(self, self.data),
         }
-        for name, factory in self.workspaces.items():
+        # Each workspace's own screen, once its mode has built it: what the
+        # session is read from on the way out, and restored into.
+        self.workspace_screens: dict[str, textual.screen.Screen[None]] = {}
+        # The last session, once read; see `resume_session`.
+        self.restored: dict[str, object] | None = None
+        for name in self.workspaces:
             # Textual types a mode's factory as returning `Screen[Unknown]`.
-            self.add_mode(name, factory)  # pyright: ignore[reportUnknownMemberType]
+            self.add_mode(name, functools.partial(self.make_workspace, name))  # pyright: ignore[reportUnknownMemberType]
         # What the top row's right-hand side says; see `refresh_status`.
         self.status_line = ""
+
+    def make_workspace(self, name: str) -> textual.screen.Screen[None]:
+        screen = self.workspaces[name]()
+        self.workspace_screens[name] = screen
+        if self.restored is not None:
+            self.restore_into(screen, self.restored)
+        return screen
 
     def on_mount(self) -> None:
         self.set_interval(self._STATUS_SECONDS, self.refresh_status)
         self.refresh_status()
+        self.read_session()
+
+    # -- the session ------------------------------------------------------
+    #
+    # Where the viewer was when they quit -- the workspace, the run under the
+    # cursor and the tree rows open, the sweep selected -- is kept, and the app
+    # opens there next time. Compare keeps its own comparison as it changes.
+
+    @textual.work(thread=True, group="session")
+    def read_session(self) -> None:
+        try:
+            value = self.data.get_state(tuistate.SESSION)
+        except exceptions.UI:
+            return
+        if isinstance(value, dict):
+            session = {str(k): v for k, v in typing.cast(dict[object, object], value).items()}
+            self.call_from_thread(self.resume_session, session)
+
+    def resume_session(self, session: dict[str, object]) -> None:
+        # Kept for the workspaces not built yet, which `make_workspace` hands
+        # it to as their modes are first switched to.
+        self.restored = session
+        for screen in self.workspace_screens.values():
+            self.restore_into(screen, session)
+        workspace = session.get("workspace")
+        if isinstance(workspace, str) and workspace in self.workspaces:
+            self.action_workspace(workspace)
+
+    @staticmethod
+    def restore_into(screen: textual.screen.Screen[None], session: dict[str, object]) -> None:
+        def part(name: str) -> dict[str, object]:
+            value = session.get(name)
+            if not isinstance(value, dict):
+                return {}
+            return {str(k): v for k, v in typing.cast(dict[object, object], value).items()}
+
+        if isinstance(screen, screens.MainScreen):
+            saved = part("runs")
+            cursor = saved.get("cursor")
+            opened = saved.get("expanded")
+            screen.restore(
+                str(cursor) if cursor is not None else None,
+                [str(k) for k in typing.cast(list[object], opened)]
+                if isinstance(opened, list)
+                else [],
+            )
+        elif isinstance(screen, screens.SweepsScreen):
+            sweep = part("sweeps").get("sweep")
+            if isinstance(sweep, str):
+                screen.wanted = sweep
+
+    def session(self) -> dict[str, object]:
+        out: dict[str, object] = {"workspace": self.current_mode}
+        main = self.workspace_screens.get("runs")
+        if isinstance(main, screens.MainScreen):
+            out["runs"] = {"cursor": main.cursor_key, "expanded": sorted(main.expanded)}
+        sweeps = self.workspace_screens.get("sweeps")
+        if isinstance(sweeps, screens.SweepsScreen):
+            out["sweeps"] = {"sweep": sweeps.selected_sweep}
+        return out
+
+    async def action_quit(self) -> None:
+        """`q`: keep where the viewer was, and go.
+
+        The write is on the loop, and it is one small row: the app is leaving,
+        so there is no frame for it to hold up.
+        """
+        try:
+            self.data.put_state(tuistate.SESSION, self.session())
+        except (exceptions.UI, OSError):
+            pass
+        await super().action_quit()
 
     @textual.work(thread=True, exclusive=True, group="status")
     def refresh_status(self) -> None:
@@ -544,6 +637,11 @@ class UtrainApp(textual.app.App[None]):
         screen = self.base_screen("sweeps")
         if isinstance(screen, screens.SweepsScreen):
             screen.select_sweep(sweep_id)
+
+    def compare_sweep(self, sweep_id: str) -> None:
+        screen = self.base_screen("compare")
+        if isinstance(screen, screens.CompareScreen):
+            screen.show_sweep(sweep_id)
 
     def tell(self, message: str, ok: bool = False) -> None:
         """Put a message on the error line of the screen in front, if it has one."""

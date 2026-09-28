@@ -87,7 +87,7 @@ async def test_the_top_row_names_the_workspaces_and_marks_the_one_you_are_in(
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
         titles = [str(t.render()) for t in app.screen.query(utrain.tui.menus.Title)]
-        assert titles == ["Runs", "Sweeps", "System"]
+        assert titles == ["Runs", "Sweeps", "Compare", "System"]
         assert _active_title(app) == "Runs"
 
 
@@ -172,6 +172,9 @@ async def test_left_and_right_step_between_menus_without_leaving_the_workspace(
         await pilot.press("f10", "right")
         await _settle(app, pilot)
         assert _menu(app).workspace == "sweeps"
+        await pilot.press("right")
+        await _settle(app, pilot)
+        assert _menu(app).workspace == "compare"
         await pilot.press("right")
         await _settle(app, pilot)
         assert _menu(app).workspace == "system"

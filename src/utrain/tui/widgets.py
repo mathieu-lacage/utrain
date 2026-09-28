@@ -184,6 +184,81 @@ class MetricPlot(textual.widgets.Static):
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class Curves:
+    """Several series on one pair of axes: what Compare draws."""
+
+    title: str
+    x_label: str
+    # (xs, ys, colour) per series, the highlighted one last so it is on top.
+    series: list[tuple[list[float], list[float], str]]
+    x_log: bool = False
+
+
+class ComparePlot(textual.widgets.Static):
+    """`MetricPlot` for many series at once, each in its own colour.
+
+    The legend is not uniplot's: with a curve per run it would list every run,
+    where the colours stand for values of an axis. The screen writes that
+    legend on a line of its own.
+    """
+
+    DEFAULT_CSS = """
+    ComparePlot {
+        height: 1fr;
+        min-height: 10;
+        padding: 0 1;
+    }
+    """
+
+    _Y_LABEL_WIDTH = 12
+    _FRAME_HEIGHT = 4
+
+    curves: textual.reactive.reactive[Curves | None] = textual.reactive.reactive(None, layout=True)
+    charset: textual.reactive.reactive[str] = textual.reactive.reactive(render.CHARSET_BLOCK)
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._drawn: tuple[int, int, int, str] | None = None
+
+    def watch_curves(self) -> None:
+        self._redraw()
+
+    def watch_charset(self) -> None:
+        self._redraw()
+
+    def on_resize(self) -> None:
+        self._redraw()
+
+    def _redraw(self) -> None:
+        curves = self.curves
+        if curves is None or not curves.series:
+            self._drawn = None
+            self.update(rich.text.Text("nothing to draw yet", style="dim"))
+            return
+        width = max(20, self.content_size.width - self._Y_LABEL_WIDTH)
+        height = max(5, self.content_size.height - self._FRAME_HEIGHT)
+        drawn = (width, height, id(curves), self.charset)
+        if drawn == self._drawn:
+            return
+        self._drawn = drawn
+        self.update(
+            uniplot.plot_gen(
+                xs=[xs for xs, _, _ in curves.series],
+                ys=[ys for _, ys, _ in curves.series],
+                color=[colour for _, _, colour in curves.series],
+                lines=True,
+                title=f"{curves.title} vs {curves.x_label}",
+                width=width,
+                height=height,
+                x_as_log=curves.x_log,
+                character_set=self.charset,
+                x_gridlines=[],
+                y_gridlines=[],
+            )
+        )
+
+
 class PlotPane(textual.containers.VerticalScroll):
     """The stack of plots, and the keys for how they are drawn.
 

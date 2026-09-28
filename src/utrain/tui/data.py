@@ -44,6 +44,8 @@ from .. import (
 )
 from .. import container as containermod
 from .. import db as dbmod
+from . import compare as comparemod
+from . import render
 
 # How much of a phase's output each refresh reads. `logs.tail_lines` seeks
 # backwards from the end in blocks, so a deep tail costs no more to read than a
@@ -213,6 +215,13 @@ class SweepsSnapshot:
     sweeps: list[types.SweepRow]
     runs: list[types.RunRow]
     marked: list[str]
+    # The selected sweep's runs reduced to a number each, formatted, the best
+    # starred -- what its grid shows once there are curves -- and what the
+    # number is ("min val/loss").
+    values: dict[str, str] = dataclasses.field(default_factory=dict[str, str])
+    value_label: str = ""
+    # The sweep `values` are for.
+    scored: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -231,6 +240,47 @@ class SweepForm:
     schema: containermod.schema.ConfigSchema
     values: dict[str, object]
     phase_order: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class CompareSnapshot:
+    """One tick of the Compare workspace.
+
+    `state` comes back resolved: the phase and metric it names are ones the
+    runs have, picked for it when it named none, so the screen draws what it
+    is told rather than guessing again.
+    """
+
+    state: "comparemod.State"
+    runs: list[types.RunRow]
+    sweep: types.SweepRow | None
+    sweeps: list[types.SweepRow]
+    marked: list[str]
+    saved: list[str]
+    # Every phase any of the runs has, in pipeline order, and every metric
+    # the chosen phase logged on any of them.
+    phases: list[str]
+    metric_names: list[str]
+    # Each run's metrics for the chosen phase, by name.
+    points: dict[str, dict[str, list[metrics.MetricPoint]]]
+    # How long each run's chosen phase took, or has been taking.
+    durations: dict[str, str]
+    # Each run's config, flattened to dotted paths.
+    configs: dict[str, dict[str, object]]
+
+
+class _Curves:
+    """A metrics file followed across ticks: its reader, and what it has read."""
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.tail = metrics.Tail(path)
+        self.points: dict[str, list[metrics.MetricPoint]] = {}
+
+    def read(self) -> dict[str, list[metrics.MetricPoint]]:
+        update = self.tail.read()
+        for name, new in update.points.items():
+            self.points.setdefault(name, []).extend(new)
+        return self.points
 
 
 class Data:
@@ -252,6 +302,11 @@ class Data:
         )
         self._presets: dict[str, str] = {}
         self._presets_at = 0.0
+        # The metrics files Compare and Sweeps follow, one reader each, so a
+        # live sweep is read by what it appended rather than from the top
+        # every tick. Kept per reader, so that one closing the files it has
+        # stopped using does not close the other's.
+        self._curves: dict[str, dict[pathlib.Path, _Curves]] = {}
 
     @property
     def settings(self) -> config.Settings:
@@ -522,13 +577,45 @@ class Data:
 
     # -- sweeps -----------------------------------------------------------
 
-    def sweeps_snapshot(self) -> SweepsSnapshot:
+    def sweeps_snapshot(self, selected: str | None = None) -> SweepsSnapshot:
+        """The sweeps, and for the `selected` one, what each of its runs scored.
+
+        Scored as Compare would score them when opened on the sweep: its
+        default metric, reduced its default way.
+        """
         with dbmod.with_db(self._settings) as session:
-            return SweepsSnapshot(
-                sweeps=sweeps.list_sweeps(session),
-                runs=runs.list_runs(session),
-                marked=tuistate.tray(session),
-            )
+            listed = sweeps.list_sweeps(session)
+            rows = runs.list_runs(session)
+            marked = tuistate.tray(session)
+        values: dict[str, str] = {}
+        label = ""
+        if not any(s.id == selected for s in listed):
+            selected = None
+        if selected is not None:
+            scored = self.compare(comparemod.State(source="sweep", sweep=selected), reader="sweeps")
+            metric = scored.state.metric
+            if metric is not None:
+                reducer = comparemod.auto_reducer(metric)
+                reduced = {
+                    run_id: value
+                    for run_id, points in scored.points.items()
+                    if (value := comparemod.reduce(points.get(metric, []), reducer)) is not None
+                }
+                best = comparemod.best_of(reduced, reducer)
+                values = {
+                    run_id: render.format_value(value)
+                    + (f" {comparemod.BEST}" if run_id == best else "")
+                    for run_id, value in reduced.items()
+                }
+                label = f"{reducer} {metric}"
+        return SweepsSnapshot(
+            sweeps=listed,
+            runs=rows,
+            marked=marked,
+            values=values,
+            value_label=label,
+            scored=selected,
+        )
 
     def new_sweep_choices(self) -> NewSweepChoices:
         """Read in a worker before the dialog opens, as `new_run_choices` is."""
@@ -601,6 +688,155 @@ class Data:
         """Never forced, like `delete_run`: a sweep with running runs is cancelled first."""
         with dbmod.with_db(self._settings) as session:
             return sweeps.delete_sweep(sweep_id, False, session)[1]
+
+    # -- comparing ----------------------------------------------------------
+
+    def compare(self, state: "comparemod.State", reader: str = "compare") -> CompareSnapshot:
+        """Everything the Compare workspace shows, read through one session.
+
+        Tolerant as the main snapshot is: a run that has not started has no
+        phases and no curve, and is listed without them.
+        """
+        now = time.time()
+        with dbmod.with_db(self._settings) as session:
+            all_sweeps = sweeps.list_sweeps(session)
+            marked = tuistate.tray(session)
+            saved = tuistate.saved_names(session)
+            rows = runs.list_runs(session)
+            by_id = {r.id: r for r in rows}
+            sweep = next((s for s in all_sweeps if s.id == state.sweep), None)
+            if state.source == "sweep":
+                chosen = sorted(
+                    (r for r in rows if sweep is not None and r.sweep_id == sweep.id),
+                    key=lambda r: r.created_at,
+                )
+            else:
+                ids = marked if state.source == "tray" else list(state.runs)
+                chosen = [by_id[i] for i in ids if i in by_id]
+                sweep = None
+
+            entries: dict[str, list[types.PhaseListEntry]] = {}
+            order: list[str] = []
+            for run in chosen:
+                try:
+                    described = self.describe(run.image_id)
+                except exceptions.UI:
+                    continue
+                for phase in described.phase_order:
+                    if phase not in order:
+                        order.append(phase)
+                if run.attempt is None:
+                    continue
+                try:
+                    entries[run.id] = phases.list_phases(run.id, session, described)
+                except exceptions.UI:
+                    entries[run.id] = []
+
+            phase = state.phase if state.phase in order else self._compare_phase(order, entries)
+            addresses: dict[str, str] = {}
+            durations: dict[str, str] = {}
+            for run_id, listed in entries.items():
+                for entry in listed:
+                    if entry.phase != phase:
+                        continue
+                    durations[run_id] = render.format_duration(
+                        entry.started_at, entry.ended_at, now
+                    )
+                    if entry.status not in (None, "pending"):
+                        addresses[run_id] = entry.address
+            paths: dict[str, pathlib.Path] = {}
+            for run_id, addr in addresses.items():
+                try:
+                    path = phases.metrics_path(addr, session)
+                except exceptions.UI:
+                    path = None
+                if path is not None:
+                    paths[run_id] = path
+            configs: dict[str, dict[str, object]] = {}
+            for run in chosen:
+                try:
+                    configs[run.id] = comparemod.flatten(runs.read_config(run.id, session))
+                except (exceptions.UI, OSError):
+                    configs[run.id] = {}
+
+        points = self._read_curves(paths, reader)
+        names: list[str] = []
+        for series in points.values():
+            for name in series:
+                if name not in names:
+                    names.append(name)
+        metric = state.metric if state.metric in names else comparemod.default_metric(names)
+        resolved = dataclasses.replace(
+            state,
+            phase=phase,
+            metric=metric,
+            sweep=sweep.id if sweep is not None else None,
+        )
+        return CompareSnapshot(
+            state=resolved,
+            runs=chosen,
+            sweep=sweep,
+            sweeps=all_sweeps,
+            marked=marked,
+            saved=saved,
+            phases=order,
+            metric_names=sorted(names),
+            points=points,
+            durations=durations,
+            configs=configs,
+        )
+
+    @staticmethod
+    def _compare_phase(
+        order: list[str], entries: dict[str, list[types.PhaseListEntry]]
+    ) -> str | None:
+        """The phase a comparison opens on: the last one any run has reached."""
+        reached = {
+            e.phase
+            for listed in entries.values()
+            for e in listed
+            if e.status not in (None, "pending")
+        }
+        for phase in reversed(order):
+            if phase in reached:
+                return phase
+        return order[-1] if order else None
+
+    def _read_curves(
+        self, paths: dict[str, pathlib.Path], reader: str
+    ) -> dict[str, dict[str, list[metrics.MetricPoint]]]:
+        """Each run's points, from the reader held on its file.
+
+        A file no run of this comparison uses any more has its reader closed.
+        """
+        held = self._curves.setdefault(reader, {})
+        wanted = set(paths.values())
+        for path in list(held):
+            if path not in wanted:
+                held.pop(path).tail.close()
+        out: dict[str, dict[str, list[metrics.MetricPoint]]] = {}
+        for run_id, path in paths.items():
+            curves = held.get(path)
+            if curves is None:
+                curves = _Curves(path)
+                held[path] = curves
+            try:
+                out[run_id] = curves.read()
+            except (OSError, ValueError):
+                out[run_id] = curves.points
+        return out
+
+    def saved_comparison(self, name: str) -> object:
+        with dbmod.with_db(self._settings) as session:
+            return tuistate.get(session, tuistate.SAVED_PREFIX + name)
+
+    def save_comparison(self, name: str, value: object) -> None:
+        with dbmod.with_db(self._settings) as session:
+            tuistate.put(session, tuistate.SAVED_PREFIX + name, value)
+
+    def delete_comparison(self, name: str) -> None:
+        with dbmod.with_db(self._settings) as session:
+            tuistate.delete(session, tuistate.SAVED_PREFIX + name)
 
     # -- the rest of the CLI's read surface -------------------------------
 

@@ -134,7 +134,7 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Clear the marks", "clear_tray"),
         SEPARATOR,
         Item("Phase...", "pick_phase"),
-        Item("Metric...", "pick_metric"),
+        Item("Metric...", "pick_metric", "m"),
         Item("Reduce by...", "pick_reducer"),
         Item("Colour by...", "pick_colour"),
         Item("Next lens", "next_lens", "]"),

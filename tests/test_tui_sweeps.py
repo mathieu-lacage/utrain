@@ -302,3 +302,29 @@ async def test_a_sweep_name_is_checked_in_the_dialog(app: utrain.tui.app.UtrainA
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.NewSweepScreen)
         assert "letters, digits" in _text(app, "#new-sweep-error")
+
+
+async def test_quitting_keeps_where_you_were(
+    app: utrain.tui.app.UtrainApp, tmp_path: pathlib.Path
+) -> None:
+    """The workspace, the tree's open rows and its cursor, back on restart."""
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("enter", "down")  # open the sweep, onto lr-01
+        await _settle(app, pilot)
+        await pilot.press("f2")
+        await _settle(app, pilot)
+        await pilot.press("q")
+        await _settle(app, pilot)
+
+    again = base._app(tmp_path)  # pyright: ignore[reportPrivateUsage]
+    async with again.run_test(size=base.SIZE) as pilot:
+        await _settle(again, pilot)
+        await _settle(again, pilot)
+        assert again.current_mode == "sweeps"
+        assert _sweeps(again).selected_sweep == runs_tests.SWEEP_ID
+        await pilot.press("f1")
+        await _settle(again, pilot)
+        main = base._main(again)  # pyright: ignore[reportPrivateUsage]
+        assert main.selected_run == runs_tests.SWEPT_DONE
+        assert runs_tests._names(again)[:3] == ["lr", "  lr-01", "  lr-02"]  # pyright: ignore[reportPrivateUsage]
