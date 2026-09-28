@@ -37,10 +37,17 @@ class UtrainApp(textual.app.App[None]):
     #content {
         width: 1fr;
     }
-    #runs, #phases {
+    #runs {
         height: 1fr;
         border: round $panel;
         border-title-align: left;
+    }
+    /* A sweep's status grid, which the right side shows for a sweep row. */
+    #sweep {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+        padding: 0 1;
     }
     /* The metric picker is a drawer rather than a fourth list in the sidebar.
        It is a control for the plots -- it decides which curves are drawn, not
@@ -73,12 +80,6 @@ class UtrainApp(textual.app.App[None]):
     Screen > .screen--selection {
         background: $primary;
         color: $text;
-    }
-    /* The tab strip: one line above the content panes, naming which of the
-       three is up and the number that gets to the others. */
-    #tabs {
-        height: 1;
-        padding: 0 1;
     }
     #sidebar > *:focus, #content > *:focus, #content > *:focus-within {
         border: round $accent;

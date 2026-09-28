@@ -21,86 +21,161 @@ def _points(pairs: list[tuple[int, float]], t0: float = 1000.0) -> list[utrain.m
     ]
 
 
-# -- cells ----------------------------------------------------------------
+# -- the runs tree ---------------------------------------------------------
 
 
-def test_run_cells_truncate_the_id() -> None:
-    run = utrain.types.RunRow(
-        id="abcdef0123",
-        name="shake",
+def _run(
+    run_id: str = "abcdef0123",
+    name: str = "shake",
+    status: str = "running",
+    attempt: int | None = 1,
+    sweep_id: str | None = None,
+    point: dict[str, object] | None = None,
+    created_at: float = 0.0,
+) -> utrain.types.RunRow:
+    return utrain.types.RunRow(
+        id=run_id,
+        name=name,
         image="img",
-        image_id=None,
+        image_id="x",
         compute="cpu",
-        status="running",
-        created_at=0.0,
-        attempt=None,
+        status=status,
+        created_at=created_at,
+        attempt=attempt,
         phase=None,
+        sweep_id=sweep_id,
+        point=point or {},
     )
-    cells = render.run_cells(run, prefix_len=3)
 
-    assert cells[0] == "abc"
-    assert cells[1] == "shake"
+
+def _entry(
+    status: str | None,
+    started_at: float | None = None,
+    ended_at: float | None = None,
+    inherited_from: int | None = None,
+) -> utrain.types.PhaseListEntry:
+    return utrain.types.PhaseListEntry(
+        phase="tokenizer",
+        phase_order=0,
+        address="ab/1/tokenizer",
+        status=status,
+        started_at=started_at,
+        ended_at=ended_at,
+        inherited_from=inherited_from,
+    )
+
+
+def _phase_cells(entry: utrain.types.PhaseListEntry, now: float) -> list[render.Cell]:
+    node = render.TreeNode("phase:x/tokenizer", "phase", 1, None, run=_run(), phase=entry)
+    return render.tree_cells(node, set(), now)
+
+
+def _sweep(
+    axes: dict[str, list[object]], status: str = "running", total: int = 4
+) -> utrain.types.SweepRow:
+    return utrain.types.SweepRow(
+        id="s1",
+        name="lr-depth",
+        image="img",
+        image_id="x",
+        status=status,
+        created_at=0.0,
+        axes=axes,
+        replicate=[],
+        compute=["gpu0"],
+        base=None,
+        counts=utrain.types.SweepCounts(
+            total=total, queued=1, running=1, done=2, failed=0, stopped=0
+        ),
+    )
+
+
+def test_a_run_row_carries_its_mark_its_opener_and_its_point() -> None:
+    run = _run(point={"phases.pretrain.lr": 0.0003, "globals.model.n_layer": 4})
+    node = render.TreeNode(render.run_key(run.id), "run", 0, False, run=run)
+    cells = render.tree_cells(node, {run.id}, now=0.0)
+    assert cells[0] == f"{render.MARK}{render.COLLAPSED} shake"
+    assert cells[1] == "lr=0.0003 n_layer=4"
     assert str(cells[2]) == "running"
 
 
-def test_phase_cells_keep_an_inherited_phases_own_status() -> None:
+def test_the_phase_cells_keep_an_inherited_phases_own_status() -> None:
     """A phase this attempt skipped still finished, in the attempt that ran it.
 
     Its status is reported plainly, with nothing about which attempt earned it:
     that is in the address, and in the column it was only noise.
     """
-    entry = utrain.types.PhaseListEntry(
-        phase="tokenizer",
-        phase_order=0,
-        address="ab/1/tokenizer",
-        status="done",
-        started_at=100.0,
-        ended_at=200.0,
-        inherited_from=1,
-    )
-    assert str(render.phase_cells(entry, now=0.0)[1]) == "done"
+    assert str(_phase_cells(_entry("done", 100.0, 200.0, inherited_from=1), 0.0)[2]) == "done"
 
 
-def test_phase_cells_of_an_inherited_phase_that_left_no_row() -> None:
-    entry = utrain.types.PhaseListEntry(
-        phase="tokenizer",
-        phase_order=0,
-        address="ab/2/tokenizer",
-        status=None,
-        started_at=None,
-        ended_at=None,
-        inherited_from=1,
-    )
-    assert str(render.phase_cells(entry, now=0.0)[1]) == "--"
+def test_the_phase_cells_of_a_phase_that_never_ran() -> None:
+    cells = _phase_cells(_entry(None), 0.0)
+    assert str(cells[2]) == "--"
+    assert cells[1] == "--"
 
 
-def test_phase_cells_of_a_phase_that_never_ran() -> None:
-    entry = utrain.types.PhaseListEntry(
-        phase="pretrain",
-        phase_order=1,
-        address="ab/1/pretrain",
-        status=None,
-        started_at=None,
-        ended_at=None,
-        inherited_from=None,
-    )
-    cells = render.phase_cells(entry, now=0.0)
-    assert str(cells[1]) == "--"
-    assert cells[2] == "--"
-    assert cells[3] == "--"
+def test_the_phase_cells_time_a_running_phase_against_now() -> None:
+    assert _phase_cells(_entry("running", started_at=1000.0), 1090.0)[1] == "1m30s"
 
 
-def test_phase_cells_time_a_running_phase_against_now() -> None:
-    entry = utrain.types.PhaseListEntry(
-        phase="pretrain",
-        phase_order=1,
-        address="ab/1/pretrain",
-        status="running",
-        started_at=1000.0,
-        ended_at=None,
-        inherited_from=None,
-    )
-    assert render.phase_cells(entry, now=1090.0)[3] == "1m30s"
+def test_the_tree_lists_sweeps_first_and_opens_them_on_their_runs() -> None:
+    sweep = _sweep({"phases.pretrain.lr": [0.1, 0.2]})
+    first = _run("r1", "lr-depth-01", sweep_id="s1", created_at=1.0)
+    second = _run("r2", "lr-depth-02", sweep_id="s1", created_at=2.0)
+    alone = _run("r3", "alone", created_at=3.0)
+    runs = [alone, second, first]
+
+    closed = render.build_tree(runs, [sweep], set(), {})
+    assert [n.key for n in closed] == ["sweep:s1", "run:r3"]
+
+    opened = render.build_tree(runs, [sweep], {"sweep:s1", "run:r1"}, {"r1": [_entry("done")]})
+    assert [(n.key, n.depth) for n in opened] == [
+        ("sweep:s1", 0),
+        ("run:r1", 1),
+        ("phase:r1/tokenizer", 2),
+        ("run:r2", 1),
+        ("run:r3", 0),
+    ]
+
+
+def test_a_run_that_never_started_has_nothing_to_open() -> None:
+    node = render.build_tree([_run(attempt=None)], [], set(), {})[0]
+    assert node.expanded is None
+
+
+def test_the_sweep_grid_lays_the_first_axis_down_and_the_second_across() -> None:
+    sweep = _sweep({"phases.pretrain.lr": [0.1, 0.2], "globals.model.n_layer": [4, 8]})
+    runs = [
+        _run(
+            "r1",
+            status="done",
+            sweep_id="s1",
+            point={"phases.pretrain.lr": 0.1, "globals.model.n_layer": 4},
+        ),
+        _run(
+            "r2",
+            status="running",
+            sweep_id="s1",
+            point={"phases.pretrain.lr": 0.1, "globals.model.n_layer": 8},
+        ),
+        _run(
+            "r3",
+            status="queued",
+            sweep_id="s1",
+            point={"phases.pretrain.lr": 0.2, "globals.model.n_layer": 4},
+        ),
+        _run(
+            "r4",
+            status="failed",
+            sweep_id="s1",
+            point={"phases.pretrain.lr": 0.2, "globals.model.n_layer": 8},
+        ),
+    ]
+    lines = render.sweep_grid(sweep, runs, {"r1": "1.29"}).plain.splitlines()
+    assert "n_layer=4" in lines[0] and "n_layer=8" in lines[0]
+    assert lines[1].startswith("lr=0.1")
+    assert "● 1.29" in lines[1] and "◐ running" in lines[1]
+    assert "○ queued" in lines[2] and "✗ failed" in lines[2]
 
 
 # -- status colours -------------------------------------------------------

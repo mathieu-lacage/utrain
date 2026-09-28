@@ -66,6 +66,26 @@ class PaneTable(textual.widgets.DataTable[render.Cell]):
     ]
 
 
+class RunsTree(PaneTable):
+    """The Runs workspace's tree: sweeps, runs and phases in one list.
+
+    A `DataTable` rather than Textual's `Tree`: the rows have columns -- a
+    sweep point, a status -- that line up, and the table's in-place refill is
+    what keeps the cursor from being reset by the once-a-second refresh.
+
+    `enter` opens and closes a row, as the arrows do; `space` marks a run for
+    comparison. The arrows displace the table's column scrolling, which a list
+    whose cursor is a whole row has no use for.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("enter", "screen.drill_in", "open/close"),
+        textual.binding.Binding("right", "screen.expand", "open", show=False),
+        textual.binding.Binding("left", "screen.collapse", "close", show=False),
+        textual.binding.Binding("space", "screen.toggle_mark", "mark"),
+    ]
+
+
 class MetricPlot(textual.widgets.Static):
     """One metric drawn in the terminal, sized to whatever box it is given.
 

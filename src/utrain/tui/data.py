@@ -21,9 +21,12 @@ believing a stale answer after an image was rebuilt; here it is scoped to one
 app, and `refresh()` drops it.
 """
 
+import collections.abc
 import dataclasses
 import pathlib
 import time
+
+import sqlalchemy.orm
 
 from .. import (
     compute,
@@ -35,6 +38,7 @@ from .. import (
     runs,
     serve,
     store,
+    sweeps,
     tuistate,
     types,
 )
@@ -101,6 +105,15 @@ class Snapshot:
     # directory, and the address the screen keys its series by follows the
     # latest attempt -- and starts those series over.
     metrics_path: pathlib.Path | None
+    # The sweeps, for the tree's top level and the grid a sweep row shows.
+    sweeps: list[types.SweepRow] = dataclasses.field(default_factory=list[types.SweepRow])
+    # The phases of every run the tree has open, by run id: the tree lists
+    # them under their run whether or not that run is the one selected.
+    expanded: dict[str, list[types.PhaseListEntry]] = dataclasses.field(
+        default_factory=dict[str, list[types.PhaseListEntry]]
+    )
+    # The runs marked for comparison, which the tree marks.
+    marked: list[str] = dataclasses.field(default_factory=list[str])
 
 
 def _address(run_id: str, phase: str | None, attempt: int | None) -> str | None:
@@ -350,6 +363,7 @@ class Data:
         attempt: int | None = None,
         tail: metrics.Tail | None = None,
         log_lines: int = _LOG_LINES,
+        expanded: collections.abc.Collection[str] = (),
     ) -> Snapshot:
         """Everything the main screen shows, read through one session.
 
@@ -364,6 +378,9 @@ class Data:
         now = time.time()
         with dbmod.with_db(self._settings) as session:
             rows = runs.list_runs(session)
+            sweep_rows = sweeps.list_sweeps(session)
+            marked = tuistate.tray(session)
+            open_phases = self._expanded_phases(session, rows, expanded)
             if run_id is None:
                 return Snapshot(
                     now=now,
@@ -382,6 +399,9 @@ class Data:
                     update=metrics.MetricUpdate(columns=[], points={}),
                     tail=tail,
                     metrics_path=None,
+                    sweeps=sweep_rows,
+                    expanded=open_phases,
+                    marked=marked,
                 )
 
             detail = runs.get_run_detail(run_id, session)
@@ -441,7 +461,33 @@ class Data:
             update=update,
             tail=tail,
             metrics_path=metrics_path,
+            sweeps=sweep_rows,
+            expanded=open_phases,
+            marked=marked,
         )
+
+    def _expanded_phases(
+        self,
+        session: sqlalchemy.orm.Session,
+        rows: list[types.RunRow],
+        expanded: collections.abc.Collection[str],
+    ) -> dict[str, list[types.PhaseListEntry]]:
+        """The phase lists of the runs the tree has open.
+
+        Tolerant, as the rest of the snapshot is: a run whose phases cannot be
+        read shows none rather than blanking the tree.
+        """
+        out: dict[str, list[types.PhaseListEntry]] = {}
+        by_id = {r.id: r for r in rows}
+        for run_id in expanded:
+            run = by_id.get(run_id)
+            if run is None or run.attempt is None:
+                continue
+            try:
+                out[run_id] = phases.list_phases(run_id, session, self.describe(run.image_id))
+            except exceptions.UI:
+                out[run_id] = []
+        return out
 
     # -- the rest of the CLI's read surface -------------------------------
 

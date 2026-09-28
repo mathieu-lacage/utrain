@@ -53,7 +53,8 @@ from . import commands, data, export, menus, render, widgets
 _EDIT_MODE_OFF = frozenset(
     {
         "focus_pane",
-        "focus_tab",
+        "focus_list",
+        "focus_content",
         "next_pane",
         "prev_pane",
         "drill_in",
@@ -77,6 +78,11 @@ _EDIT_MODE_OFF = frozenset(
         "help",
         # And an `m` is a letter, not "open the metric picker".
         "toggle_metrics",
+        # Nor is a `z` a zoom, or a space a mark.
+        "zoom",
+        "toggle_mark",
+        "expand",
+        "collapse",
     }
 )
 
@@ -486,16 +492,6 @@ def _stale(
     return event.cursor_row != table.cursor_row
 
 
-def min_prefix_len(run_ids: list[str]) -> int:
-    """Shortest prefix that still tells these run ids apart."""
-    if not run_ids:
-        return 1
-    for prefix_len in range(1, 33):
-        if len({rid[:prefix_len] for rid in run_ids}) == len(run_ids):
-            return prefix_len
-    return 32
-
-
 @dataclasses.dataclass(frozen=True)
 class NewRun:
     """What the new-run dialog came back with: `runs.create_run`'s three arguments."""
@@ -514,11 +510,27 @@ class Export:
 
 
 class MainScreen(_Screen):
-    """Runs, phases and metrics on the left; plots, logs or config on the right.
+    """The Runs workspace: a tree of sweeps, runs and phases, and what one is.
+
+    One list on the left, and fixed panes on the right for whatever the cursor
+    is on, the shape every workspace has. The list is a tree -- a sweep, the
+    runs it made, a run's phases -- opened and closed in place, so the runs are
+    always in view around the one being looked at. The right side does not
+    have views to pick between:
+
+    - a run that has started, or one of its phases: the plots above the log,
+      for that phase or for the phase the run is on now;
+    - a run that has not started (configuring, or a sweep run still queued):
+      its config, which is all there is of it yet, edited in place;
+    - a sweep: its runs as a status grid.
+
+    `z` gives the focused pane the whole right side, and `e` on a run that has
+    started shows its config in a read-only popup, since there is nothing left
+    to change in it.
 
     The metrics reader for each phase is held open: following a live phase means
     resuming from where the last read stopped, and that needs the reader itself,
-    not just an offset (see `utrain.metrics`). Because the selected phase now
+    not just an offset (see `utrain.metrics`). Because the selected phase
     changes with a cursor move rather than with a screen push, those readers are
     kept in a small cache and closed as they fall out of it.
     """
@@ -526,84 +538,76 @@ class MainScreen(_Screen):
     TITLE = "utrain"
 
     BINDINGS = [
-        # The pane and tab keys are `show=False`: the sidebar panes carry
-        # their number in their title and the content tabs carry theirs in the
-        # tab strip, and a footer that repeated all five would leave no room
-        # for the keys that are actually about the focused pane.
+        # The pane keys are `show=False`: each pane carries its number in its
+        # title, and a footer that repeated them would leave no room for the
+        # keys that are actually about the focused pane.
         textual.binding.Binding("tab", "next_pane", "pane", show=False),
         textual.binding.Binding("shift+tab", "prev_pane", "pane", show=False),
         textual.binding.Binding("1", "focus_list", "list", show=False),
-        textual.binding.Binding("2", "focus_tab('config')", "config", show=False),
-        textual.binding.Binding("3", "focus_tab('plots')", "plots", show=False),
-        textual.binding.Binding("4", "focus_tab('log')", "logs", show=False),
+        textual.binding.Binding("2", "focus_content", "plots", show=False),
+        textual.binding.Binding("3", "focus_pane('log')", "log", show=False),
         # The panels: the two resources a run is made of, opened over this
-        # screen and closed with escape. On this screen only -- chat is about
-        # one run, and a panel itself is left with escape, so neither carries
-        # a sideways step.
-        textual.binding.Binding("i", "images", "images"),
-        textual.binding.Binding("c", "compute", "compute"),
-        # On the screen rather than on the form: you pick the run in the runs
-        # pane, so that is where you want to be able to say "edit this one".
-        # `check_action` greys it out unless the selected run can be edited.
-        textual.binding.Binding("e", "edit_config", "edit"),
-        # Lifecycle, next to `e` and for the same reason: you pick the run in
-        # the runs pane, so that is where you say "start this one".
-        # `check_action` hides them outside that pane and greys them out on a
-        # run whose status does not allow them.
-        textual.binding.Binding("s", "start_run", "start"),
-        textual.binding.Binding("S", "stop_run", "stop"),
-        textual.binding.Binding("n", "new_run", "new"),
-        textual.binding.Binding("d", "delete_run", "delete"),
+        # screen and closed with escape.
+        textual.binding.Binding("i", "images", "images", show=False),
+        textual.binding.Binding("c", "compute", "compute", show=False),
+        # Everything below acts on the selected run, and is also in the Runs
+        # menu. Only the few keys that matter most are in the footer; the menu
+        # lists the rest, with their keys.
+        textual.binding.Binding("e", "edit_config", "config"),
+        textual.binding.Binding("s", "start_run", "start", show=False),
+        textual.binding.Binding("S", "stop_run", "stop", show=False),
+        textual.binding.Binding("n", "new_run", "new", show=False),
+        textual.binding.Binding("d", "delete_run", "delete", show=False),
         # `r` is the base screen's refresh, so restart takes the shifted key --
         # the same convention `S` follows.
-        textual.binding.Binding("R", "restart_run", "restart"),
-        # `t` for talk: `c` is compute, and a `C` next to it would read as a
-        # variant of it. Offered from the runs and phases panes both, the way
-        # `S` and `R` are; `check_action` greys it out on a run there is
-        # nothing to talk to yet.
-        textual.binding.Binding("t", "chat_run", "chat"),
-        # Shown, unlike the pane keys: the picker is the only way to change
-        # which curves are drawn, and nothing else on the screen says so.
-        textual.binding.Binding("m", "toggle_metrics", "metrics"),
+        textual.binding.Binding("R", "restart_run", "restart", show=False),
+        # `t` for talk: `c` is compute.
+        textual.binding.Binding("t", "chat_run", "chat", show=False),
+        textual.binding.Binding("m", "toggle_metrics", "metrics", show=False),
+        textual.binding.Binding("z", "zoom", "zoom"),
     ]
 
-    # Every pane in reading order -- the sidebar top to bottom, then the
-    # content column. This is what `tab` walks, skipping whatever is not on
-    # screen; the columns below are what decides which of those are.
-    _PANES = ("runs", "phases", "config", "plots", "metrics", "log")
+    # Every pane in reading order -- the tree, then the content column. This
+    # is what `tab` walks, skipping whatever is not on screen.
+    _PANES = ("runs", "config", "sweep", "plots", "metrics", "log")
 
-    # The sidebar's two levels. One of them is on screen at a time: they are
-    # one list, and this is what it can be listing.
-    _LEFT = ("runs", "phases")
+    # The right side's panes, of which `apply_focus` shows the ones that
+    # describe what is selected.
+    _CONTENT = ("config", "sweep", "plots", "log")
 
     def __init__(self, host: Host, source: data.Data) -> None:
         super().__init__(host, source)
         self.runs: list[types.RunRow] = []
+        self.sweeps: list[types.SweepRow] = []
         self.phases: list[types.PhaseListEntry] = []
+        # The tree as last drawn, and which of its rows are open, by key. The
+        # cursor is kept as a key too, so that rows appearing above it -- an
+        # expand, a new run -- do not move the selection with them.
+        self.nodes: list[render.TreeNode] = []
+        self.expanded: set[str] = set()
+        self.cursor_key: str | None = None
+        self.marked: set[str] = set()
+        # The phase lists of the open runs, and when they were read, from the
+        # last fetch; what `draw_tree` lays out and times phases against.
+        self.open_phases: dict[str, list[types.PhaseListEntry]] = {}
+        self.now = 0.0
         # The pane that has the focus. Kept rather than read off
         # `self.focused` because a keypress asks about the pane, not about the
         # widget inside it that happens to hold the cursor.
         self.pane = "runs"
-        # Which content pane is up, and which one was last asked for on each
-        # phase. The viewer's choice, and nothing else's -- the old layout
-        # derived this from which pane had focus, so a view could not be held
-        # at all. A phase nobody has chosen a tab for is not in the dict and
-        # keeps whatever is up, so moving down the list never changes the pane
-        # under someone who did not ask it to.
-        self.tab = "config"
-        self.tabs: dict[tuple[str, str], str] = {}
-        # Which level the sidebar list is at: the runs, or one run's phases.
-        # There is one list, and this is what it is listing.
-        self.level = "runs"
-        # The phase last visited per run, so that leaving a run and coming back
-        # lands where it was left. Without it the drill is lossy, and a viewer
-        # who steps up to compare two runs pays for it on the way back down.
-        self.visited: dict[str, str] = {}
+        # The content pane given the whole right side by `z`, or None.
+        self.zoomed: str | None = None
         self.selected_run: str | None = None
         self.selected_phase: str | None = None
+        # A phase picked in the tree, rather than the one the run is on now:
+        # the right side stays on it while the run moves on.
+        self.pinned_phase = False
+        self.selected_sweep: str | None = None
         # A run created this session, waiting for the fetch that will list it.
         # `apply_runs` puts the cursor on it and clears this.
         self._pending_run: str | None = None
+        # The last snapshot, for the read-only config popup.
+        self._config: data.Snapshot | None = None
         self.x_axis = render.X_STEP
         self.solo: str | None = None
         # The plots the image asks for on the selected phase, and whether the
@@ -626,7 +630,7 @@ class MainScreen(_Screen):
         self._metric_paths: dict[str, pathlib.Path | None] = {}
         self.plots: dict[render.PlotKey, widgets.MetricPlot] = {}
         # What the footer was last built for; see `sync_bindings`.
-        self._binding_state: tuple[str, str, str | None, bool, bool, str | None] | None = None
+        self._binding_state: tuple[object, ...] | None = None
         # The pending fetch for a cursor that is still moving; see `refresh_soon`.
         self._settle: textual.timer.Timer | None = None
         # Whether a fetch is running, and whether another was asked for while
@@ -639,11 +643,17 @@ class MainScreen(_Screen):
     def compose_body(self) -> textual.app.ComposeResult:
         with textual.containers.Horizontal(id="main"):
             with textual.containers.Vertical(id="sidebar"):
-                yield _table("runs", "1 runs", render.RUN_COLUMNS)
-                yield _table("phases", "2 phases", render.PHASE_COLUMNS)
+                tree = widgets.RunsTree(id="runs")
+                tree.cursor_type = "row"
+                tree.border_title = "1 runs"
+                tree.add_columns(*render.TREE_COLUMNS)
+                yield tree
             with textual.containers.Vertical(id="content"):
-                yield textual.widgets.Static(render.content_tabs("config"), id="tabs")
                 yield widgets.ConfigPane(id="config")
+                sweep = textual.containers.VerticalScroll(id="sweep")
+                sweep.border_title = "2 sweep"
+                with sweep:
+                    yield textual.widgets.Static("", id="sweep-grid")
                 with widgets.PlotPane(id="plots"):
                     yield textual.widgets.Static("no metrics yet", id="empty")
                 yield widgets.LogTail(id="log")
@@ -717,8 +727,17 @@ class MainScreen(_Screen):
         # both decide to open a reader for the same phase.
         self._fetching = True
         self.fetch(
-            self.selected_run, self.selected_phase, self.attempt(), self._tails.get(addr or "")
+            self.selected_run,
+            self.selected_phase,
+            self.attempt(),
+            self._tails.get(addr or ""),
+            self.expanded_runs(),
         )
+
+    def expanded_runs(self) -> list[str]:
+        """The runs the tree has open, whose phases the fetch must list."""
+        prefix = render.run_key("")
+        return [key.removeprefix(prefix) for key in self.expanded if key.startswith(prefix)]
 
     def refresh_soon(self) -> None:
         """Fetch once the cursor has stopped moving.
@@ -744,12 +763,13 @@ class MainScreen(_Screen):
         phase: str | None,
         attempt: int | None,
         tail: metrics.Tail | None,
+        expanded: list[str],
     ) -> None:
         # `_fetching` is cleared in a `finally`, so that an error the query
         # layer did not wrap costs one tick rather than every tick after it.
         try:
             try:
-                snapshot = self.data.snapshot(run_id, phase, attempt, tail)
+                snapshot = self.data.snapshot(run_id, phase, attempt, tail, expanded=expanded)
             except exceptions.UI as e:
                 self.host.from_thread(self.show_error, str(e))
                 return
@@ -786,74 +806,128 @@ class MainScreen(_Screen):
             self.apply_config(snapshot)
         else:
             self.discard_tail(snapshot.tail)
+        if self.selected_sweep is not None:
+            self.apply_sweep()
         self.apply_focus()
         self.sync_bindings()
 
     def apply_runs(self, snapshot: data.Snapshot) -> None:
         self.runs = snapshot.runs
-        # The id column is truncated to the shortest prefix that separates the
-        # runs on screen, as `cli/render` does. Addresses always use the full
-        # id: the short form depends on what happens to be displayed.
-        width = min_prefix_len([r.id for r in snapshot.runs])
-        table = self.table("#runs")
-        _fill(table, [render.run_cells(r, width) for r in snapshot.runs])
+        self.sweeps = snapshot.sweeps
+        self.marked = set(snapshot.marked)
+        self.open_phases = dict(snapshot.expanded)
+        self.now = snapshot.now
         # A run just created is selected as soon as it is listed, so its config
         # -- which is the only thing there is to do with it next -- comes up
-        # without the viewer having to find it. Moving the cursor is what
-        # selects: `RowHighlighted` routes back through `select_run`.
-        if self._pending_run is not None:
-            for index, run in enumerate(snapshot.runs):
-                if run.id == self._pending_run:
-                    self._pending_run = None
-                    table.move_cursor(row=index)
-                    # And say so, rather than leaving it to `RowHighlighted`: a
-                    # new run sorts to the top, so the cursor is already on
-                    # row 0 and moving it there is a no-op that raises no event
-                    # -- the row under it changed identity, not position.
-                    # `select_run` returns early if the event does arrive too.
-                    self.select_run(run.id)
-                    return
-        if self.selected_run is None and snapshot.runs:
-            # Whatever the cursor is on, not row 0: this branch is both the
-            # first fetch, where the cursor is at 0 anyway, and the fetch after
-            # a delete, where the rows below the deleted one have shifted up
-            # under a stationary cursor. Clamped, because the row it was on may
-            # have been the last one.
-            row = min(max(table.cursor_row, 0), len(snapshot.runs) - 1)
-            table.move_cursor(row=row)
-            self.select_run(snapshot.runs[row].id)
+        # without the viewer having to find it.
+        if self._pending_run is not None and any(r.id == self._pending_run for r in self.runs):
+            self.cursor_key = render.run_key(self._pending_run)
+            self._pending_run = None
+        self.draw_tree()
+
+    def draw_tree(self) -> None:
+        """Lay the tree out again from what the last fetch brought, and keep
+        the cursor on the node it was on.
+
+        Called by every fetch, and straight away by an expand or a collapse so
+        the list answers the key rather than the next tick. The selected run's
+        own phases stand in for an expanded one's that a fetch has not listed
+        yet, which is what lets opening the run under the cursor show its
+        phases at once.
+        """
+        phases = dict(self.open_phases)
+        if self.selected_run is not None and self.selected_run not in phases:
+            phases[self.selected_run] = self.phases
+        self.nodes = render.build_tree(self.runs, self.sweeps, self.expanded, phases)
+        table = self.table("#runs")
+        _fill(table, [render.tree_cells(n, self.marked, self.now) for n in self.nodes])
+        if not self.nodes:
+            self.cursor_key = None
+            return
+        index = self.index_of(self.cursor_key)
+        if index is None:
+            # The node has gone -- deleted, or folded away under a collapse --
+            # so the cursor stays on the row it was on, clamped: the rows below
+            # a deleted one have shifted up under it.
+            index = min(max(table.cursor_row, 0), len(self.nodes) - 1)
+        if table.cursor_row != index:
+            table.move_cursor(row=index)
+        self.select_node(self.nodes[index])
+
+    def index_of(self, key: str | None) -> int | None:
+        """Where a node is in the tree, following a phase up to its run."""
+        if key is None:
+            return None
+        for index, node in enumerate(self.nodes):
+            if node.key == key:
+                return index
+        if key.startswith("phase:"):
+            run_id = key.removeprefix("phase:").split("/", 1)[0]
+            return self.index_of(render.run_key(run_id))
+        return None
+
+    def cursor_node(self) -> render.TreeNode | None:
+        for node in self.nodes:
+            if node.key == self.cursor_key:
+                return node
+        return None
+
+    def select_node(self, node: render.TreeNode) -> None:
+        """Make the right side about `node`: a sweep, a run, or one phase."""
+        self.cursor_key = node.key
+        if node.kind == "sweep":
+            assert node.sweep is not None
+            self.selected_sweep = node.sweep.id
+            self.pinned_phase = False
+            self.select_run(None)
+            self.apply_sweep()
+            self.apply_focus()
+            return
+        self.selected_sweep = None
+        run_id = node.run_id
+        assert run_id is not None
+        if node.kind == "phase":
+            assert node.phase is not None
+            self.select_run(run_id)
+            self.pinned_phase = True
+            self.select_phase(node.phase.phase)
+        else:
+            was_pinned = self.pinned_phase
+            self.pinned_phase = False
+            self.select_run(run_id)
+            if was_pinned and self.phases:
+                # Up from one of its phases onto the run itself: back to where
+                # the run has got to, now rather than on the next tick.
+                current = data.current_phase(self.phases)
+                if current is not None:
+                    self.select_phase(current)
+        self.apply_focus()
 
     def apply_phases(self, snapshot: data.Snapshot) -> None:
         self.phases = snapshot.phases
-        table = self.table("#phases")
-        _fill(table, [render.phase_cells(p, snapshot.now) for p in snapshot.phases])
-        run = self.selected_run_row()
-        # The breadcrumb: one list, so what it is listing has to be written on
-        # it. The runs level keeps its plain title.
-        table.border_title = "1 phases" if run is None else f"1 {run.name} > phases"
         if not snapshot.phases:
             return
         listed = [entry.phase for entry in snapshot.phases]
-        phase = self.selected_phase
-        if phase not in listed:
-            # Nothing selected, or a phase this run does not have. Where the
-            # viewer left this run, if that phase is still listed, and
-            # otherwise where the run has got to -- so that a run selected but
-            # not yet drilled into shows its live curve and its live log.
-            remembered = self.visited.get(snapshot.run_id or "")
-            phase = remembered if remembered in listed else data.current_phase(snapshot.phases)
-        if phase is None:
+        if self.pinned_phase and self.selected_phase in listed:
             return
-        # Every tick, not only when the selection is being restored. The rows
-        # are refilled in place -- deliberately, see `_fill` -- so a list that
-        # grows or shrinks moves the cursor off the selected phase without
-        # anything having selected another one, and Textual's own clamping
-        # lands as a message after this has returned. Re-asserting it here is
-        # what keeps the cursor and the selection the same fact.
-        index = listed.index(phase)
-        if table.cursor_row != index:
-            table.move_cursor(row=index)
-        self.select_phase(phase)
+        # Nothing picked in the tree: where the run has got to, so that a run
+        # under the cursor shows its live curve and its live log.
+        phase = data.current_phase(snapshot.phases)
+        if phase is not None:
+            self.select_phase(phase)
+
+    def apply_sweep(self) -> None:
+        sweep = next((s for s in self.sweeps if s.id == self.selected_sweep), None)
+        pane = self.query_one("#sweep", textual.containers.VerticalScroll)
+        grid = self.query_one("#sweep-grid", textual.widgets.Static)
+        if sweep is None:
+            grid.update("")
+            return
+        members = sorted(
+            (r for r in self.runs if r.sweep_id == sweep.id), key=lambda r: r.created_at
+        )
+        pane.border_title = f"2 {sweep.name} · {sweep.status} · {render.sweep_progress(sweep)}"
+        grid.update(render.sweep_grid(sweep, members))
 
     def apply_metrics(self, snapshot: data.Snapshot) -> None:
         addr = self.address()
@@ -914,13 +988,13 @@ class MainScreen(_Screen):
             render.config_rows(snapshot.config_schema, snapshot.config, snapshot.phase_order),
             editable=snapshot.run.run.status == "configuring",
         )
-        # Each content pane names what it is showing rather than what it is:
-        # the tab strip above already says which of the three is up, so the
-        # title is free to say whose config or whose curves these are.
-        form.border_title = render.run_title(snapshot.run)
-        self.query_one("#plots", widgets.PlotPane).border_title = render.phase_title(
+        # Each content pane names what it is showing, after the number that
+        # reaches it: whose config, whose curves, whose log.
+        form.border_title = f"2 {render.run_title(snapshot.run)}"
+        self.query_one("#plots", widgets.PlotPane).border_title = "2 " + render.phase_title(
             snapshot.phase_label, snapshot.run
         )
+        self._config = snapshot
 
     # -- what the content column shows ------------------------------------
 
@@ -935,18 +1009,38 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         return run is not None and run.status == status
 
+    def shown_content(self) -> set[str]:
+        """The right-hand panes that describe what the cursor is on."""
+        run = self.selected_run_row()
+        if self.selected_sweep is not None:
+            shown = {"sweep"}
+        elif run is None:
+            shown = {"plots", "log"}
+        elif run.status in ("configuring", "queued"):
+            # Not started: there is nothing to plot or log, and the config is
+            # what there is to see -- and, while configuring, to change.
+            shown = {"config"}
+        else:
+            shown = {"plots", "log"}
+        if self.zoomed in shown:
+            shown = {self.zoomed}
+        return shown
+
     def apply_focus(self) -> None:
-        """Show the level the list is at and the content pane the tab names."""
-        for level in self._LEFT:
-            self.query_one(f"#{level}").display = level == self.level
-        for _, _, pane in render.CONTENT_TABS:
-            self.query_one(f"#{pane}").display = pane == self.tab
-        self.query_one("#tabs", textual.widgets.Static).update(render.content_tabs(self.tab))
-        if self.tab != "plots":
-            # The picker decides which curves are drawn, so it has nothing to
-            # say about a config form or a log: it goes with the plots it is
-            # beside.
+        """Show the right-hand panes for what is selected, zoomed if asked."""
+        shown = self.shown_content()
+        for pane in self._CONTENT:
+            self.query_one(f"#{pane}").display = pane in shown
+        log = self.query_one("#log", widgets.LogTail)
+        log.border_title = f"3 log · {self.selected_phase}" if self.selected_phase else "3 log"
+        if "plots" not in shown:
+            # The picker decides which curves are drawn, so it goes with the
+            # plots it is beside.
             self.show_metrics(False)
+        if self.pane in self._CONTENT and self.pane not in shown:
+            # The pane the focus was in has just been hidden; take the focus to
+            # the one that replaced it rather than letting Textual pick.
+            self.action_focus_content()
 
     def _pane_of(self, node: textual.widget.Widget | None) -> str | None:
         """The pane `node` sits in, or None for anything else."""
@@ -991,11 +1085,12 @@ class MainScreen(_Screen):
         run = self.selected_run_row()
         state = (
             self.pane,
-            self.tab,
+            self.cursor_key,
+            self.zoomed,
             None if run is None else run.status,
             self.export_metric() is not None,
             self.chattable() is None,
-            # `t` greys per phase now, so moving down the phases pane has to
+            # `t` greys per phase, so moving between a run's phases has to
             # rebuild the footer even though the pane and run have not changed.
             self.chat_phase(),
         )
@@ -1005,7 +1100,8 @@ class MainScreen(_Screen):
 
     # -- selection --------------------------------------------------------
 
-    def select_run(self, run_id: str) -> None:
+    def select_run(self, run_id: str | None) -> None:
+        """Make `run_id` the run the right side is about; None for no run."""
         if run_id == self.selected_run:
             return
         self.selected_run = run_id
@@ -1022,25 +1118,11 @@ class MainScreen(_Screen):
         if phase == self.selected_phase:
             return
         self.selected_phase = phase
-        self.remember_phase()
-        self.restore_tab()
         self.reset_phase_view()
         # As soon as the cursor stops rather than on the next tick: a move that
         # took a second to reach the plots would feel like the app had missed
         # it, and one that fetched per row on the way would strobe.
         self.refresh_soon()
-
-    def remember_phase(self) -> None:
-        """File the selected phase under its run, for coming back to.
-
-        Only from inside the phase list. A phase picked for the viewer -- the
-        one a run has got to, chosen by `apply_phases` while the cursor is
-        still up on the run itself -- is not a phase they visited, and pinning
-        it would stop a live run's dashboard following the phase it moves on
-        to.
-        """
-        if self.level == "phases" and self.selected_run is not None and self.selected_phase:
-            self.visited[self.selected_run] = self.selected_phase
 
     def reset_phase_view(self) -> None:
         """Start the metrics panes over for a different phase.
@@ -1077,24 +1159,15 @@ class MainScreen(_Screen):
             if metric_list.sync(self.columns.get(addr, []), self.default_checked()):
                 self.update_plots()
 
-    # Two handlers with selectors rather than one that asks the event which
-    # table it came from: moving the cursor means something different in each
-    # list, and `@textual.on` says so without an `if`.
     @textual.on(textual.widgets.DataTable.RowHighlighted, "#runs")
-    def _run_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
-        # Moving the cursor is the selection: there is nothing to drill into any
-        # more, so waiting for enter would only make the panes lag the cursor.
+    def _row_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
+        # Moving the cursor is the selection: waiting for enter would only make
+        # the panes lag the cursor.
         if _stale(event, self.table("#runs")):
             return
-        if 0 <= event.cursor_row < len(self.runs):
-            self.select_run(self.runs[event.cursor_row].id)
-
-    @textual.on(textual.widgets.DataTable.RowHighlighted, "#phases")
-    def _phase_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
-        if _stale(event, self.table("#phases")):
-            return
-        if 0 <= event.cursor_row < len(self.phases):
-            self.select_phase(self.phases[event.cursor_row].phase)
+        if 0 <= event.cursor_row < len(self.nodes):
+            self.select_node(self.nodes[event.cursor_row])
+            self.sync_bindings()
 
     def on_descendant_focus(self) -> None:
         pane = self._pane_of(self.focused)
@@ -1240,52 +1313,13 @@ class MainScreen(_Screen):
         if widget.display:
             widget.focus()
 
-    def action_focus_tab(self, tab: str) -> None:
-        """`2`/`3`/`4`: show that content pane, and go to it.
-
-        One key rather than two. The tab is what the content column is about
-        and the focus is where the keys go, and a viewer who says "logs" wants
-        both -- there is nothing they could have meant by asking for the tab
-        and staying in the sidebar.
-
-        Asking for a tab is what files it under the phase: `restore_tab` puts
-        it back the next time that phase is selected.
-        """
-        self.tab = tab
-        self.remember_tab()
-        self.apply_focus()
-        self.action_focus_pane(tab)
-
-    def phase_key(self) -> tuple[str, str] | None:
-        """What a per-phase memory is filed under, or None with none selected."""
-        if self.selected_run is None or self.selected_phase is None:
-            return None
-        return (self.selected_run, self.selected_phase)
-
-    def remember_tab(self) -> None:
-        key = self.phase_key()
-        if key is not None:
-            self.tabs[key] = self.tab
-
-    def restore_tab(self) -> None:
-        """Put back the tab last asked for on this phase, if there was one.
-
-        Phases are not alike -- a download has no curve to draw and a train
-        phase is mostly curve -- so how you were looking at one is worth
-        keeping. A phase nobody has chosen a tab for is left alone: the pane
-        does not change under a cursor that is only passing through.
-        """
-        key = self.phase_key()
-        tab = None if key is None else self.tabs.get(key)
-        if tab is None or tab == self.tab:
-            return
-        self.tab = tab
-        self.apply_focus()
-        if self.pane in render.content_panes():
-            # The pane the focus was in has just been hidden; take the focus to
-            # the one that replaced it rather than letting Textual pick.
-            self.action_focus_pane(tab)
-        self.sync_bindings()
+    def action_focus_content(self) -> None:
+        """`2`: the first pane on the right, whichever that is for the selection."""
+        shown = self.shown_content()
+        for pane in self._CONTENT:
+            if pane in shown:
+                self.action_focus_pane(pane)
+                return
 
     def metrics_open(self) -> bool:
         return self.query_one("#metrics", widgets.MetricList).display
@@ -1293,10 +1327,8 @@ class MainScreen(_Screen):
     def action_toggle_metrics(self) -> None:
         """`m`: put the metric picker over the plots, or take it away.
 
-        Brings the plots up first if they are not the tab that is showing, the
-        way `e` brings up the config: asking which curves to draw is asking to
-        see them, and a key that quietly did nothing off the plots tab would be
-        a gate with nothing behind it.
+        Only where there are plots: a run that has not started has none, and
+        a sweep row shows its grid.
 
         It keeps the focus while it is up, because everything it is opened for
         -- checking a curve, soloing one, changing the x axis -- is a keypress
@@ -1306,8 +1338,8 @@ class MainScreen(_Screen):
         if self.metrics_open():
             self.show_metrics(False)
             return
-        if self.tab != "plots":
-            self.action_focus_tab("plots")
+        if "plots" not in self.shown_content():
+            return
         self.show_metrics(True)
 
     def show_metrics(self, open_: bool) -> None:
@@ -1323,33 +1355,101 @@ class MainScreen(_Screen):
             self.action_focus_pane("plots")
 
     def action_focus_list(self) -> None:
-        """`1`: the sidebar, at whichever level it is showing."""
-        self.action_focus_pane(self.level)
-
-    def set_level(self, level: str) -> None:
-        """Take the list down into a run's phases, or back up to the runs."""
-        if level == self.level:
-            return
-        self.level = level
-        # Arriving in the list is itself a visit: a viewer who drills in and
-        # comes straight back out was on the phase it opened on.
-        self.remember_phase()
-        self.apply_focus()
-        self.action_focus_pane(level)
-        self.sync_bindings()
+        """`1`: the tree."""
+        self.action_focus_pane("runs")
 
     def action_drill_in(self) -> None:
-        """`enter`: one level down, and from the bottom into the content.
+        """`enter` on the tree: open or close the row, or go into a phase.
 
-        From the runs it opens that run's phases; from the phases there is
-        nothing below, so it hands over to the tab that is up. Which tab that
-        is stays the viewer's: moving the cursor has been feeding that pane all
-        along, so `enter` is "let me at it", not "show me something else".
+        A sweep or a run opens in place, showing what is under it; a phase has
+        nothing under it, so `enter` there hands over to the plots, which the
+        cursor has been feeding all along -- "let me at it".
         """
-        if self.level == "runs":
-            self.set_level("phases")
+        node = self.cursor_node()
+        if node is None:
             return
-        self.action_focus_pane(self.tab)
+        if node.expanded is None:
+            self.action_focus_content()
+            return
+        self.set_expanded(node, not node.expanded)
+
+    def action_expand(self) -> None:
+        """`right`: open the row under the cursor."""
+        node = self.cursor_node()
+        if node is not None and node.expanded is False:
+            self.set_expanded(node, True)
+
+    def action_collapse(self) -> None:
+        """`left`: close the row, or from inside one, go up to the row it is in."""
+        node = self.cursor_node()
+        if node is None:
+            return
+        if node.expanded:
+            self.set_expanded(node, False)
+            return
+        parent = self.parent_of(node)
+        if parent is not None:
+            self.move_to(parent.key)
+
+    def parent_of(self, node: render.TreeNode) -> render.TreeNode | None:
+        index = self.nodes.index(node)
+        for candidate in reversed(self.nodes[:index]):
+            if candidate.depth < node.depth:
+                return candidate
+        return None
+
+    def move_to(self, key: str) -> None:
+        index = self.index_of(key)
+        if index is not None:
+            self.table("#runs").move_cursor(row=index)
+            self.select_node(self.nodes[index])
+
+    def set_expanded(self, node: render.TreeNode, open_: bool) -> None:
+        if open_:
+            self.expanded.add(node.key)
+        else:
+            self.expanded.discard(node.key)
+        # Drawn now, from what is known, so the list answers the key; the
+        # fetch brings an opened run's phases if they were not already here.
+        self.draw_tree()
+        self.refresh_data()
+
+    def action_toggle_mark(self) -> None:
+        """`space`: mark the run under the cursor for comparison, or unmark it."""
+        node = self.cursor_node()
+        if node is None or node.run_id is None:
+            return
+        self.mark(node.run_id)
+
+    @textual.work(thread=True, group="mark")
+    def mark(self, run_id: str) -> None:
+        try:
+            self.data.toggle_mark(run_id)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.marked_changed)
+
+    def marked_changed(self) -> None:
+        self.refresh_data()
+        refresh = getattr(self.host, "refresh_status", None)
+        if callable(refresh):
+            refresh()
+
+    def action_zoom(self) -> None:
+        """`z`: give the focused pane the whole right side, or give it back."""
+        if self.zoomed is not None:
+            self.zoomed = None
+        elif self.pane in self._CONTENT:
+            self.zoomed = self.pane
+        elif self.pane == "metrics":
+            self.zoomed = "plots"
+        else:
+            # From the tree: the first pane on the right.
+            shown = self.shown_content()
+            self.zoomed = next((p for p in self._CONTENT if p in shown), None)
+        self.apply_focus()
+        self.sync_bindings()
 
     def action_back(self) -> None:
         """`escape`: out of the editor or the picker, then out of the pane.
@@ -1362,14 +1462,16 @@ class MainScreen(_Screen):
         if self.metrics_open():
             self.show_metrics(False)
             return
-        if self.pane not in self._LEFT:
-            # Out of the content column and back to the list, at whatever level
-            # it was left at.
-            self.action_focus_pane(self.level)
+        if self.zoomed is not None:
+            self.zoomed = None
+            self.apply_focus()
+            self.sync_bindings()
             return
-        # And from the list, one level up. The runs are the top: `q` is how the
-        # app is left, and an escape that quit would be a surprise.
-        self.set_level("runs")
+        if self.pane != "runs":
+            # Out of the content column and back to the tree.
+            self.action_focus_pane("runs")
+        # From the tree, nothing: `q` is how the app is left, and an escape
+        # that quit would be a surprise.
 
     def action_images(self) -> None:
         self.host.go("images")
@@ -1537,22 +1639,42 @@ class MainScreen(_Screen):
         self.host.from_thread(self.held_message, f"wrote {spec.path}")
 
     def action_edit_config(self) -> None:
-        """Edit the field the cursor is on, in place.
+        """`e`: the selected run's config -- edited in place, or looked at.
 
-        `check_action` has already decided whether the key does anything, so
-        the first guard is a fallback rather than the path a viewer takes; the
-        second is not, since an image is free to declare no config at all.
+        A configuring run's config is the pane on the right, and `e` edits the
+        field its cursor is on there. Any other run's config can no longer
+        change (`runs.write_config` refuses it), so `e` shows it in a
+        read-only popup over the screen: a glance, not a place to work, and the
+        plots and log keep going behind it.
         """
+        run = self.selected_run_row()
+        if run is None:
+            return
+        if run.status != "configuring":
+            self.view_config(run)
+            return
         form = self.query_one("#config", widgets.ConfigPane)
         if not form.editable:
-            self.show_error("only a configuring run can be edited", hold=True)
+            # The form is one tick behind a run that has just been selected.
+            self.show_error("the config is still loading; try again", hold=True)
             return
-        # `e` is offered from the sidebar too, where the config need not be the
-        # tab that is up: asking to edit a field is asking to see it.
-        if self.tab != "config":
-            self.action_focus_tab("config")
         if not form.edit_here():
             self.show_error("this image declares no config", hold=True)
+
+    def view_config(self, run: types.RunRow) -> None:
+        snapshot = self._config
+        if (
+            snapshot is None
+            or snapshot.run is None
+            or snapshot.run.run.id != run.id
+            or snapshot.config_schema is None
+        ):
+            self.show_error("the config is still loading; try again", hold=True)
+            return
+        rows = render.config_rows(snapshot.config_schema, snapshot.config, snapshot.phase_order)
+        self.host.ask(
+            ConfigViewScreen(run, render.run_summary(snapshot.run), rows), lambda _answer: None
+        )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Which of this screen's keys are live right now.
@@ -1577,11 +1699,9 @@ class MainScreen(_Screen):
         if action == "edit_config":
             if self.editing():
                 return False
-            # The run's status rather than `ConfigPane.editable`, which is the
-            # same fact one tick late: the form is only told what it is showing
-            # when the next snapshot lands, so asking it would leave `e` greyed
-            # for the run the cursor was on a moment ago.
-            return True if self.run_is("configuring") else None
+            # Edited in place while configuring, shown read-only otherwise:
+            # live whenever there is a run.
+            return True if self.selected_run_row() is not None else None
         if action == "chat_run" and not self.editing():
             # Offered wherever the focus is, because the run it would talk to
             # is the selected one wherever the focus is. What it talks to
@@ -1595,9 +1715,8 @@ class MainScreen(_Screen):
             # that vanished on the way to the plots and came back on the way
             # out would be describing the focus, not the run.
             if action == "new_run":
-                # The exception: `n` is about the list, and only the runs level
-                # is a list of runs to add one to.
-                return self.level == "runs"
+                # The exception: `n` is about the list, not the selected run.
+                return True
             run = self.selected_run_row()
             if run is None:
                 return None
@@ -1614,6 +1733,11 @@ class MainScreen(_Screen):
             return None if run.status == "running" else True
         if self.editing() and action in _EDIT_MODE_OFF:
             return False
+        if action == "toggle_mark":
+            node = self.cursor_node()
+            return True if node is not None and node.run_id is not None else None
+        if action == "zoom":
+            return True if self.zoomed is not None or self.shown_content() else None
         return super().check_action(action, parameters)
 
     def on_input_submitted(self) -> None:
@@ -1706,12 +1830,10 @@ class MainScreen(_Screen):
         if run is None or run.status == "configuring":
             self.show_error("only a started run can be restarted", hold=True)
             return
-        # Only at the phases level: standing on the run, there is no phase
-        # being pointed at, and restarting from whichever one the list happens
-        # to have left behind is not what `R` over a run means. Which of the
-        # two it will be is on screen -- the list says which level it is at --
-        # and the prompt below names the phase either way.
-        from_phase = self.selected_phase if self.level == "phases" else None
+        # Only from a phase row: standing on the run, there is no phase being
+        # pointed at, and restarting from whichever one it happens to be on is
+        # not what `R` over a run means. The prompt names the phase either way.
+        from_phase = self.selected_phase if self.pinned_phase else None
         run_id = run.id
         question = (
             f"restart run '{run.name}'?"
@@ -1839,10 +1961,10 @@ class MainScreen(_Screen):
     def chat_phase(self) -> str | None:
         """The phase `t` would talk to, or None to mean the newest servable one.
 
-        At the phases level it is the phase the cursor is on; at the runs
-        level no phase is being pointed at, so the default stands.
+        On a phase row it is that phase; on the run itself no phase is being
+        pointed at, so the default stands.
         """
-        return self.selected_phase if self.level == "phases" else None
+        return self.selected_phase if self.pinned_phase else None
 
     def chattable(self) -> str | None:
         """Why `t` cannot talk to the selection, or None if it can.
@@ -1943,6 +2065,66 @@ class HelpScreen(textual.screen.ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class ConfigViewScreen(textual.screen.ModalScreen[None]):
+    """A started run's config, read-only, over the screen it was asked from.
+
+    A glance rather than a place: nothing in it can change any more, and the
+    plots and log keep updating behind it until `escape` puts it away. The
+    fields a sweep varied for this run are marked, since those are what tell
+    it from its siblings.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "close", "close"),
+        textual.binding.Binding("e", "close", "close", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ConfigViewScreen {
+        align: center middle;
+    }
+    ConfigViewScreen > ConfigPane {
+        width: 70%;
+        max-width: 90;
+        min-width: 50;
+        height: 80%;
+        background: $surface;
+        border: round $accent;
+    }
+    """
+
+    def __init__(
+        self,
+        run: types.RunRow,
+        summary: list[tuple[str, str]],
+        rows: list[render.ConfigRow],
+    ) -> None:
+        super().__init__()
+        self.run = run
+        self.summary = summary
+        self.rows = [self._marked(row) for row in rows]
+
+    def _marked(self, row: render.ConfigRow) -> render.ConfigRow:
+        if ".".join(row.path) not in self.run.point:
+            return row
+        field = row.field.model_copy(
+            update={"label": f"{row.field.label or row.field.key} ◂ swept"}
+        )
+        return dataclasses.replace(row, field=field)
+
+    def compose(self) -> textual.app.ComposeResult:
+        yield widgets.ConfigPane(id="config-view")
+
+    def on_mount(self) -> None:
+        pane = self.query_one("#config-view", widgets.ConfigPane)
+        pane.border_title = f"config · {self.run.name} · read-only"
+        pane.show(self.run.id, self.summary, self.rows, editable=False)
+        pane.focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class ConfirmScreen(textual.screen.ModalScreen[bool]):
