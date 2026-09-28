@@ -114,46 +114,82 @@ def create_engine(settings: config.Settings) -> sqlalchemy.Engine:
 
 
 def init_db(engine: sqlalchemy.Engine) -> None:
-    metadata.create_all(engine)
-    _migrate(engine)
+    """Create the tables and bring an older schema up to date.
+
+    Safe to race. The TUI opens sessions from several threads at once, and the
+    orchestrator and the sweep dispatcher are processes of their own: two of
+    them each checking that a table is missing and then creating it would have
+    the second fail with "table already exists". So the check-and-create runs
+    under `BEGIN IMMEDIATE`, SQLite's write lock, which the others wait on (see
+    the busy timeout) and after which they find nothing left to do.
+
+    The lock is only taken when something is missing: an up-to-date database,
+    which is every call but the first, is answered by a read.
+    """
+    with engine.connect() as conn:
+        if _up_to_date(_existing(conn)):
+            return
+    with engine.connect() as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        metadata.create_all(conn)
+        _migrate(conn)
+        conn.commit()
 
 
-def _migrate(engine: sqlalchemy.Engine) -> None:
-    with engine.begin() as conn:
-        inspector = sqlalchemy.inspect(engine)
-        existing = {
-            t: {c["name"] for c in inspector.get_columns(t)} for t in inspector.get_table_names()
-        }
+def _existing(conn: sqlalchemy.Connection) -> dict[str, set[str]]:
+    """Every table in the database, with its columns."""
+    inspector = sqlalchemy.inspect(conn)
+    return {t: {c["name"] for c in inspector.get_columns(t)} for t in inspector.get_table_names()}
 
-        # Rename gpu column to compute if it exists and compute doesn't
-        if "runs" in existing and "gpu" in existing["runs"] and "compute" not in existing["runs"]:
-            conn.execute(sqlalchemy.text("ALTER TABLE runs RENAME COLUMN gpu TO compute"))
-            # Refresh existing set after the rename
-            existing["runs"].discard("gpu")
-            existing["runs"].add("compute")
 
-        # Add new columns to legacy 'runs' table if it came from the old schema
-        if "runs" in existing:
-            for col, ddl in [
-                ("name", "TEXT NOT NULL DEFAULT ''"),
-                ("image", "TEXT NOT NULL DEFAULT ''"),
-                ("compute", "TEXT NOT NULL DEFAULT 'cpu'"),
-                ("config_hash", "TEXT"),
-                ("created_at", "REAL NOT NULL DEFAULT 0"),
-                ("sweep_id", "TEXT"),
-                ("sweep_point", "TEXT"),
-            ]:
-                if col not in existing["runs"]:
-                    conn.execute(sqlalchemy.text(f"ALTER TABLE runs ADD COLUMN {col} {ddl}"))
+# Columns `runs` has gained since its first schema, with the DDL that adds each
+# to a database that predates it.
+_RUNS_COLUMNS = [
+    ("name", "TEXT NOT NULL DEFAULT ''"),
+    ("image", "TEXT NOT NULL DEFAULT ''"),
+    ("compute", "TEXT NOT NULL DEFAULT 'cpu'"),
+    ("config_hash", "TEXT"),
+    ("created_at", "REAL NOT NULL DEFAULT 0"),
+    ("sweep_id", "TEXT"),
+    ("sweep_point", "TEXT"),
+]
 
-        # run_dir used to be stored as an absolute path, frozen at creation time,
-        # which broke once the data directory was moved elsewhere. It's now
-        # recomputed on every read from data_dir, so drop the stale column.
-        if "runs" in existing and "run_dir" in existing["runs"]:
-            try:
-                conn.execute(sqlalchemy.text("ALTER TABLE runs DROP COLUMN run_dir"))
-            except sqlalchemy.exc.OperationalError:
-                pass  # SQLite < 3.35 can't drop columns; leave it, it's harmless.
+
+def _up_to_date(existing: dict[str, set[str]]) -> bool:
+    if any(table not in existing for table in metadata.tables):
+        return False
+    columns = existing["runs"]
+    return (
+        "gpu" not in columns
+        and "run_dir" not in columns
+        and all(col in columns for col, _ in _RUNS_COLUMNS)
+    )
+
+
+def _migrate(conn: sqlalchemy.Connection) -> None:
+    existing = _existing(conn)
+
+    # Rename gpu column to compute if it exists and compute doesn't
+    if "runs" in existing and "gpu" in existing["runs"] and "compute" not in existing["runs"]:
+        conn.execute(sqlalchemy.text("ALTER TABLE runs RENAME COLUMN gpu TO compute"))
+        # Refresh existing set after the rename
+        existing["runs"].discard("gpu")
+        existing["runs"].add("compute")
+
+    # Add new columns to legacy 'runs' table if it came from the old schema
+    if "runs" in existing:
+        for col, ddl in _RUNS_COLUMNS:
+            if col not in existing["runs"]:
+                conn.execute(sqlalchemy.text(f"ALTER TABLE runs ADD COLUMN {col} {ddl}"))
+
+    # run_dir used to be stored as an absolute path, frozen at creation time,
+    # which broke once the data directory was moved elsewhere. It's now
+    # recomputed on every read from data_dir, so drop the stale column.
+    if "runs" in existing and "run_dir" in existing["runs"]:
+        try:
+            conn.execute(sqlalchemy.text("ALTER TABLE runs DROP COLUMN run_dir"))
+        except sqlalchemy.exc.OperationalError:
+            pass  # SQLite < 3.35 can't drop columns; leave it, it's harmless.
 
 
 @contextlib.contextmanager
