@@ -1,16 +1,23 @@
-"""The top row and the menus it drops.
+"""The top row, and the menu of commands it drops.
 
 The row names the four workspaces, with the one you are in picked out, and
 carries the state that matters wherever you are: how many runs are marked for
 comparison, and how busy the GPUs are. It is the app's only row of chrome
 above the panes, where the old header was.
 
-Each title is also a menu. A menu is a modal screen holding an `OptionList`,
-drawn under its title over the workspace -- which does not move, keeps
-refreshing underneath, and is not dimmed, so the live state the viewer may be
-about to act on stays visible around it. A submenu is a second one, pushed
-beside the item that opened it. Textual has no menu widget; this is the whole
-of one.
+The titles are tabs: a key or a click goes to a workspace, and nothing else.
+The menu is separate. A workspace has more commands than its footer has room
+for, so `Alt+M` (or `F10`, or a click on the title you are on) drops the whole
+list for the workspace in front -- each with its key beside it, greyed when it
+does not apply to what is selected. There is one menu, the current
+workspace's: another workspace's commands are about a screen that is not
+showing.
+
+A menu is a modal screen holding an `OptionList`, drawn under the active title
+over the workspace -- which does not move, keeps refreshing underneath, and is
+not dimmed, so the live state the viewer may be about to act on stays visible
+around it. A submenu is a second one, pushed beside the item that opened it.
+Textual has no menu widget; this is the whole of one.
 
 What the items are is `commands.MENUS`. Whether one is live is the screen's own
 `check_action`, asked the same way the footer asks it, so a greyed item and a
@@ -47,7 +54,10 @@ def title_text(ws: commands.Workspace) -> rich.text.Text:
 
 
 class Title(textual.widgets.Static):
-    """One workspace's name in the top row. A click drops its menu."""
+    """One workspace's name in the top row: a tab.
+
+    A click goes to it -- or, on the one you are in, drops its menu.
+    """
 
     def __init__(self, ws: commands.Workspace, active: bool) -> None:
         super().__init__(title_text(ws), classes="title -active" if active else "title")
@@ -55,7 +65,7 @@ class Title(textual.widgets.Static):
 
     def on_click(self, event: textual.events.Click) -> None:
         event.stop()
-        self.post_message(TopBar.MenuRequested(self.workspace.name))
+        self.post_message(TopBar.Clicked(self.workspace.name))
 
 
 class TopBar(textual.containers.Horizontal):
@@ -84,8 +94,8 @@ class TopBar(textual.containers.Horizontal):
     }
     """
 
-    class MenuRequested(textual.message.Message):
-        """A title was clicked: drop that workspace's menu."""
+    class Clicked(textual.message.Message):
+        """A title was clicked."""
 
         def __init__(self, workspace: str) -> None:
             super().__init__()
@@ -168,11 +178,12 @@ def menu_width(entries: typing.Sequence[commands.Entry]) -> int:
 
 
 class MenuScreen(textual.screen.ModalScreen[None]):
-    """One drop-down: a workspace's menu, or a submenu of one.
+    """One drop-down: the current workspace's menu, or a submenu of it.
 
     `target` is the screen the items act on -- the workspace in front of the
-    viewer, whichever menu this is -- and `workspace` is whose menu it is,
-    which is what `left` and `right` step from.
+    viewer -- and `workspace` is its name. `right` opens a submenu and `left`
+    closes it; on the menu itself they do nothing, there being no other menu
+    to step to.
     """
 
     DEFAULT_CSS = """
@@ -184,9 +195,18 @@ class MenuScreen(textual.screen.ModalScreen[None]):
 
     BINDINGS = [
         textual.binding.Binding("escape", "close", "close", show=False),
-        textual.binding.Binding("f10", "close_all", "close", show=False),
+        # The key that opened it closes it.
+        textual.binding.Binding("alt+m,f10", "close_all", "close", show=False),
         textual.binding.Binding("left", "left", "", show=False),
         textual.binding.Binding("right", "right", "", show=False),
+        # A modal screen does not reach the app's bindings, so the workspace
+        # keys are restated: going elsewhere closes the menu on the way.
+        *(
+            textual.binding.Binding(
+                f"{ws.alt},{ws.fkey}", f"app.workspace('{ws.name}')", ws.title, show=False
+            )
+            for ws in commands.WORKSPACES
+        ),
     ]
 
     def __init__(
@@ -294,24 +314,10 @@ class MenuScreen(textual.screen.ModalScreen[None]):
         entry = self._highlighted()
         if isinstance(entry, commands.Submenu):
             self.open_submenu(entry)
-            return
-        self.step(1)
 
     def action_left(self) -> None:
         if self.submenu:
             app_of(self).pop_screen()
-            return
-        self.step(-1)
-
-    def step(self, delta: int) -> None:
-        """Close every menu and drop the neighbouring workspace's, wrapping.
-
-        The workspace does not change: only which menu is open.
-        """
-        names = [ws.name for ws in available(app_of(self))]
-        index = names.index(self.workspace) if self.workspace in names else 0
-        close_menus(app_of(self))
-        open_menu(app_of(self), names[(index + delta) % len(names)])
 
 
 def available(app: object) -> list[commands.Workspace]:
@@ -333,7 +339,7 @@ def close_menus(app: textual.app.App[typing.Any]) -> None:
 
 
 def open_menu(app: textual.app.App[typing.Any], workspace: str) -> None:
-    """Drop `workspace`'s menu under its title, acting on the screen in front.
+    """Drop the menu of `workspace` -- the one in front -- under its title.
 
     Nothing opens over a dialog: whatever it is asking has to be answered
     first, and a menu over it could only act on the screen behind it.

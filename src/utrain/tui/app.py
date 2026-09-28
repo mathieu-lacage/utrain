@@ -360,17 +360,19 @@ class UtrainApp(textual.app.App[None]):
         # bring it here -- where there is no terminal selection to copy, only
         # the one the app made, so it copies that.
         textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
-        # The workspaces, and the menus: Alt with the title's underlined
-        # letter, or its function key where the terminal passes those on.
-        # A terminal sends Alt+x as escape then x, in one write; Textual reads
-        # the pair as `alt+x` when the x follows within ESCDELAY (100 ms).
+        # The workspaces: Alt with the title's underlined letter, or its
+        # function key where the terminal passes those on. A terminal sends
+        # Alt+x as escape then x, in one write; Textual reads the pair as
+        # `alt+x` when the x follows within ESCDELAY (100 ms).
         *(
             textual.binding.Binding(
-                f"{ws.alt},{ws.fkey}", f"workspace_key('{ws.name}')", ws.title, show=False
+                f"{ws.alt},{ws.fkey}", f"workspace('{ws.name}')", ws.title, show=False
             )
             for ws in commands.WORKSPACES
         ),
-        textual.binding.Binding("f10", "menu", "menu", show=False),
+        # And the workspace's menu: every command it has, where the footer has
+        # room for a few. In the footer itself, being how the rest are found.
+        textual.binding.Binding("alt+m,f10", "menu", "menu", key_display="Alt+M"),
         textual.binding.Binding("colon", "goto", "goto", key_display=":"),
     ]
 
@@ -507,27 +509,24 @@ class UtrainApp(textual.app.App[None]):
             bar.show_status(line)
 
     def action_workspace(self, name: str) -> None:
-        """Go to a workspace. From a menu's "Go to" item, or its function key."""
+        """`Alt+R`, `F1` and the rest: go to a workspace, and only that.
+
+        A menu that is open closes, being about the workspace being left.
+        """
         menus.close_menus(self)
         if name in self.workspaces and name != self.current_mode:
             self.switch_mode(name)
 
-    def action_workspace_key(self, name: str) -> None:
-        """`F1`-`F4`: go to that workspace; in it already, drop its menu.
-
-        So `F2 F2` reads "go to Sweeps and show me what I can do there".
-        """
-        if name == self.current_mode and not isinstance(self.screen, menus.MenuScreen):
-            menus.open_menu(self, name)
-            return
-        self.action_workspace(name)
-
     def action_menu(self) -> None:
-        """`F10`: the menu of the workspace in front of the viewer."""
+        """`Alt+M`: the menu of the workspace in front of the viewer."""
         menus.open_menu(self, self.current_mode)
 
-    def on_top_bar_menu_requested(self, event: menus.TopBar.MenuRequested) -> None:
-        menus.open_menu(self, event.workspace)
+    def on_top_bar_clicked(self, event: menus.TopBar.Clicked) -> None:
+        """A click on a title goes there; on the one you are in, drops its menu."""
+        if event.workspace == self.current_mode:
+            self.action_menu()
+        else:
+            self.action_workspace(event.workspace)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """`q` is off while a config field's editor or a confirm prompt is open.
@@ -536,11 +535,11 @@ class UtrainApp(textual.app.App[None]):
         not, so without this a `q` aimed at an enum would quit the app instead
         of picking an option. The screen switches off its own keys the same way.
 
-        The function keys are off under a dialog, which has to be answered
-        before the viewer goes anywhere, but not under a menu, which they
-        close on the way.
+        The workspace and menu keys are off under a dialog, which has to be
+        answered before the viewer goes anywhere, but not under a menu, which
+        they close on the way.
         """
-        if action in ("workspace_key", "menu", "goto"):
+        if action in ("workspace", "menu", "goto"):
             screen = self.screen
             if action == "goto" and (
                 isinstance(screen, screens.ChatScreen) or widgets.in_config_field(self.focused)
@@ -677,11 +676,14 @@ class UtrainApp(textual.app.App[None]):
             self.action_workspace(lowered)
             return
         if lowered == "menu" or lowered.startswith("menu "):
+            # `menu sweeps` goes there first: a menu is always the menu of
+            # the workspace in front.
             which = lowered.removeprefix("menu").strip() or self.current_mode
-            if which in self.workspaces:
-                menus.open_menu(self, which)
-            else:
+            if which not in self.workspaces:
                 self.tell(f"no workspace '{which}'")
+                return
+            self.action_workspace(which)
+            self.action_menu()
             return
         if lowered in ("quit", "q"):
             self.call_later(self.run_action, "quit")

@@ -121,70 +121,86 @@ async def test_the_status_counts_the_marked_runs(app: utrain.tui.app.UtrainApp) 
 # -- menus ----------------------------------------------------------------
 
 
-async def test_f10_drops_the_menu_of_the_workspace_you_are_in(
-    app: utrain.tui.app.UtrainApp,
+@pytest.mark.parametrize("key", ["alt+m", "f10"])
+async def test_the_menu_key_drops_the_menu_of_the_workspace_you_are_in(
+    app: utrain.tui.app.UtrainApp, key: str
 ) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10")
+        await pilot.press(key)
         await _settle(app, pilot)
         menu = _menu(app)
         assert menu.workspace == "runs"
-        assert menu.labels()[0] == ("Go to Runs", True)
+        assert menu.labels()[0] == ("New run...", True)
 
+        await pilot.press(key)  # the key that opened it closes it
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.MainScreen)
+
+
+async def test_escape_closes_the_menu(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("alt+m")
+        await _settle(app, pilot)
         await pilot.press("escape")
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.MainScreen)
 
 
-async def test_the_key_of_the_workspace_you_are_in_drops_its_menu(
+async def test_the_key_of_the_workspace_you_are_in_does_nothing(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f1")
+        runs = app.screen
+        await pilot.press("alt+r")
         await _settle(app, pilot)
-        assert _menu(app).workspace == "runs"
+        assert app.screen is runs
 
 
-async def test_a_menu_drops_under_its_title_over_the_workspace(
+async def test_the_menu_drops_under_the_active_title_over_the_workspace(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("alt+y")
         await _settle(app, pilot)
         x = _bar(app).title_x("system")
-        await pilot.press("f10", "left")  # wraps round to System
+        await pilot.press("alt+m")
         await _settle(app, pilot)
         menu = _menu(app)
         assert menu.workspace == "system"
         box = menu.query_one(textual.widgets.OptionList)
         assert box.region.x == x
         assert box.region.y == 1
-        # Over the workspace, which is still the runs screen underneath.
-        assert isinstance(app.screen_stack[-2], utrain.tui.screens.MainScreen)
+        # Over the workspace, which is still there underneath.
+        assert isinstance(app.screen_stack[-2], utrain.tui.screens.SystemScreen)
 
 
-async def test_left_and_right_step_between_menus_without_leaving_the_workspace(
+async def test_left_and_right_on_the_menu_itself_go_nowhere(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
+    """There is one menu, so there is no neighbouring one to step to."""
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10", "right")
+        await pilot.press("alt+m")
         await _settle(app, pilot)
-        assert _menu(app).workspace == "sweeps"
-        await pilot.press("right")
+        menu = _menu(app)
+        await pilot.press("right", "left")
         await _settle(app, pilot)
-        assert _menu(app).workspace == "compare"
-        await pilot.press("right")
-        await _settle(app, pilot)
-        assert _menu(app).workspace == "system"
-        await pilot.press("right")
-        await _settle(app, pilot)
-        assert _menu(app).workspace == "runs"  # wraps
-        await pilot.press("left")
-        await _settle(app, pilot)
-        assert _menu(app).workspace == "system"
+        assert _menu(app) is menu
         assert app.current_mode == "runs"
+
+
+async def test_switching_workspace_closes_the_menu(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("alt+m")
+        await _settle(app, pilot)
+        await pilot.press("alt+s")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, utrain.tui.screens.SweepsScreen)
 
 
 async def test_an_item_that_does_not_apply_is_greyed(app: utrain.tui.app.UtrainApp) -> None:
@@ -209,18 +225,15 @@ async def test_an_item_that_does_not_apply_is_greyed(app: utrain.tui.app.UtrainA
         assert live["Restart..."] is True
 
 
-async def test_a_command_another_workspace_owns_is_greyed_here(
-    app: utrain.tui.app.UtrainApp,
-) -> None:
-    """The System menu, opened from Runs, cannot add an image to the runs list."""
+async def test_every_menu_ends_with_quit(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10", "left")  # wraps round to System
-        await _settle(app, pilot)
-        labels = dict(_menu(app).labels())
-        assert labels["Add image..."] is False
-        assert labels["Go to System"] is True
-        assert labels["Quit"] is True
+        for key in ("alt+r", "alt+s", "alt+c", "alt+y"):
+            await pilot.press(key, "alt+m")
+            await _settle(app, pilot)
+            assert _menu(app).labels()[-1] == ("Quit", True)
+            await pilot.press("escape")
+            await _settle(app, pilot)
 
 
 async def test_right_opens_a_submenu_beside_its_item_and_left_closes_it(
@@ -257,35 +270,36 @@ async def test_right_opens_a_submenu_beside_its_item_and_left_closes_it(
         assert _menu(app) is top
 
 
-async def test_picking_go_to_switches_workspace(app: utrain.tui.app.UtrainApp) -> None:
-    async with app.run_test(size=base.SIZE) as pilot:
-        await _settle(app, pilot)
-        await pilot.press("f10", "left")  # wraps round to System
-        await _settle(app, pilot)
-        await pilot.press("enter")  # the first item: Go to System
-        await _settle(app, pilot)
-        assert isinstance(app.screen, utrain.tui.screens.SystemScreen)
-
-
 async def test_picking_an_item_runs_its_command_on_the_screen_in_front(
     app: utrain.tui.app.UtrainApp,
 ) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10", "down", "enter")  # Go to Runs, then New run...
+        await pilot.press("alt+m", "enter")  # New run...
         await _settle(app, pilot)
         assert isinstance(app.screen, utrain.tui.screens.NewRunScreen)
 
 
-async def test_clicking_a_title_drops_its_menu(app: utrain.tui.app.UtrainApp) -> None:
+def _title(app: utrain.tui.app.UtrainApp, name: str) -> utrain.tui.menus.Title:
+    return next(t for t in app.screen.query(utrain.tui.menus.Title) if t.workspace.name == name)
+
+
+async def test_clicking_a_title_goes_there(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        title = next(
-            t for t in app.screen.query(utrain.tui.menus.Title) if t.workspace.name == "system"
-        )
-        await pilot.click(title)
+        await pilot.click(_title(app, "system"))
         await _settle(app, pilot)
-        assert _menu(app).workspace == "system"
+        assert isinstance(app.screen, utrain.tui.screens.SystemScreen)
+
+
+async def test_clicking_the_title_you_are_on_drops_its_menu(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.click(_title(app, "runs"))
+        await _settle(app, pilot)
+        assert _menu(app).workspace == "runs"
 
 
 async def test_function_keys_are_off_under_a_dialog(app: utrain.tui.app.UtrainApp) -> None:
@@ -303,7 +317,10 @@ async def test_the_key_map_lists_every_workspace_menu(app: utrain.tui.app.Utrain
     sections = dict(utrain.tui.screens.help_sections(list(utrain.tui.commands.WORKSPACES)))
     assert ("s", "Run > Start") in sections["Runs (Alt+R)"]
     assert ("G", "Clean up store") in sections["System (Alt+Y)"]
-    assert ("F10", "open the menu of the workspace you are in") in sections["getting around"]
+    assert (
+        "Alt+M / F10",
+        "every command of the workspace you are in, as a menu",
+    ) in sections["getting around"]
 
 
 # -- the System workspace -------------------------------------------------
@@ -391,16 +408,6 @@ async def test_alt_with_the_underlined_letter_goes_to_each_workspace(
             await pilot.press(key)
             await _settle(app, pilot)
             assert app.current_mode == mode
-
-
-async def test_alt_again_opens_the_workspace_menu(app: utrain.tui.app.UtrainApp) -> None:
-    async with app.run_test(size=base.SIZE) as pilot:
-        await _settle(app, pilot)
-        await pilot.press("alt+r")
-        await _settle(app, pilot)
-        assert _menu(app).workspace == "runs"
-        labels = dict(_menu(app).labels())
-        assert "Go to Runs" in labels
 
 
 def test_each_title_underlines_its_letter() -> None:

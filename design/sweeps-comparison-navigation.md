@@ -1162,7 +1162,7 @@ Decided:
    they are not a default anyone can rely on. So:
    * **`Alt` with a letter is the primary key:** `Alt+R` Runs, `Alt+S`
      Sweeps, `Alt+C` Compare, `Alt+Y` System, the letter underlined in the
-     top row; pressed again, it opens that workspace's menu. A terminal
+     top row. A terminal
      sends `Alt+x` as `escape` then `x` in one write, so over ssh the two
      bytes travel together, and Textual reads them as `alt+x` when `x`
      follows within `ESCDELAY` (100 ms). The costs: `Escape` then a letter
@@ -1174,10 +1174,25 @@ Decided:
    * **Every function key has a typed fallback:** `:runs`, `:sweeps`,
      `:compare`, `:system` and `:menu` in the goto line.
    * **The mouse works over ssh** (Textual's mouse reporting is plain
-     terminal escape codes), so clicking a title always opens its menu.
+     terminal escape codes), so clicking a title always goes there.
      Copying already uses OSC 52, which is what reaches the local
      clipboard from a remote session.
 6. **No prototype of the more radical shells** (Miller columns, tiling).
+7. **The titles are tabs, not menus** (revising §5.1, after use). Making
+   each title both a place and a menu produced a string of oddities: the
+   workspace key opened the menu only on a second press, a menu could
+   hang over a workspace it did not belong to with most of its items
+   greyed "not from here", and `left`/`right` changed the menu but not
+   the workspace behind it. utrain is not one document with menus that
+   act on it; it is four places. So:
+   * `Alt+R/S/C/Y`, `F1`–`F4` and a click on a title go to a workspace,
+     and do nothing else.
+   * `Alt+M` (or `F10`, or a click on the active title) drops the menu of
+     the workspace in front: every command it has, for the ones the
+     footer has no room for. There is no other menu to step to, so
+     `left`/`right` only open and close submenus, and the "Go to …" items
+     are gone. Every menu ends with Quit.
+   The mockups in §5 still show the earlier design.
 
 Still open:
 

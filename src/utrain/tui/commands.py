@@ -1,18 +1,16 @@
 """What the app can be asked to do, written down once.
 
-The workspaces, and the menu each one's title drops, are declared here as data.
-The top row is drawn from `WORKSPACES`; a menu is drawn from `MENUS`; and `?`
-writes its key map from both. The keys themselves stay where Textual looks for
-them -- `BINDINGS` on the screen or the pane that owns them -- and an item names
-the action a binding runs, so a menu item and its key cannot come to do two
-different things: they are the same action, and the same `check_action` decides
-whether either is live.
+The workspaces, and each one's menu of commands, are declared here as data.
+The top row is drawn from `WORKSPACES`; the menu `Alt+M` drops is drawn from
+`MENUS`; and `?` writes its key map from both. The keys themselves stay where
+Textual looks for them -- `BINDINGS` on the screen or the pane that owns them --
+and an item names the action a binding runs, so a menu item and its key cannot
+come to do two different things: they are the same action, and the same
+`check_action` decides whether either is live.
 
-An item's action runs on the screen in front of the viewer, whichever menu it
-was picked from: a command acts on the selection wherever it is. An action the
-screen does not have is shown greyed, which is how a menu that belongs to
-another workspace says "not from here". Actions prefixed `app.` run on the app
-instead -- going to a workspace, quitting -- and are always live.
+The menu shown is always the workspace in front's, and its items run on that
+workspace's screen. Actions prefixed `app.` run on the app instead -- quitting
+-- and are always live.
 """
 
 import dataclasses
@@ -88,15 +86,11 @@ SEPARATOR = None
 Entry = Item | Submenu | None
 
 
-def _go(name: str) -> Item:
-    ws = workspace(name)
-    return Item(f"Go to {ws.title}", f"app.workspace('{name}')", ws.key_display)
+_QUIT = Item("Quit", "app.quit", "q")
 
 
 MENUS: dict[str, tuple[Entry, ...]] = {
     "runs": (
-        _go("runs"),
-        SEPARATOR,
         Item("New run...", "new_run", "n"),
         Item("New sweep from run...", "new_sweep_from_run", "N"),
         SEPARATOR,
@@ -126,10 +120,10 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Show in Sweeps", "show_in_sweeps"),
         Item("Expand / collapse", "drill_in", "enter"),
         Item("Zoom pane", "zoom", "z"),
+        SEPARATOR,
+        _QUIT,
     ),
     "sweeps": (
-        _go("sweeps"),
-        SEPARATOR,
         Item("New sweep...", "new_sweep", "N"),
         Item("Start / resume", "start_sweep", "s"),
         Item("Pause dispatch", "pause_sweep", "p"),
@@ -141,10 +135,10 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Open run in Runs", "open_run", "enter"),
         Item("Mark / unmark", "toggle_mark", "space"),
         Item("Compare this sweep", "compare_sweep", "C"),
+        SEPARATOR,
+        _QUIT,
     ),
     "compare": (
-        _go("compare"),
-        SEPARATOR,
         Item("Compare the marked runs", "compare_tray"),
         Item("Compare a sweep...", "pick_sweep"),
         Item("Open saved...", "open_saved"),
@@ -160,17 +154,17 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         SEPARATOR,
         Item("Open run in Runs", "open_run", "enter"),
         Item("Mark / unmark", "toggle_mark", "space"),
+        SEPARATOR,
+        _QUIT,
     ),
     "system": (
-        _go("system"),
-        SEPARATOR,
         Item("Add image...", "add_image", "a"),
         Item("Delete image...", "delete_image", "d"),
         SEPARATOR,
         Item("Check data store", "check_store"),
         Item("Clean up store...", "gc_store", "G"),
         SEPARATOR,
-        Item("Quit", "app.quit", "q"),
+        _QUIT,
     ),
 }
 
@@ -178,10 +172,10 @@ MENUS: dict[str, tuple[Entry, ...]] = {
 # What `?` adds to the menus: the keys that move between places rather than
 # act on anything, which no menu lists.
 NAVIGATION = (
-    ("Alt+R / S / C / Y", "go to Runs, Sweeps, Compare, System; again opens its menu"),
+    ("Alt+R / S / C / Y", "go to Runs, Sweeps, Compare, System"),
     ("F1 - F4", "the same, where the terminal passes function keys on"),
-    ("F10", "open the menu of the workspace you are in"),
-    ("left / right", "in a menu: the neighbouring menu"),
+    ("Alt+M / F10", "every command of the workspace you are in, as a menu"),
+    ("right / left", "in a menu: open a submenu, and close it"),
     ("tab / shift+tab", "the next pane on screen, and the previous"),
     ("1 / 2 / 3", "a pane by the number in its title"),
     (":", "go to a run, phase, sweep or workspace by name"),
