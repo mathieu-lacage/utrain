@@ -640,10 +640,13 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 * **Each title is a place.** `F1`–`F4` (or `alt+1..4`) switch to a
   workspace, and the active title is highlighted. There is no separate
   tab strip. Each workspace remembers its state.
-* **Each title is also a menu.** `F10` or a click drops the menu of the
-  title under it: the commands for *the selected item of that kind*. Its
-  first item is "Go to …" with the workspace's F-key. Each item shows its
-  shortcut, which is how the keys are learned.
+* **Each title is also a menu** of the commands for *the selected item of
+  that kind*. `F10` drops the menu of the workspace you are in; a click
+  drops the menu of the clicked title. Once a menu is open, `←`/`→` move to
+  the neighbouring menus without switching workspace, `enter` runs the
+  item, and `escape` or `F10` closes it. Each menu's first item is "Go to
+  …" with the workspace's F-key, and every item shows its shortcut, which
+  is how the keys are learned.
 * **Commands act on the selection, wherever it is.** Opening the `Runs`
   menu while in Compare restarts or opens the run under the Compare
   cursor; items that don't apply are greyed. Opening a menu never switches
