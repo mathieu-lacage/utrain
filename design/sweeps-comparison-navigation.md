@@ -621,7 +621,7 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 
 ```
  Runs  [Sweeps]  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
-╭─ sweep┌──────────────────────────┐epth · status (min val/loss) ─────────────────────────────────╮
+╭─ 1 swe┌──────────────────────────┐-depth · status (min val/loss) ───────────────────────────────╮
 │ NAME  │ Go to Sweeps          F2 │       n_layer=4     n_layer=6     n_layer=8                  │
 │▶lr-dep│ ──────────────────────── │-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                   │
 │ warmup│ New sweep…            N  │-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                   │
@@ -640,7 +640,7 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 │                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
 │                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
 ╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
-                     enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
+           tab pane  enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
 ```
 
 * **The two rows have separate jobs.** The top row says where you are
@@ -693,6 +693,27 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   pane, plus `: goto`, `? help` and `F10 menu`. The menus list everything
   else.
 
+#### Focus and scrolling (all workspaces)
+
+Lists, grids and tables can outgrow their pane, so the keyboard has to
+know which pane it is talking to. Every workspace follows the rules the
+current screen already uses:
+
+* **One pane has keyboard focus**, shown by its accent border. Arrow keys,
+  `PgUp`/`PgDn` and `Home`/`End` go to it.
+* **`tab`/`shift+tab` move focus** between panes, and number keys jump to
+  one. A pane that takes focus carries its number in its title (`1 runs`,
+  `1 sweeps`, `2 lr-depth · status`), as the runs pane does today.
+* **The mouse wheel scrolls the pane under the pointer** without moving
+  focus (Textual's default), so the mouse needs no focus step.
+* **In a list, grid or table, the cursor does the scrolling.** Moving the
+  cursor past the edge scrolls the pane, so a two-dimensional grid needs
+  no scroll keys of its own.
+* **Few panes take focus.** A pane that follows another (the Compare plot
+  follows the table's cursor) or is bounded by design (the Sweeps queue
+  and spec, the System data store) is not focusable, so `tab` has at most
+  two or three stops.
+
 #### Runs
 
 Today's screen with three additions: sweep rows, a `POINT` column,
@@ -738,7 +759,7 @@ and marks.
 
 ```
  Runs  [Sweeps]  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
-╭─ sweeps ──────────────────╮╭─ lr-depth · status (min val/loss) ─────────────────────────────────╮
+╭─ 1 sweeps ────────────────╮╭─ 2 lr-depth · status (min val/loss) ───────────────────────────────╮
 │ NAME       STATUS    DONE ││             n_layer=4     n_layer=6     n_layer=8                  │
 │▶lr-depth   running   4/12 ││ lr=1e-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                   │
 │ warmup     done      8/8  ││ lr=3e-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                   │
@@ -757,7 +778,7 @@ and marks.
 │                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
 │                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
 ╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
-                     enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
+           tab pane  enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
 ```
 
 * **Left, the sweeps;** right, three panes for the one under the cursor.
@@ -768,7 +789,8 @@ and marks.
   with more than two axes gets a picker for which two are shown; the rest
   are summarised (best, or mean over replicates).
 * **Queue:** what is running on each compute, its phase and progress, and
-  what starts next.
+  the next run to start. It is capped at one line per compute plus that
+  "next" line, so it never scrolls.
 * **Spec:** image, base run, axes, pool, and an estimate of the time left
   from the durations of finished points.
 * `enter` on a cell opens that run in Runs, `space` marks it, and `C`
@@ -801,14 +823,15 @@ and marks.
 │   lr-depth-07   1e-3   4        failed    –           –           –      3m                     │
 │   6 queued runs not shown                                                                       │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
- best lr-depth-04 · 1.29  enter open run  space mark  tab lens  < > sort  : goto  ? help  F10 menu
+ best lr-depth-04 · 1.29  enter open run  space mark  [ ] lens  < > sort  : goto  ? help  F10 menu
 ```
 
 * **The set** comes from a sweep (`set lr-depth ▾` picks which) or from
   the tray (`tray 2 ▸`). The title line holds the phase, metric and
   reducer, each changeable from the Compare menu.
-* **Lenses** are tabs switched with `tab`: curves and table together
-  (shown), response, heatmap, and config diff.
+* **Lenses** are switched with `[`/`]`: curves and table together
+  (shown), response, heatmap, and config diff. (`tab` is kept for moving
+  between panes, as everywhere else.)
 * **Curves** are coloured by one axis, with the cursor's run drawn in the
   accent colour. **The table** below has one row per run; `<`/`>` change
   the sort column. Moving the cursor in the table moves the highlight in
@@ -820,7 +843,7 @@ and marks.
 
 ```
  Runs  Sweeps  Compare  [System]                                    2 marked    gpu0 97%  gpu1 12%
-╭─ compute ───────────────────────────────────────────────────────────────────────────────────────╮
+╭─ 1 compute ─────────────────────────────────────────────────────────────────────────────────────╮
 │   ID    KIND  NAME            UTIL                MEMORY        POWER   RUNNING                 │
 │ ▶ cpu   cpu   EPYC 7443 ×24   ▰▰▱▱▱▱▱▱▱▱  18%     41/256 GB     –       live                    │
 │   gpu0  gpu   RTX A5000       ▰▰▰▰▰▰▰▰▰▱  97%     22.1/24 GB    214 W   lr-depth-05             │
@@ -828,7 +851,7 @@ and marks.
 │                                                                                                 │
 │   queue: 6 runs of lr-depth waiting for gpu0 or gpu1                                            │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ images ────────────────────────────────────────────────────────────────────────────────────────╮
+╭─ 2 images ──────────────────────────────────────────────────────────────────────────────────────╮
 │   NAME                    ID     SIZE     RUNS  SWEEPS  ADDED                                   │
 │   shakespeare-char:1.2    3f2a   2.1 GB   14    2       3d ago                                  │
 │   utrain-fake:latest      9c1e   180 MB   3     0       20d ago                                 │
@@ -847,7 +870,8 @@ and marks.
   it. A pull in progress shows its progress in place.
 * **Data store:** the content-addressed store's size and what `gc` would
   reclaim, so `utrain store check`/`gc` have a place in the TUI.
-* `tab` moves between the three panes. `i` and `c` still open the images
+* `tab` moves between compute (`1`) and images (`2`); the one-line data
+  store pane does not take focus. `i` and `c` still open the images
   and compute pop-ups from any workspace for a quick look.
 
 How the reference tasks play out:
