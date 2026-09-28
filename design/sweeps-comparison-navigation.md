@@ -620,21 +620,27 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 `Compare` tabs). One row carries both jobs instead:
 
 ```
- Runs  [Sweeps]  Compare  System                           2 marked    gpu0 97%  gpu1 12%
-╭─ swe┌──────────────────────────┐lr-depth · gpu0,gpu1 ×2 · min val/loss ───────────────────────╮
-│ lr-d│ Go to Sweeps          F2 │         n_layer=4     n_layer=6     n_layer=8                │
-│ warm│ ──────────────────────── │1e-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                 │
-│ seed│ New sweep…            N  │3e-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                 │
-│     │ Pause dispatch        p  │1e-3     ✗ failed      ○ queued      ○ queued                 │
-│     │ Extend grid…          +  │3e-3     ○ queued      ○ queued      ○ queued                 │
-│     │ Retry failed runs     R  │1e-2     ○ queued      ○ queued      ○ queued                 │
-│     │ Cancel sweep…            │eue ──────────────────────────────────────────────────────────┤
-│     │ ──────────────────────── │0  lr=3e-4 L=6   pretrain  step 4100/5000   eta 6m            │
-│     │ Compare this sweep    C  │1  lr=1e-4 L=8   pretrain  step 1200/5000   eta 21m           │
-│     └──────────────────────────┘                                                              │
-│                           ││                                                                  │
-╰───────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
- lr-depth running 4/12 · 1 failed        space mark  enter open  : goto  ? help  F10 menu
+ Runs  [Sweeps]  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ sweep┌──────────────────────────┐epth · status (min val/loss) ─────────────────────────────────╮
+│ NAME  │ Go to Sweeps          F2 │       n_layer=4     n_layer=6     n_layer=8                  │
+│▶lr-dep│ ──────────────────────── │-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                   │
+│ warmup│ New sweep…            N  │-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                   │
+│ seeds │ Pause dispatch        p  │-3     ✗ failed      ○ queued      ○ queued                   │
+│ lr-fin│ Extend grid…          +  │-3     ○ queued      ○ queued      ○ queued                   │
+│       │ Retry failed runs     R  │                                                              │
+│       │ Cancel sweep…            │e  ◐ running  ○ queued  ✗ failed · cell: min val/loss · ★ best│
+│       │ ──────────────────────── │──────────────────────────────────────────────────────────────╯
+│       │ Compare this sweep    C  │e ────────────────────────────────────────────────────────────╮
+│       └──────────────────────────┘ lr-depth-05  lr=3e-4 L6  pretrain  step 4100/5000  eta 6m    │
+│                           ││ gpu1  lr-depth-03  lr=1e-4 L8  pretrain  step 1200/5000  eta 21m   │
+│                           ││ next  lr-depth-06  lr=3e-4 L8                                      │
+│                           │╰────────────────────────────────────────────────────────────────────╯
+│                           │╭─ spec ─────────────────────────────────────────────────────────────╮
+│                           ││ image  shakespeare-char@3f2a      base  baseline-0921              │
+│                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
+│                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
+╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+                     enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
 ```
 
 * **The two rows have separate jobs.** The top row says where you are
@@ -687,8 +693,10 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   pane, plus `: goto`, `? help` and `F10 menu`. The menus list everything
   else.
 
-The **Runs** workspace is today's screen with three additions: sweep
-rows, a `POINT` column, and marks.
+#### Runs
+
+Today's screen with three additions: sweep rows, a `POINT` column,
+and marks.
 
 ```
  [Runs]  Sweeps  Compare  System                           2 marked    gpu0 97%  gpu1 12%
@@ -725,6 +733,122 @@ rows, a `POINT` column, and marks.
 * **Everything else is unchanged:** `enter` drills into the run's phases,
   `2`/`3`/`4` pick Config, Plots or Logs, and moving the cursor updates the
   content pane.
+
+#### Sweeps
+
+```
+ Runs  [Sweeps]  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ sweeps ──────────────────╮╭─ lr-depth · status (min val/loss) ─────────────────────────────────╮
+│ NAME       STATUS    DONE ││             n_layer=4     n_layer=6     n_layer=8                  │
+│▶lr-depth   running   4/12 ││ lr=1e-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                   │
+│ warmup     done      8/8  ││ lr=3e-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                   │
+│ seeds      paused    3/10 ││ lr=1e-3     ✗ failed      ○ queued      ○ queued                   │
+│ lr-fine    draft     0/6  ││ lr=3e-3     ○ queued      ○ queued      ○ queued                   │
+│                           ││                                                                    │
+│                           ││ ● done  ◐ running  ○ queued  ✗ failed · cell: min val/loss · ★ best│
+│                           │╰────────────────────────────────────────────────────────────────────╯
+│                           │╭─ queue ────────────────────────────────────────────────────────────╮
+│                           ││ gpu0  lr-depth-05  lr=3e-4 L6  pretrain  step 4100/5000  eta 6m    │
+│                           ││ gpu1  lr-depth-03  lr=1e-4 L8  pretrain  step 1200/5000  eta 21m   │
+│                           ││ next  lr-depth-06  lr=3e-4 L8                                      │
+│                           │╰────────────────────────────────────────────────────────────────────╯
+│                           │╭─ spec ─────────────────────────────────────────────────────────────╮
+│                           ││ image  shakespeare-char@3f2a      base  baseline-0921              │
+│                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
+│                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
+╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+                     enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
+```
+
+* **Left, the sweeps;** right, three panes for the one under the cursor.
+* **Status grid:** one cell per point, for the first two axes. A finished
+  cell shows the reduced metric, a running one its current value with a
+  trend arrow, and `★` marks the best. When the sweep is done the grid is
+  its heatmap, so monitoring and the first result are one view. A sweep
+  with more than two axes gets a picker for which two are shown; the rest
+  are summarised (best, or mean over replicates).
+* **Queue:** what is running on each compute, its phase and progress, and
+  what starts next.
+* **Spec:** image, base run, axes, pool, and an estimate of the time left
+  from the durations of finished points.
+* `enter` on a cell opens that run in Runs, `space` marks it, and `C`
+  opens the sweep in Compare. Creating a sweep (`N`) opens the form over
+  this screen.
+
+#### Compare
+
+```
+ Runs  Sweeps  [Compare]  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ compare · lr-depth · phase pretrain · metric val/loss · reduce min ────────────────────────────╮
+│ [curves + table]   response   heatmap   diff              set lr-depth (12) ▾   tray 2 ▸        │
+│                                                                                                 │
+│ val/loss vs step · pretrain · colour: lr · ▶ highlighted                                        │
+│ 3.2┤⠑⢄⠑⢄                                                                   ── lr=1e-4           │
+│    │ ⠈⠢⡀⠈⠢⡀⠑⢄                                                              ── lr=3e-4           │
+│    │    ⠈⠑⠢⢄⡀⠈⠑⠢⢄⣀                                                         ── lr=1e-3           │
+│    │         ⠈⠉⠒⠒⠤⠤⣀⣀⠉⠒⠤⣀⣀                                                 ── ▶ lr-depth-04     │
+│    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀                                                      │
+│ 1.2┤                           ⠉⠉⠉⠉⠉⠒⠒⠒⠒⠤⠤⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀                                           │
+│    └──────────────────────────────────────────────────────────────── step 5000                  │
+│                                                                                                 │
+├─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│   RUN           lr     n_layer  STATUS    val/loss ▲  train/loss  tok/s  DURATION               │
+│ ▶ lr-depth-04   3e-4   4        done      1.29        1.11        41k    42m                    │
+│   lr-depth-02   1e-4   6        done      1.38        1.24        33k    58m                    │
+│   lr-depth-05   3e-4   6        running   1.40 ↓      1.30        33k    31m                    │
+│   lr-depth-01   1e-4   4        done      1.41        1.30        41k    44m                    │
+│   lr-depth-03   1e-4   8        running   1.52 ↓      1.47        27k    12m                    │
+│   lr-depth-07   1e-3   4        failed    –           –           –      3m                     │
+│   6 queued runs not shown                                                                       │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+ best lr-depth-04 · 1.29  enter open run  space mark  tab lens  < > sort  : goto  ? help  F10 menu
+```
+
+* **The set** comes from a sweep (`set lr-depth ▾` picks which) or from
+  the tray (`tray 2 ▸`). The title line holds the phase, metric and
+  reducer, each changeable from the Compare menu.
+* **Lenses** are tabs switched with `tab`: curves and table together
+  (shown), response, heatmap, and config diff.
+* **Curves** are coloured by one axis, with the cursor's run drawn in the
+  accent colour. **The table** below has one row per run; `<`/`>` change
+  the sort column. Moving the cursor in the table moves the highlight in
+  the plot.
+* `enter` opens the run in Runs on this phase; `space` adds it to the
+  tray, which is how the best of a sweep is set against a baseline.
+
+#### System
+
+```
+ Runs  Sweeps  Compare  [System]                                    2 marked    gpu0 97%  gpu1 12%
+╭─ compute ───────────────────────────────────────────────────────────────────────────────────────╮
+│   ID    KIND  NAME            UTIL                MEMORY        POWER   RUNNING                 │
+│ ▶ cpu   cpu   EPYC 7443 ×24   ▰▰▱▱▱▱▱▱▱▱  18%     41/256 GB     –       live                    │
+│   gpu0  gpu   RTX A5000       ▰▰▰▰▰▰▰▰▰▱  97%     22.1/24 GB    214 W   lr-depth-05             │
+│   gpu1  gpu   RTX A5000       ▰▱▱▱▱▱▱▱▱▱  12%     3.4/24 GB     61 W    lr-depth-03             │
+│                                                                                                 │
+│   queue: 6 runs of lr-depth waiting for gpu0 or gpu1                                            │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ images ────────────────────────────────────────────────────────────────────────────────────────╮
+│   NAME                    ID     SIZE     RUNS  SWEEPS  ADDED                                   │
+│   shakespeare-char:1.2    3f2a   2.1 GB   14    2       3d ago                                  │
+│   utrain-fake:latest      9c1e   180 MB   3     0       20d ago                                 │
+│   nanochat:0.4            77b0   6.8 GB   0     0       now     pulling ▰▰▰▰▰▰▱▱▱▱ 61%          │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ data store ────────────────────────────────────────────────────────────────────────────────────╮
+│   2 340 files · 18.4 GB · 312 MB orphaned (reclaim with G)                                      │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+                             tab pane  a add image  d delete  G gc store  : goto  ? help  F10 menu
+```
+
+* **Compute:** each CPU and GPU with utilisation, memory, power, and
+  which run is on it, plus how many sweep runs are waiting for a slot.
+  This is what the top row's GPU meters summarise.
+* **Images:** each image with its size, and how many runs and sweeps use
+  it. A pull in progress shows its progress in place.
+* **Data store:** the content-addressed store's size and what `gc` would
+  reclaim, so `utrain store check`/`gc` have a place in the TUI.
+* `tab` moves between the three panes. `i` and `c` still open the images
+  and compute pop-ups from any workspace for a quick look.
 
 How the reference tasks play out:
 
