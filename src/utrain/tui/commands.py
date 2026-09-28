@@ -106,7 +106,7 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         SEPARATOR,
         Item("Mark for compare", "toggle_mark", "space"),
         Item("Show in Sweeps", "show_in_sweeps"),
-        Item("Expand / collapse", "toggle_expand", "enter"),
+        Item("Expand / collapse", "drill_in", "enter"),
         Item("Zoom pane", "zoom", "z"),
     ),
     "sweeps": (
@@ -120,6 +120,8 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Cancel sweep...", "cancel_sweep", "S"),
         Item("Delete sweep...", "delete_sweep", "d"),
         SEPARATOR,
+        Item("Open run in Runs", "open_run", "enter"),
+        Item("Mark / unmark", "toggle_mark", "space"),
         Item("Compare this sweep", "compare_sweep", "C"),
     ),
     "compare": (

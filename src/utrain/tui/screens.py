@@ -33,6 +33,7 @@ import threading
 import time
 import typing
 
+import rich.text
 import textual.app
 import textual.binding
 import textual.containers
@@ -44,6 +45,7 @@ import textual.widgets
 
 from .. import chat as chatmod
 from .. import exceptions, metrics, reconcile, serve, types
+from .. import sweeps as sweepsmod
 from . import commands, data, export, menus, render, widgets
 
 # The screen's actions that a single key reaches, and which are therefore
@@ -193,6 +195,19 @@ class Host(typing.Protocol):
         *args: object,
     ) -> None:
         """Run ``callback`` on the message loop, from a worker thread."""
+
+    def new_sweep(self, base: str | None) -> None:
+        """Ask for a new sweep and create it: from a run's config, or an image's.
+
+        The app's, because the dialogs outlive the screen they were asked
+        from -- the sweep is shown in Sweeps once it exists, wherever that was.
+        """
+
+    def show_run(self, run_id: str) -> None:
+        """Go to Runs, with the cursor on this run."""
+
+    def show_sweep(self, sweep_id: str) -> None:
+        """Go to Sweeps, with the cursor on this sweep."""
 
 
 class _Screen(textual.screen.Screen[None]):
@@ -557,6 +572,7 @@ class MainScreen(_Screen):
         textual.binding.Binding("s", "start_run", "start", show=False),
         textual.binding.Binding("S", "stop_run", "stop", show=False),
         textual.binding.Binding("n", "new_run", "new", show=False),
+        textual.binding.Binding("N", "new_sweep_from_run", "new sweep", show=False),
         textual.binding.Binding("d", "delete_run", "delete", show=False),
         # `r` is the base screen's refresh, so restart takes the shifted key --
         # the same convention `S` follows.
@@ -820,8 +836,12 @@ class MainScreen(_Screen):
         # A run just created is selected as soon as it is listed, so its config
         # -- which is the only thing there is to do with it next -- comes up
         # without the viewer having to find it.
-        if self._pending_run is not None and any(r.id == self._pending_run for r in self.runs):
-            self.cursor_key = render.run_key(self._pending_run)
+        pending = next((r for r in self.runs if r.id == self._pending_run), None)
+        if pending is not None:
+            if pending.sweep_id is not None:
+                # A sweep's run is only in the tree while its sweep is open.
+                self.expanded.add(render.sweep_key(pending.sweep_id))
+            self.cursor_key = render.run_key(pending.id)
             self._pending_run = None
         self.draw_tree()
 
@@ -1672,9 +1692,34 @@ class MainScreen(_Screen):
             self.show_error("the config is still loading; try again", hold=True)
             return
         rows = render.config_rows(snapshot.config_schema, snapshot.config, snapshot.phase_order)
-        self.host.ask(
-            ConfigViewScreen(run, render.run_summary(snapshot.run), rows), lambda _answer: None
-        )
+
+        def answered(answer: str | None) -> None:
+            if answer == "new_sweep":
+                self.host.new_sweep(run.id)
+
+        self.host.ask(ConfigViewScreen(run, render.run_summary(snapshot.run), rows), answered)
+
+    def action_new_sweep_from_run(self) -> None:
+        """`N`: a sweep around the selected run -- its image, its config."""
+        run = self.selected_run_row()
+        if run is not None:
+            self.host.new_sweep(run.id)
+
+    def sweep_here(self) -> str | None:
+        """The sweep the cursor is on, or the one the selected run belongs to."""
+        if self.selected_sweep is not None:
+            return self.selected_sweep
+        run = self.selected_run_row()
+        return run.sweep_id if run is not None else None
+
+    def action_show_in_sweeps(self) -> None:
+        sweep_id = self.sweep_here()
+        if sweep_id is not None:
+            self.host.show_sweep(sweep_id)
+
+    def reveal_run(self, run_id: str) -> None:
+        """Put the cursor on a run, opening its sweep if it has one."""
+        self.select_when_listed(run_id)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Which of this screen's keys are live right now.
@@ -1736,6 +1781,10 @@ class MainScreen(_Screen):
         if action == "toggle_mark":
             node = self.cursor_node()
             return True if node is not None and node.run_id is not None else None
+        if action == "new_sweep_from_run":
+            return True if self.selected_run_row() is not None else None
+        if action == "show_in_sweeps":
+            return True if self.sweep_here() is not None else None
         if action == "zoom":
             return True if self.zoomed is not None or self.shown_content() else None
         return super().check_action(action, parameters)
@@ -2067,7 +2116,7 @@ class HelpScreen(textual.screen.ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ConfigViewScreen(textual.screen.ModalScreen[None]):
+class ConfigViewScreen(textual.screen.ModalScreen[str]):
     """A started run's config, read-only, over the screen it was asked from.
 
     A glance rather than a place: nothing in it can change any more, and the
@@ -2079,6 +2128,7 @@ class ConfigViewScreen(textual.screen.ModalScreen[None]):
     BINDINGS = [
         textual.binding.Binding("escape", "close", "close"),
         textual.binding.Binding("e", "close", "close", show=False),
+        textual.binding.Binding("N", "new_sweep", "new sweep from this run"),
     ]
 
     DEFAULT_CSS = """
@@ -2125,6 +2175,10 @@ class ConfigViewScreen(textual.screen.ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def action_new_sweep(self) -> None:
+        """`N`: the usual next step from a run worth a second look."""
+        self.dismiss("new_sweep")
 
 
 class ConfirmScreen(textual.screen.ModalScreen[bool]):
@@ -3038,3 +3092,832 @@ class SystemScreen(_Screen):
             f"{render.human_size(result.reclaimed_bytes)}",
         )
         self.host.from_thread(self.refresh_data)
+
+
+# -- sweeps -----------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class NewSweep:
+    """What the new-sweep dialog came back with: everything but the axes."""
+
+    name: str
+    image: str
+    # The run whose config the points start from, or None for the image's
+    # defaults, and its name, for the form's title.
+    base: str | None
+    base_name: str
+    compute: list[str]
+
+
+class SweepsScreen(_Screen):
+    """The Sweeps workspace: the sweeps, and for one, its grid, queue and spec.
+
+    The grid is a table with a cell cursor: a cell is one point of the sweep's
+    first two axes, `enter` opens its run in Runs and `space` marks it. The
+    queue and the spec are read-only and never scroll -- the queue is one line
+    per compute and one for what comes next -- so only the list and the grid
+    take the focus.
+    """
+
+    WORKSPACE = "sweeps"
+
+    BINDINGS = [
+        textual.binding.Binding("1", "focus_pane('sweeps')", "sweeps", show=False),
+        textual.binding.Binding("2", "focus_pane('matrix')", "grid", show=False),
+        textual.binding.Binding("space", "toggle_mark", "mark"),
+        textual.binding.Binding("N", "new_sweep", "new"),
+        textual.binding.Binding("s", "start_sweep", "start"),
+        textual.binding.Binding("p", "pause_sweep", "pause"),
+        textual.binding.Binding("plus", "extend_sweep", "extend", key_display="+", show=False),
+        textual.binding.Binding("R", "retry_sweep", "retry"),
+        textual.binding.Binding("S", "cancel_sweep", "cancel", show=False),
+        textual.binding.Binding("d", "delete_sweep", "delete", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    SweepsScreen #sweeps {
+        width: 42;
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+    }
+    SweepsScreen #sweep-right {
+        width: 1fr;
+    }
+    SweepsScreen #matrix {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+        border-subtitle-align: left;
+    }
+    SweepsScreen #queue {
+        height: auto;
+        border: round $panel;
+        border-title-align: left;
+        padding: 0 1;
+    }
+    SweepsScreen #spec {
+        height: auto;
+        border: round $panel;
+        border-title-align: left;
+        padding: 0 1;
+    }
+    SweepsScreen DataTable:focus {
+        border: round $accent;
+    }
+    """
+
+    def __init__(self, host: Host, source: data.Data) -> None:
+        super().__init__(host, source)
+        self.sweeps: list[types.SweepRow] = []
+        self.runs: list[types.RunRow] = []
+        self.marked: set[str] = set()
+        self.selected_sweep: str | None = None
+        # A sweep asked for before it was listed -- one just created, or one
+        # another workspace sent the viewer to. `apply` moves the cursor to it.
+        self.wanted: str | None = None
+        self.matrix: render.SweepMatrix | None = None
+        # The grid's columns as last drawn: a different sweep has a different
+        # shape, and a table's columns are rebuilt rather than updated.
+        self._matrix_columns: list[str] = []
+        self._matrix_sweep: str | None = None
+
+    def compose_body(self) -> textual.app.ComposeResult:
+        with textual.containers.Horizontal(id="main"):
+            yield _table("sweeps", "1 sweeps", render.SWEEP_COLUMNS, drill=False)
+            with textual.containers.Vertical(id="sweep-right"):
+                matrix = textual.widgets.DataTable[render.Cell](id="matrix")
+                matrix.cursor_type = "cell"
+                matrix.border_title = "2 grid"
+                yield matrix
+                queue = textual.widgets.Static("", id="queue")
+                queue.border_title = "queue"
+                yield queue
+                spec = textual.widgets.Static("", id="spec")
+                spec.border_title = "spec"
+                yield spec
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.table("#sweeps").focus()
+
+    def refresh_data(self) -> None:
+        self.fetch()
+
+    @textual.work(thread=True, exclusive=True, group="sweeps")
+    def fetch(self) -> None:
+        try:
+            snapshot = self.data.sweeps_snapshot()
+        except exceptions.UI as e:
+            self.host.from_thread(self.show_error, str(e))
+            return
+        self.host.from_thread(self.apply, snapshot)
+
+    def apply(self, snapshot: data.SweepsSnapshot) -> None:
+        self.clear_error()
+        self.sweeps = snapshot.sweeps
+        self.runs = snapshot.runs
+        self.marked = set(snapshot.marked)
+        table = self.table("#sweeps")
+        _fill(table, [render.sweep_cells(s) for s in self.sweeps])
+        ids = [s.id for s in self.sweeps]
+        if self.wanted in ids:
+            self.selected_sweep = self.wanted
+            self.wanted = None
+        if self.selected_sweep not in ids:
+            # Gone -- deleted -- or never chosen: whatever row the cursor is on.
+            row = min(max(table.cursor_row, 0), len(ids) - 1) if ids else -1
+            self.selected_sweep = ids[row] if row >= 0 else None
+        if self.selected_sweep is not None:
+            index = ids.index(self.selected_sweep)
+            if table.cursor_row != index:
+                table.move_cursor(row=index)
+        self.apply_selected()
+        self.refresh_bindings()
+
+    def selected(self) -> types.SweepRow | None:
+        return next((s for s in self.sweeps if s.id == self.selected_sweep), None)
+
+    def members(self, sweep: types.SweepRow) -> list[types.RunRow]:
+        return sorted((r for r in self.runs if r.sweep_id == sweep.id), key=lambda r: r.created_at)
+
+    def apply_selected(self) -> None:
+        sweep = self.selected()
+        grid = self.table("#matrix")
+        queue = self.query_one("#queue", textual.widgets.Static)
+        spec = self.query_one("#spec", textual.widgets.Static)
+        if sweep is None:
+            self.matrix = None
+            grid.clear(columns=True)
+            self._matrix_columns = []
+            grid.border_title = "2 grid"
+            grid.border_subtitle = ""
+            queue.update(rich.text.Text("no sweeps yet: N makes one", style="dim"))
+            spec.update("")
+            return
+        members = self.members(sweep)
+        self.matrix = render.sweep_matrix(sweep, members)
+        columns, rows = (
+            render.matrix_table(self.matrix, {}, self.marked)
+            if self.matrix is not None
+            else ([], [])
+        )
+        if columns != self._matrix_columns or sweep.id != self._matrix_sweep:
+            grid.clear(columns=True)
+            grid.add_columns(*columns)
+            self._matrix_columns = columns
+            self._matrix_sweep = sweep.id
+            if len(columns) > 1:
+                # The first column is the row labels; the cursor starts on a run.
+                grid.cursor_coordinate = textual.coordinate.Coordinate(0, 1)
+        _fill(grid, rows)
+        grid.border_title = f"2 {sweep.name} · {sweep.status} · {render.sweep_progress(sweep)}"
+        grid.border_subtitle = render.sweep_legend()
+        queue.update(render.sweep_queue(sweep, members, self.runs))
+        base = next((r.name for r in self.runs if r.id == sweep.base), None)
+        text = rich.text.Text()
+        for index, (label, value) in enumerate(render.sweep_spec(sweep, base)):
+            if index:
+                text.append("\n")
+            text.append(f"{label:<10}", style="bold")
+            text.append(value)
+        spec.update(text)
+
+    @textual.on(textual.widgets.DataTable.RowHighlighted, "#sweeps")
+    def _sweep_highlighted(self, event: textual.widgets.DataTable.RowHighlighted) -> None:
+        table = self.table("#sweeps")
+        if _stale(event, table) or not 0 <= table.cursor_row < len(self.sweeps):
+            return
+        sweep_id = self.sweeps[table.cursor_row].id
+        if sweep_id != self.selected_sweep:
+            self.selected_sweep = sweep_id
+            self.apply_selected()
+            self.refresh_bindings()
+
+    @textual.on(textual.widgets.DataTable.RowSelected, "#sweeps")
+    def _sweep_selected(self) -> None:
+        """`enter` on a sweep: into its grid."""
+        self.action_focus_pane("matrix")
+
+    @textual.on(textual.widgets.DataTable.CellSelected, "#matrix")
+    def _cell_selected(self) -> None:
+        self.action_open_run()
+
+    @textual.on(textual.widgets.DataTable.CellHighlighted, "#matrix")
+    def _cell_highlighted(self) -> None:
+        self.refresh_bindings()
+
+    def select_sweep(self, sweep_id: str) -> None:
+        """Put the cursor on a sweep, now if it is listed and when it is if not."""
+        self.wanted = sweep_id
+        if any(s.id == sweep_id for s in self.sweeps):
+            self.selected_sweep = sweep_id
+            self.wanted = None
+            self.table("#sweeps").move_cursor(row=[s.id for s in self.sweeps].index(sweep_id))
+            self.apply_selected()
+        self.refresh_data()
+
+    def action_focus_pane(self, pane: str) -> None:
+        self.query_one(f"#{pane}").focus()
+
+    def cell_runs(self) -> list[types.RunRow]:
+        """The runs in the grid cell under the cursor, when the grid has the focus.
+
+        From the list, the grid's cursor is not what the viewer is pointing at,
+        so there are none.
+        """
+        if self.matrix is None or self.focused is not self.table("#matrix"):
+            return []
+        coordinate = self.table("#matrix").cursor_coordinate
+        row, column = coordinate.row, coordinate.column - 1
+        if not 0 <= row < len(self.matrix.members) or column < 0:
+            return []
+        cells = self.matrix.members[row]
+        return cells[column] if column < len(cells) else []
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        sweep = self.selected()
+        if action == "new_sweep":
+            return True
+        if action in ("open_run", "toggle_mark"):
+            return True if self.cell_runs() else None
+        if action == "start_sweep":
+            return True if sweep is not None and sweep.status in ("draft", "paused") else None
+        if action == "pause_sweep":
+            return True if sweep is not None and sweep.status == "running" else None
+        if action == "extend_sweep":
+            return True if sweep is not None and sweep.status != "cancelled" else None
+        if action == "retry_sweep":
+            retryable = sweep is not None and sweep.counts.failed + sweep.counts.stopped > 0
+            return True if retryable else None
+        if action == "cancel_sweep":
+            live = sweep is not None and sweep.status in ("draft", "running", "paused")
+            return True if live else None
+        if action == "delete_sweep":
+            # A sweep with runs going is cancelled first, as a running run is
+            # stopped first: the one prompt that kills something says so.
+            return True if sweep is not None and sweep.counts.running == 0 else None
+        return super().check_action(action, parameters)
+
+    # -- what a cell leads to -------------------------------------------
+
+    def action_open_run(self) -> None:
+        """`enter` on a cell: that run, in Runs."""
+        members = self.cell_runs()
+        if members:
+            self.host.show_run(members[0].id)
+
+    def action_toggle_mark(self) -> None:
+        """`space` on a cell: mark its runs for comparison, or unmark them."""
+        members = [r.id for r in self.cell_runs()]
+        if members:
+            self.mark(members)
+
+    @textual.work(thread=True, group="mark")
+    def mark(self, run_ids: list[str]) -> None:
+        try:
+            tray = self.data.tray()
+            if all(r in tray for r in run_ids):
+                tray = [r for r in tray if r not in run_ids]
+            else:
+                tray = tray + [r for r in run_ids if r not in tray]
+            self.data.set_tray(tray)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.marked_changed)
+
+    def marked_changed(self) -> None:
+        self.refresh_data()
+        refresh = getattr(self.host, "refresh_status", None)
+        if callable(refresh):
+            refresh()
+
+    # -- the sweep's lifecycle ------------------------------------------
+
+    def action_new_sweep(self) -> None:
+        self.host.new_sweep(None)
+
+    def action_start_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is not None:
+            self.lifecycle(sweep.id, "start", f"started {sweep.name}")
+
+    def action_pause_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is not None:
+            self.lifecycle(sweep.id, "pause", f"paused {sweep.name}; its running runs carry on")
+
+    def action_retry_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is not None:
+            self.lifecycle(sweep.id, "retry", f"requeued {sweep.name}'s failed and stopped runs")
+
+    def action_cancel_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is None:
+            return
+        running = sweep.counts.running
+
+        def answered(answer: bool | None) -> None:
+            if answer:
+                self.lifecycle(sweep.id, "cancel", f"cancelled {sweep.name}")
+
+        question = f"cancel sweep '{sweep.name}'"
+        if running:
+            question += f", stopping its {running} running run(s)"
+        self.host.ask(ConfirmScreen(question + "?"), answered)
+
+    def action_delete_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is None:
+            return
+
+        def answered(answer: bool | None) -> None:
+            if answer:
+                self.lifecycle(sweep.id, "delete", f"deleted {sweep.name}")
+
+        self.host.ask(
+            ConfirmScreen(
+                f"delete sweep '{sweep.name}' and its {sweep.counts.total} run(s), with their data?"
+            ),
+            answered,
+        )
+
+    def action_extend_sweep(self) -> None:
+        sweep = self.selected()
+        if sweep is None:
+            return
+
+        def answered(axes: dict[str, object] | None) -> None:
+            if axes:
+                self.extend(sweep.id, axes)
+
+        self.host.ask(ExtendSweepScreen(sweep), answered)
+
+    @textual.work(thread=True, group="sweep-lifecycle")
+    def lifecycle(self, sweep_id: str, op: str, done: str) -> None:
+        """Start, pause, retry, cancel or delete, off the message loop.
+
+        Start and retry check for the GPU toolkit, and cancel and delete stop
+        runs, all of which shell out.
+        """
+        try:
+            if op == "start":
+                self.data.start_sweep(sweep_id)
+            elif op == "pause":
+                self.data.pause_sweep(sweep_id)
+            elif op == "retry":
+                self.data.retry_sweep(sweep_id)
+            elif op == "cancel":
+                self.data.cancel_sweep(sweep_id)
+            else:
+                self.data.delete_sweep(sweep_id)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.held_message, done)
+        self.host.from_thread(self.refresh_data)
+
+    @textual.work(thread=True, group="sweep-lifecycle")
+    def extend(self, sweep_id: str, axes: dict[str, object]) -> None:
+        """`sweep_extend` describes the image, which starts a container."""
+        try:
+            added = self.data.extend_sweep(sweep_id, axes)
+        except exceptions.UI as e:
+            self.host.from_thread(self.held_error, str(e))
+            return
+        self.host.from_thread(self.held_message, f"added {added} run(s)")
+        self.host.from_thread(self.refresh_data)
+
+
+class NewSweepScreen(textual.screen.ModalScreen[NewSweep | None]):
+    """A new sweep's name, image, base config and computes.
+
+    Everything but the axes, which need the image's config schema -- which is
+    why the image comes first, here, and the axes on the next screen. From a
+    run (`N` in Runs), the image and base are that run's and are not asked.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+    ]
+
+    def __init__(self, choices: data.NewSweepChoices, base: types.RunRow | None = None) -> None:
+        super().__init__()
+        self.choices = choices
+        self.base = base
+
+    def compose(self) -> textual.app.ComposeResult:
+        box = textual.containers.Vertical(id="new-sweep")
+        box.border_title = "new sweep"
+        with box:
+            with textual.containers.Horizontal(classes="new-run-row"):
+                yield textual.widgets.Label("name")
+                yield textual.widgets.Input(id="new-sweep-name", compact=True)
+            if self.base is not None:
+                with textual.containers.Horizontal(classes="new-run-row"):
+                    yield textual.widgets.Label("image")
+                    yield textual.widgets.Label(self.base.image)
+                with textual.containers.Horizontal(classes="new-run-row"):
+                    yield textual.widgets.Label("from")
+                    yield textual.widgets.Label(self.base.name)
+            else:
+                image = self.choices.images[0] if self.choices.images else ""
+                with textual.containers.Horizontal(classes="new-run-row"):
+                    yield textual.widgets.Label("image")
+                    yield textual.widgets.Select[str](
+                        [(name, name) for name in self.choices.images],
+                        allow_blank=False,
+                        compact=True,
+                        id="new-sweep-image",
+                    )
+                with textual.containers.Horizontal(classes="new-run-row"):
+                    yield textual.widgets.Label("from")
+                    yield textual.widgets.Select[str](
+                        self.base_options(image),
+                        allow_blank=False,
+                        compact=True,
+                        id="new-sweep-base",
+                    )
+            yield textual.widgets.Label("compute (space picks; runs are spread across them)")
+            default = render.default_compute(self.choices.compute)
+            yield textual.widgets.SelectionList[str](
+                *(
+                    (label, value, value == default)
+                    for label, value in render.compute_options(self.choices.compute)
+                ),
+                id="new-sweep-compute",
+            )
+            yield textual.widgets.Static("", id="new-sweep-error")
+            with textual.containers.Horizontal(id="new-sweep-buttons"):
+                yield textual.widgets.Button(
+                    "Next", variant="primary", id="new-sweep-next", compact=True
+                )
+                yield textual.widgets.Button(
+                    "Cancel", variant="default", id="new-sweep-cancel", compact=True
+                )
+
+    def base_options(self, image: str) -> list[tuple[str, str]]:
+        """The configs a sweep of `image` can start from: its defaults, or a run's.
+
+        The empty value stands for the defaults: a `Select` needs a string.
+        """
+        options = [("the image's defaults", "")]
+        options += [(r.name, r.id) for r in self.choices.runs if r.image == image]
+        return options
+
+    def on_mount(self) -> None:
+        self.query_one("#new-sweep-name", textual.widgets.Input).focus()
+
+    @textual.on(textual.widgets.Select.Changed, "#new-sweep-image")
+    def _image_changed(self) -> None:
+        base: textual.widgets.Select[str] = self.query_one(
+            "#new-sweep-base", textual.widgets.Select
+        )
+        base.set_options(self.base_options(self._picked("#new-sweep-image")))
+
+    def _picked(self, identifier: str) -> str:
+        picked: textual.widgets.Select[str] = self.query_one(identifier, textual.widgets.Select)
+        return str(picked.value)
+
+    def computes(self) -> list[str]:
+        chosen: textual.widgets.SelectionList[str] = self.query_one(
+            "#new-sweep-compute", textual.widgets.SelectionList
+        )
+        return list(chosen.selected)
+
+    def _error(self, message: str) -> None:
+        self.query_one("#new-sweep-error", textual.widgets.Static).update(message)
+
+    @textual.on(textual.widgets.Input.Submitted, "#new-sweep-name")
+    def _submitted(self) -> None:
+        self._next()
+
+    @textual.on(textual.widgets.Button.Pressed, "#new-sweep-next")
+    def _next(self) -> None:
+        name = self.query_one("#new-sweep-name", textual.widgets.Input).value.strip()
+        if not name:
+            self._error("a sweep needs a name")
+            return
+        problem = sweepsmod.name_problem(name)
+        if problem is not None:
+            self._error(problem)
+            return
+        computes = self.computes()
+        if not computes:
+            self._error("pick at least one compute")
+            return
+        if self.base is not None:
+            image, base, base_name = self.base.image, self.base.id, self.base.name
+        else:
+            image = self._picked("#new-sweep-image")
+            base = self._picked("#new-sweep-base") or None
+            base_name = next((r.name for r in self.choices.runs if r.id == base), "")
+        self.dismiss(NewSweep(name, image, base, base_name, computes))
+
+    @textual.on(textual.widgets.Button.Pressed, "#new-sweep-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# What an axis field takes, shown in it while it is empty.
+_AXIS_HINT = "a,b,c · lin:lo:hi:n · log:lo:hi:n · *"
+
+
+class SweepFormScreen(textual.screen.ModalScreen[dict[str, object] | None]):
+    """The axes of a new sweep: the image's config, with a sweep field on each.
+
+    Each field shows the value every point starts from, and beside it what to
+    sweep it over -- empty for a field held fixed. The grid's size is worked
+    out as the fields are typed in, against the schema, so a value the field
+    would refuse is said here rather than by the create. Comes back with the
+    raw axes, `sweeps.create_sweep`'s argument.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+        textual.binding.Binding("down", "app.focus_next", "next", show=False),
+        textual.binding.Binding("up", "app.focus_previous", "previous", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    SweepFormScreen {
+        align: center middle;
+    }
+    /* As tall as the image's fields, up to most of the screen; past that the
+       fields scroll and the preview and buttons stay put under them. */
+    #sweep-form {
+        width: 90%;
+        max-width: 110;
+        height: auto;
+        max-height: 90%;
+        padding: 0 1;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    #sweep-fields {
+        height: auto;
+        max-height: 30;
+    }
+    .sweep-section {
+        color: $text-muted;
+        text-style: bold;
+        margin-top: 1;
+    }
+    .sweep-field {
+        height: 1;
+    }
+    .sweep-field > Label {
+        width: 28;
+    }
+    .sweep-field > .value {
+        width: 16;
+        color: $text-muted;
+    }
+    .sweep-field > Input {
+        width: 1fr;
+        height: 1;
+    }
+    #sweep-preview {
+        height: auto;
+        margin-top: 1;
+    }
+    #sweep-form-error {
+        color: $error;
+        height: auto;
+    }
+    #sweep-form-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #sweep-form-buttons Button {
+        margin: 0 1;
+        min-width: 0;
+        padding: 0 2;
+    }
+    """
+
+    def __init__(self, spec: NewSweep, form: data.SweepForm) -> None:
+        super().__init__()
+        self.spec = spec
+        self.rows = render.config_rows(form.schema, form.values, form.phase_order)
+        self.problems: list[str] = []
+
+    def compose(self) -> textual.app.ComposeResult:
+        box = textual.containers.Vertical(id="sweep-form")
+        source = f"from {self.spec.base_name}" if self.spec.base else "from its defaults"
+        box.border_title = f"new sweep {self.spec.name} · {self.spec.image} {source}"
+        with box:
+            with textual.containers.VerticalScroll(id="sweep-fields"):
+                section = None
+                for index, row in enumerate(self.rows):
+                    if row.section != section:
+                        section = row.section
+                        yield textual.widgets.Static(section, classes="sweep-section")
+                    with textual.containers.Horizontal(classes="sweep-field"):
+                        label = textual.widgets.Label(row.field.label or row.field.key)
+                        label.tooltip = row.field.description or None
+                        yield label
+                        yield textual.widgets.Static(
+                            render.format_config_value(row.value), classes="value"
+                        )
+                        yield textual.widgets.Input(
+                            placeholder=_AXIS_HINT, compact=True, id=f"axis-{index}"
+                        )
+            yield textual.widgets.Static("", id="sweep-preview")
+            yield textual.widgets.Static("", id="sweep-form-error")
+            with textual.containers.Horizontal(id="sweep-form-buttons"):
+                yield textual.widgets.Button(
+                    "Create", variant="primary", id="sweep-form-create", compact=True
+                )
+                yield textual.widgets.Button(
+                    "Cancel", variant="default", id="sweep-form-cancel", compact=True
+                )
+
+    def on_mount(self) -> None:
+        inputs = self.query(textual.widgets.Input)
+        if inputs:
+            inputs.first().focus()
+        self.preview()
+
+    def axes(self) -> tuple[dict[str, object], dict[str, int]]:
+        """The raw axes typed so far, and how many values each expands to.
+
+        Problems are kept in `self.problems`, one per field that has one.
+        """
+        raw_axes: dict[str, object] = {}
+        sizes: dict[str, int] = {}
+        self.problems = []
+        for index, row in enumerate(self.rows):
+            text = self.query_one(f"#axis-{index}", textual.widgets.Input).value.strip()
+            if not text:
+                continue
+            path = ".".join(row.path)
+            try:
+                _, raw = sweepsmod.parse_axis_arg(f"{path}={text}")
+                sizes[path] = len(sweepsmod.expand_axis(raw, row.field))
+            except exceptions.UI as e:
+                self.problems.append(f"{row.field.label or row.field.key}: {e}")
+                continue
+            raw_axes[path] = raw
+        return raw_axes, sizes
+
+    @textual.on(textual.widgets.Input.Changed)
+    def preview(self) -> None:
+        raw_axes, sizes = self.axes()
+        preview = self.query_one("#sweep-preview", textual.widgets.Static)
+        error = self.query_one("#sweep-form-error", textual.widgets.Static)
+        error.update("\n".join(self.problems))
+        if not raw_axes:
+            preview.update(rich.text.Text("type values into a field to sweep it", style="dim"))
+            return
+        total = 1
+        for n in sizes.values():
+            total *= n
+        factors = " × ".join(f"{path.rsplit('.', 1)[-1]} {n}" for path, n in sizes.items())
+        computes = self.spec.compute
+        spread = ", ".join(
+            f"{c} {len(range(i, total, len(computes)))}" for i, c in enumerate(computes)
+        )
+        preview.update(f"{factors} = {total} run(s) · {spread}")
+
+    @textual.on(textual.widgets.Input.Submitted)
+    def _submitted(self) -> None:
+        """`enter` in a field moves on to the next, as `down` does."""
+        self.focus_next()
+
+    @textual.on(textual.widgets.Button.Pressed, "#sweep-form-create")
+    def _create(self) -> None:
+        raw_axes, _ = self.axes()
+        error = self.query_one("#sweep-form-error", textual.widgets.Static)
+        if self.problems:
+            error.update("\n".join(self.problems))
+            return
+        if not raw_axes:
+            error.update("sweep at least one field")
+            return
+        self.dismiss(raw_axes)
+
+    @textual.on(textual.widgets.Button.Pressed, "#sweep-form-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExtendSweepScreen(textual.screen.ModalScreen[dict[str, object] | None]):
+    """Values to add to a sweep's axes: one field per axis, empty to leave it.
+
+    The values are checked by the extend itself, which has the image's schema;
+    this only reads what was typed.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    ExtendSweepScreen {
+        align: center middle;
+    }
+    #extend-sweep {
+        width: 80;
+        height: auto;
+        padding: 0 1;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    .extend-row {
+        height: 2;
+    }
+    .extend-row > Label {
+        width: 18;
+    }
+    .extend-row > Vertical > Input {
+        height: 1;
+    }
+    .extend-row .current {
+        color: $text-muted;
+    }
+    #extend-error {
+        color: $error;
+        height: auto;
+    }
+    #extend-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #extend-buttons Button {
+        margin: 0 1;
+        min-width: 0;
+        padding: 0 2;
+    }
+    """
+
+    def __init__(self, sweep: types.SweepRow) -> None:
+        super().__init__()
+        self.sweep = sweep
+        self.paths = list(sweep.axes)
+
+    def compose(self) -> textual.app.ComposeResult:
+        box = textual.containers.Vertical(id="extend-sweep")
+        box.border_title = f"extend {self.sweep.name}"
+        with box:
+            for index, path in enumerate(self.paths):
+                with textual.containers.Horizontal(classes="extend-row"):
+                    yield textual.widgets.Label(path.rsplit(".", 1)[-1])
+                    with textual.containers.Vertical():
+                        yield textual.widgets.Input(
+                            placeholder=f"add: {_AXIS_HINT}", compact=True, id=f"extend-{index}"
+                        )
+                        yield textual.widgets.Static(
+                            "now " + render.axis_text(path, self.sweep.axes[path]),
+                            classes="current",
+                        )
+            yield textual.widgets.Static("", id="extend-error")
+            with textual.containers.Horizontal(id="extend-buttons"):
+                yield textual.widgets.Button(
+                    "Extend", variant="primary", id="extend-go", compact=True
+                )
+                yield textual.widgets.Button(
+                    "Cancel", variant="default", id="extend-cancel", compact=True
+                )
+
+    def on_mount(self) -> None:
+        self.query(textual.widgets.Input).first().focus()
+
+    @textual.on(textual.widgets.Input.Submitted)
+    @textual.on(textual.widgets.Button.Pressed, "#extend-go")
+    def _extend(self) -> None:
+        axes: dict[str, object] = {}
+        try:
+            for index, path in enumerate(self.paths):
+                text = self.query_one(f"#extend-{index}", textual.widgets.Input).value.strip()
+                if text:
+                    axes[path] = sweepsmod.parse_axis_arg(f"{path}={text}")[1]
+        except exceptions.UI as e:
+            self.query_one("#extend-error", textual.widgets.Static).update(str(e))
+            return
+        if not axes:
+            self.query_one("#extend-error", textual.widgets.Static).update(
+                "add values to at least one axis"
+            )
+            return
+        self.dismiss(axes)
+
+    @textual.on(textual.widgets.Button.Pressed, "#extend-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

@@ -243,6 +243,40 @@ class UtrainApp(textual.app.App[None]):
         background: $surface;
         padding: 0;
     }
+    NewSweepScreen {
+        align: center middle;
+    }
+    /* The new-run dialog's shape, a few lines taller for the computes. */
+    #new-sweep {
+        width: 60;
+        height: auto;
+        padding: 0 1;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    #new-sweep > Label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    #new-sweep-compute {
+        height: auto;
+        max-height: 8;
+    }
+    #new-sweep-error {
+        color: $error;
+        height: auto;
+    }
+    #new-sweep-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #new-sweep-buttons Button {
+        margin: 0 1;
+        min-width: 0;
+        padding: 0 2;
+    }
     ExportScreen {
         align: center middle;
     }
@@ -349,6 +383,7 @@ class UtrainApp(textual.app.App[None]):
         # a chat opened in one stays there while another is looked at.
         self.workspaces: dict[str, collections.abc.Callable[[], textual.screen.Screen[None]]] = {
             "runs": lambda: screens.MainScreen(self, self.data),
+            "sweeps": lambda: screens.SweepsScreen(self, self.data),
             "system": lambda: screens.SystemScreen(self, self.data),
         }
         for name, factory in self.workspaces.items():
@@ -488,6 +523,87 @@ class UtrainApp(textual.app.App[None]):
         *args: object,
     ) -> None:
         self.call_from_thread(callback, *args)
+
+    # -- across workspaces ------------------------------------------------
+
+    def base_screen(self, name: str) -> textual.screen.Screen[None]:
+        """A workspace's own screen, under whatever is open over it.
+
+        Switching to a mode builds its screen then and there, so after
+        `action_workspace` the stack in front is that workspace's.
+        """
+        self.action_workspace(name)
+        return self.screen_stack[0]
+
+    def show_run(self, run_id: str) -> None:
+        screen = self.base_screen("runs")
+        if isinstance(screen, screens.MainScreen):
+            screen.reveal_run(run_id)
+
+    def show_sweep(self, sweep_id: str) -> None:
+        screen = self.base_screen("sweeps")
+        if isinstance(screen, screens.SweepsScreen):
+            screen.select_sweep(sweep_id)
+
+    def tell(self, message: str, ok: bool = False) -> None:
+        """Put a message on the error line of the screen in front, if it has one."""
+        say = getattr(self.screen, "held_message" if ok else "held_error", None)
+        if callable(say):
+            say(message)
+
+    def new_sweep(self, base: str | None) -> None:
+        """Three hops, each a worker or a dialog: the choices, the dialog, then
+        the form -- built from the image's schema, which `describe` reads --
+        and last the create, which describes the image again and writes a
+        config per point."""
+        self.sweep_choices(base)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def sweep_choices(self, base: str | None) -> None:
+        try:
+            choices = self.data.new_sweep_choices()
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        if not choices.images and base is None:
+            self.call_from_thread(self.tell, "no images; add one with 'utrain image add'")
+            return
+        self.call_from_thread(self.ask_sweep, choices, base)
+
+    def ask_sweep(self, choices: data.NewSweepChoices, base: str | None) -> None:
+        run = next((r for r in choices.runs if r.id == base), None)
+
+        def answered(answer: screens.NewSweep | None) -> None:
+            if answer is not None:
+                self.sweep_form(answer)
+
+        self.ask(screens.NewSweepScreen(choices, run), answered)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def sweep_form(self, spec: screens.NewSweep) -> None:
+        try:
+            form = self.data.sweep_form(spec.image, spec.base)
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        self.call_from_thread(self.ask_axes, spec, form)
+
+    def ask_axes(self, spec: screens.NewSweep, form: data.SweepForm) -> None:
+        def answered(axes: dict[str, object] | None) -> None:
+            if axes:
+                self.create_sweep(spec, axes)
+
+        self.ask(screens.SweepFormScreen(spec, form), answered)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def create_sweep(self, spec: screens.NewSweep, axes: dict[str, object]) -> None:
+        try:
+            sweep_id = self.data.create_sweep(spec.name, spec.image, spec.base, axes, spec.compute)
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        self.call_from_thread(self.show_sweep, sweep_id)
+        self.call_from_thread(self.tell, f"created sweep {spec.name}; s starts it", True)
 
 
 def run(source: data.Data | None = None) -> None:

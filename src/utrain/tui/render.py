@@ -370,70 +370,211 @@ _SWEEP_STATUS_STYLE = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class SweepMatrix:
+    """A sweep's runs laid out on its first two axes.
+
+    The first axis runs down and the second across; a sweep of one axis is one
+    column, whose `col_axis` is None. A sweep of more than two puts every run
+    sharing a cell's first two coordinates in that cell, in grid order.
+    """
+
+    row_axis: str
+    col_axis: str | None
+    row_values: list[object]
+    col_values: list[object]
+    # The runs at each cell, indexed [row][column].
+    members: list[list[list[types.RunRow]]]
+
+    def label(self, path: str | None, value: object) -> str:
+        return "" if path is None else point_text({path: value})
+
+
+def sweep_matrix(sweep: types.SweepRow, runs: list[types.RunRow]) -> SweepMatrix | None:
+    """`runs` placed on `sweep`'s grid, or None for a sweep with no axes."""
+    axes = list(sweep.axes)
+    if not axes:
+        return None
+    row_axis = axes[0]
+    col_axis = axes[1] if len(axes) > 1 else None
+    row_values = list(sweep.axes[row_axis])
+    col_values: list[object] = list(sweep.axes[col_axis]) if col_axis is not None else [None]
+    # Matched on `repr`, which tells 1 from 1.0 and True from 1 where `==`
+    # and hashing do not.
+    rows = {repr(v): i for i, v in enumerate(row_values)}
+    cols = {repr(v): i for i, v in enumerate(col_values)}
+    members: list[list[list[types.RunRow]]] = [[[] for _ in col_values] for _ in row_values]
+    for run in runs:
+        r = rows.get(repr(run.point.get(row_axis)))
+        c = cols.get(repr(run.point.get(col_axis)) if col_axis is not None else "None")
+        if r is not None and c is not None:
+            members[r][c].append(run)
+    return SweepMatrix(row_axis, col_axis, row_values, col_values, members)
+
+
+def matrix_cell(
+    members: list[types.RunRow], values: dict[str, str], marked: set[str] | None = None
+) -> rich.text.Text:
+    """One cell: a status glyph per run, and for a lone run its value or status.
+
+    Led by the mark when any of its runs is marked for comparison.
+    """
+    cell = rich.text.Text()
+    if marked is not None:
+        cell.append(MARK if any(r.id in marked for r in members) else " ")
+    for run in members:
+        cell.append(STATUS_GLYPHS.get(run.status, "?"), style=status_style(run.status))
+    if len(members) == 1:
+        run = members[0]
+        cell.append(f" {values.get(run.id) or run.status}")
+    return cell
+
+
+def sweep_legend() -> rich.text.Text:
+    text = rich.text.Text()
+    for status, glyph in STATUS_GLYPHS.items():
+        text.append(f"{glyph} {status}  ", style=status_style(status))
+    return text
+
+
 def sweep_grid(
     sweep: types.SweepRow,
     runs: list[types.RunRow],
     values: dict[str, str] | None = None,
 ) -> rich.text.Text:
-    """A sweep's runs as a grid: the first axis down, the second across.
+    """A sweep's runs as a grid of text: `sweep_matrix`, drawn.
 
     Each cell is a run's status glyph and, once there is one, the value
     `values` gives for it -- a reduced metric, which is what turns the monitor
-    into the result as the sweep finishes. A sweep of one axis is one column;
-    one of more than two draws every run of a cell's first two coordinates in
-    it, a glyph each.
+    into the result as the sweep finishes.
     """
     values = values or {}
-    axes = list(sweep.axes)
     text = rich.text.Text()
-    if not axes:
+    matrix = sweep_matrix(sweep, runs)
+    if matrix is None:
         return text
-    rows_axis = axes[0]
-    cols_axis = axes[1] if len(axes) > 1 else None
-    row_values = sweep.axes[rows_axis]
-    col_values = sweep.axes[cols_axis] if cols_axis is not None else [None]
-
-    def label(path: str | None, value: object) -> str:
-        if path is None:
-            return ""
-        return point_text({path: value})
-
-    cells: dict[tuple[str, str], list[types.RunRow]] = {}
-    for run in runs:
-        key = (
-            repr(run.point.get(rows_axis)),
-            repr(run.point.get(cols_axis)) if cols_axis is not None else "None",
-        )
-        cells.setdefault(key, []).append(run)
-
-    row_width = max(len(label(rows_axis, v)) for v in row_values) + 2
+    row_width = max(len(matrix.label(matrix.row_axis, v)) for v in matrix.row_values) + 2
     col_width = max(
         [14]
-        + [len(label(cols_axis, v)) + 2 for v in col_values]
+        + [len(matrix.label(matrix.col_axis, v)) + 2 for v in matrix.col_values]
         + [len(values.get(r.id, "")) + 4 for r in runs]
     )
-    if cols_axis is not None:
+    if matrix.col_axis is not None:
         text.append(" " * row_width)
-        for value in col_values:
-            text.append(label(cols_axis, value).ljust(col_width), style="bold")
+        for value in matrix.col_values:
+            text.append(matrix.label(matrix.col_axis, value).ljust(col_width), style="bold")
         text.append("\n")
-    for row_value in row_values:
-        text.append(label(rows_axis, row_value).ljust(row_width), style="bold")
-        for col_value in col_values:
-            members = cells.get((repr(row_value), repr(col_value)), [])
-            cell = rich.text.Text()
-            for run in members:
-                cell.append(STATUS_GLYPHS.get(run.status, "?"), style=status_style(run.status))
-            if len(members) == 1:
-                shown = values.get(members[0].id) or members[0].status
-                cell.append(f" {shown}")
+    for r, row_value in enumerate(matrix.row_values):
+        text.append(matrix.label(matrix.row_axis, row_value).ljust(row_width), style="bold")
+        for c in range(len(matrix.col_values)):
+            cell = matrix_cell(matrix.members[r][c], values)
             cell.pad_right(max(0, col_width - len(cell.plain)))
             text.append_text(cell)
         text.append("\n")
     text.append("\n")
-    for status, glyph in STATUS_GLYPHS.items():
-        text.append(f"{glyph} {status}  ", style=status_style(status))
+    text.append_text(sweep_legend())
     return text
+
+
+def matrix_table(
+    matrix: SweepMatrix, values: dict[str, str], marked: set[str]
+) -> tuple[list[str], list[list[Cell]]]:
+    """`sweep_matrix` as a table's columns and rows, the row labels first."""
+    columns = [""] + [matrix.label(matrix.col_axis, v) or "run" for v in matrix.col_values]
+    rows: list[list[Cell]] = []
+    for r, row_value in enumerate(matrix.row_values):
+        label = rich.text.Text(matrix.label(matrix.row_axis, row_value), style="bold")
+        rows.append([label, *(matrix_cell(m, values, marked) for m in matrix.members[r])])
+    return columns, rows
+
+
+# The Sweeps workspace's list.
+SWEEP_COLUMNS = ("NAME", "STATUS", "DONE")
+
+
+def sweep_cells(sweep: types.SweepRow) -> list[Cell]:
+    return [
+        sweep.name,
+        status_cell(sweep.status, _SWEEP_STATUS_STYLE.get(sweep.status)),
+        sweep_progress(sweep),
+    ]
+
+
+def sweep_queue(
+    sweep: types.SweepRow, members: list[types.RunRow], everything: list[types.RunRow]
+) -> rich.text.Text:
+    """What each of the sweep's computes is doing, and what it does next.
+
+    One line per compute, whatever is running on it -- one of the sweep's runs
+    or not, since a compute the viewer is using by hand is one the dispatcher
+    waits for -- and one line for the next of the sweep's runs queued on each.
+    Never more, so the pane never scrolls.
+    """
+    text = rich.text.Text()
+    for compute_name in sweep.compute:
+        text.append(f"{compute_name:<6}", style="bold")
+        running = [r for r in everything if r.compute == compute_name and r.status == "running"]
+        if not running:
+            text.append("idle", style="dim")
+        for run in running:
+            text.append(f"{run.name}  ")
+            if run.point:
+                text.append(f"{point_text(run.point)}  ", style="dim")
+            if run.phase:
+                text.append(run.phase)
+            if run.sweep_id != sweep.id:
+                text.append("  (not this sweep's)", style="dim")
+        text.append("\n")
+    upcoming: list[str] = []
+    for compute_name in sweep.compute:
+        queued = next(
+            (r for r in members if r.compute == compute_name and r.status == "queued"), None
+        )
+        if queued is not None:
+            upcoming.append(f"{compute_name} {queued.name}")
+    text.append(f"{'next':<6}", style="bold")
+    if upcoming:
+        text.append(" · ".join(upcoming))
+        if sweep.status in ("draft", "paused"):
+            text.append(f"  ({sweep.status}: start it with s)", style="dim")
+    else:
+        text.append("nothing queued", style="dim")
+    return text
+
+
+def axis_text(path: str, values: list[object]) -> str:
+    """One axis, short: its last name and its values."""
+    shown = [point_text({path: v}).split("=", 1)[1] for v in values]
+    if len(shown) > 5:
+        shown = [shown[0], shown[1], "…", shown[-1]]
+    return f"{path.rsplit('.', 1)[-1]} {','.join(shown)} ×{len(values)}"
+
+
+def sweep_spec(sweep: types.SweepRow, base_name: str | None) -> list[tuple[str, str]]:
+    """A sweep's spec as label/value lines."""
+    axes = " · ".join(axis_text(p, v) for p, v in sweep.axes.items())
+    counts = sweep.counts
+    tally = [
+        f"{n} {what}"
+        for n, what in (
+            (counts.done, "done"),
+            (counts.running, "running"),
+            (counts.queued, "queued"),
+            (counts.failed, "failed"),
+            (counts.stopped, "stopped"),
+        )
+        if n
+    ]
+    lines = [
+        ("image", f"{sweep.image}@{sweep.image_id.removeprefix('sha256:')[:8]}"),
+        ("base", base_name or "the image's defaults"),
+        ("axes", f"{axes} → {counts.total} runs"),
+        ("compute", f"{', '.join(sweep.compute)} (fixed per run)"),
+        ("runs", ", ".join(tally) or "none"),
+    ]
+    if sweep.replicate:
+        lines.insert(3, ("replicate", ", ".join(p.rsplit(".", 1)[-1] for p in sweep.replicate)))
+    return lines
 
 
 def run_summary(detail: types.RunDetail) -> list[tuple[str, str]]:

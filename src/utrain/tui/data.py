@@ -202,6 +202,37 @@ class NewRunChoices:
     compute: compute.ComputeInfo
 
 
+@dataclasses.dataclass(frozen=True)
+class SweepsSnapshot:
+    """One tick of the Sweeps workspace.
+
+    Every run rather than the selected sweep's: the queue shows what is on
+    each compute, and that can be a run of another sweep, or of none.
+    """
+
+    sweeps: list[types.SweepRow]
+    runs: list[types.RunRow]
+    marked: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class NewSweepChoices:
+    """What the new-sweep dialog picks from: images, computes, and base runs."""
+
+    images: list[str]
+    compute: compute.ComputeInfo
+    runs: list[types.RunRow]
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepForm:
+    """What the sweep form is built from: the image's fields and their values."""
+
+    schema: containermod.schema.ConfigSchema
+    values: dict[str, object]
+    phase_order: list[str]
+
+
 class Data:
     """Typed reads for the TUI, with the podman work cached.
 
@@ -488,6 +519,88 @@ class Data:
             except exceptions.UI:
                 out[run_id] = []
         return out
+
+    # -- sweeps -----------------------------------------------------------
+
+    def sweeps_snapshot(self) -> SweepsSnapshot:
+        with dbmod.with_db(self._settings) as session:
+            return SweepsSnapshot(
+                sweeps=sweeps.list_sweeps(session),
+                runs=runs.list_runs(session),
+                marked=tuistate.tray(session),
+            )
+
+    def new_sweep_choices(self) -> NewSweepChoices:
+        """Read in a worker before the dialog opens, as `new_run_choices` is."""
+        return NewSweepChoices(
+            images=sorted(self.presets()), compute=self.compute(), runs=self.list_runs()
+        )
+
+    def sweep_form(self, image: str, base: str | None) -> SweepForm:
+        """The fields a new sweep can vary, valued from its base run or defaults.
+
+        `describe` starts a container on a miss, so this is a worker's.
+        """
+        with dbmod.with_db(self._settings) as session:
+            if base is not None:
+                run = runs.get_run(base, session)
+                described = self.describe(run.image_id)
+                values = runs.read_config(base, session)
+            else:
+                presets = self.presets()
+                if image not in presets:
+                    raise exceptions.UI(f"image '{image}' not found")
+                described = self.describe(presets[image])
+                values = {}
+        return SweepForm(
+            schema=described.config_schema,
+            values=values,
+            phase_order=list(described.phase_order),
+        )
+
+    def create_sweep(
+        self,
+        name: str,
+        image: str,
+        base: str | None,
+        axes: dict[str, object],
+        compute_specs: list[str],
+    ) -> str:
+        with dbmod.with_db(self._settings) as session:
+            return sweeps.create_sweep(
+                name,
+                axes,
+                compute_specs,
+                self._settings,
+                session,
+                image=None if base is not None else image,
+                base=base,
+            )
+
+    def start_sweep(self, sweep_id: str) -> None:
+        with dbmod.with_db(self._settings) as session:
+            sweeps.start_sweep(sweep_id, session)
+
+    def pause_sweep(self, sweep_id: str) -> None:
+        with dbmod.with_db(self._settings) as session:
+            sweeps.pause_sweep(sweep_id, session)
+
+    def cancel_sweep(self, sweep_id: str) -> None:
+        with dbmod.with_db(self._settings) as session:
+            sweeps.cancel_sweep(sweep_id, session)
+
+    def retry_sweep(self, sweep_id: str) -> int:
+        with dbmod.with_db(self._settings) as session:
+            return sweeps.retry_sweep(sweep_id, session)[1]
+
+    def extend_sweep(self, sweep_id: str, axes: dict[str, object]) -> int:
+        with dbmod.with_db(self._settings) as session:
+            return sweeps.extend_sweep(sweep_id, axes, self._settings, session)[1]
+
+    def delete_sweep(self, sweep_id: str) -> int:
+        """Never forced, like `delete_run`: a sweep with running runs is cancelled first."""
+        with dbmod.with_db(self._settings) as session:
+            return sweeps.delete_sweep(sweep_id, False, session)[1]
 
     # -- the rest of the CLI's read surface -------------------------------
 

@@ -87,7 +87,7 @@ async def test_the_top_row_names_the_workspaces_and_marks_the_one_you_are_in(
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
         titles = [str(t.render()) for t in app.screen.query(utrain.tui.menus.Title)]
-        assert titles == ["Runs", "System"]
+        assert titles == ["Runs", "Sweeps", "System"]
         assert _active_title(app) == "Runs"
 
 
@@ -153,7 +153,7 @@ async def test_a_menu_drops_under_its_title_over_the_workspace(
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
         x = _bar(app).title_x("system")
-        await pilot.press("f10", "right")
+        await pilot.press("f10", "left")  # wraps round to System
         await _settle(app, pilot)
         menu = _menu(app)
         assert menu.workspace == "system"
@@ -171,10 +171,16 @@ async def test_left_and_right_step_between_menus_without_leaving_the_workspace(
         await _settle(app, pilot)
         await pilot.press("f10", "right")
         await _settle(app, pilot)
+        assert _menu(app).workspace == "sweeps"
+        await pilot.press("right")
+        await _settle(app, pilot)
         assert _menu(app).workspace == "system"
         await pilot.press("right")
         await _settle(app, pilot)
         assert _menu(app).workspace == "runs"  # wraps
+        await pilot.press("left")
+        await _settle(app, pilot)
+        assert _menu(app).workspace == "system"
         assert app.current_mode == "runs"
 
 
@@ -206,7 +212,7 @@ async def test_a_command_another_workspace_owns_is_greyed_here(
     """The System menu, opened from Runs, cannot add an image to the runs list."""
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10", "right")
+        await pilot.press("f10", "left")  # wraps round to System
         await _settle(app, pilot)
         labels = dict(_menu(app).labels())
         assert labels["Add image..."] is False
@@ -251,7 +257,7 @@ async def test_right_opens_a_submenu_beside_its_item_and_left_closes_it(
 async def test_picking_go_to_switches_workspace(app: utrain.tui.app.UtrainApp) -> None:
     async with app.run_test(size=base.SIZE) as pilot:
         await _settle(app, pilot)
-        await pilot.press("f10", "right")
+        await pilot.press("f10", "left")  # wraps round to System
         await _settle(app, pilot)
         await pilot.press("enter")  # the first item: Go to System
         await _settle(app, pilot)

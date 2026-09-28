@@ -4,6 +4,8 @@ These are the TUI's equivalent of the render tests in `test_query_layer.py`:
 pure functions, no terminal, no podman, so they run in CI.
 """
 
+import dataclasses
+
 import pytest
 
 import utrain.compute
@@ -176,6 +178,66 @@ def test_the_sweep_grid_lays_the_first_axis_down_and_the_second_across() -> None
     assert lines[1].startswith("lr=0.1")
     assert "● 1.29" in lines[1] and "◐ running" in lines[1]
     assert "○ queued" in lines[2] and "✗ failed" in lines[2]
+
+
+def test_the_matrix_puts_runs_beyond_two_axes_in_one_cell() -> None:
+    sweep = _sweep({"a.b.lr": [0.1], "a.b.depth": [4], "a.b.seed": [0, 1]})
+    runs = [
+        _run(
+            "r1", status="done", sweep_id="s1", point={"a.b.lr": 0.1, "a.b.depth": 4, "a.b.seed": 0}
+        ),
+        _run(
+            "r2",
+            status="queued",
+            sweep_id="s1",
+            point={"a.b.lr": 0.1, "a.b.depth": 4, "a.b.seed": 1},
+        ),
+    ]
+    matrix = render.sweep_matrix(sweep, runs)
+    assert matrix is not None
+    assert [r.id for r in matrix.members[0][0]] == ["r1", "r2"]
+    columns, rows = render.matrix_table(matrix, {}, {"r2"})
+    assert columns == ["", "depth=4"]
+    # Two glyphs and no value: a cell of several runs shows their statuses.
+    assert str(rows[0][1]) == f"{render.MARK}●○"
+
+
+def test_a_one_axis_matrix_is_one_column() -> None:
+    sweep = _sweep({"a.b.lr": [0.1, 0.2]})
+    runs = [_run("r1", status="done", sweep_id="s1", point={"a.b.lr": 0.2})]
+    matrix = render.sweep_matrix(sweep, runs)
+    assert matrix is not None
+    columns, rows = render.matrix_table(matrix, {"r1": "1.3"}, set())
+    assert columns == ["", "run"]
+    assert [str(r[1]) for r in rows] == [" ", " ● 1.3"]
+
+
+def test_the_queue_is_a_line_per_compute_and_one_for_next() -> None:
+    sweep = _sweep({"a.b.lr": [0.1, 0.2]})
+    sweep = dataclasses.replace(sweep, compute=["gpu0", "gpu1"])
+    members = [
+        dataclasses.replace(
+            _run("r1", name="lr-01", sweep_id="s1", point={"a.b.lr": 0.1}), compute="gpu0"
+        ),
+        dataclasses.replace(
+            _run("r2", name="lr-02", status="queued", sweep_id="s1"), compute="gpu1"
+        ),
+    ]
+    by_hand = dataclasses.replace(_run("r9", name="mine"), compute="gpu1")
+    lines = render.sweep_queue(sweep, members, [*members, by_hand]).plain.splitlines()
+    assert lines == [
+        "gpu0  lr-01  lr=0.1  ",
+        "gpu1  mine    (not this sweep's)",
+        "next  gpu1 lr-02",
+    ]
+
+
+def test_the_spec_says_what_the_sweep_is_made_of() -> None:
+    sweep = _sweep({"phases.pretrain.lr": [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2]})
+    spec = dict(render.sweep_spec(sweep, "baseline"))
+    assert spec["base"] == "baseline"
+    assert spec["axes"] == "lr 0.0001,0.0003,…,0.03 ×6 → 4 runs"
+    assert spec["runs"] == "2 done, 1 running, 1 queued"
 
 
 # -- status colours -------------------------------------------------------

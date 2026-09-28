@@ -63,6 +63,16 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _TERMINAL = ("done", "failed", "stopped")
 
 
+def name_problem(name: str) -> str | None:
+    """Why `name` cannot name a sweep, or None if it can."""
+    if not _NAME_RE.match(name):
+        return (
+            f"sweep name '{name}' must be letters, digits, '.', '_' or '-', "
+            "starting with a letter or digit"
+        )
+    return None
+
+
 @dataclasses.dataclass(frozen=True)
 class Spec:
     """What a sweep varies, and where its runs go.
@@ -333,11 +343,9 @@ def create_sweep(
     `axes` maps each axis path to its raw values (see `expand_axis`). Nothing is
     started: `start_sweep` hands the sweep to a dispatcher.
     """
-    if not _NAME_RE.match(name):
-        raise exceptions.UI(
-            f"sweep name '{name}' must be letters, digits, '.', '_' or '-', "
-            "starting with a letter or digit"
-        )
+    problem = name_problem(name)
+    if problem is not None:
+        raise exceptions.UI(problem)
     taken = session.execute(
         sqlalchemy.select(dbmod.sweeps.c.id).where(dbmod.sweeps.c.name == name)
     ).first()
