@@ -33,6 +33,56 @@ class RunRow:
     # The first phase of the latest attempt that is not done/stopped/failed,
     # i.e. what the run is currently working on. None when nothing is pending.
     phase: str | None
+    # The sweep that generated the run, and the point of its grid the run
+    # stands for (axis path to value). None and empty for a run of its own.
+    sweep_id: str | None = None
+    point: dict[str, object] = dataclasses.field(default_factory=dict[str, object])
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepCounts:
+    """How a sweep's runs stand, by status."""
+
+    total: int
+    queued: int
+    running: int
+    done: int
+    failed: int
+    stopped: int
+
+    @property
+    def finished(self) -> int:
+        """Runs that will not run again unless asked: done, failed or stopped."""
+        return self.done + self.failed + self.stopped
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepRow:
+    """One sweep, as it appears in a list."""
+
+    id: str
+    name: str
+    image: str
+    image_id: str
+    # draft, running, paused, done or cancelled. `done` is derived: a sweep
+    # that was started and has no run left queued or running.
+    status: str
+    created_at: float
+    # Axis path to the values it takes, in grid order.
+    axes: dict[str, list[object]]
+    # The axes whose runs are aggregated rather than told apart when compared.
+    replicate: list[str]
+    compute: list[str]
+    # The run the sweep's config was copied from, if any.
+    base: str | None
+    counts: SweepCounts
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepDetail:
+    sweep: SweepRow
+    # In grid order, which is creation order.
+    runs: list[RunRow]
 
 
 @dataclasses.dataclass(frozen=True)

@@ -474,13 +474,13 @@ def test_default_compute_answers_from_options() -> None:
 
 
 def test_compute_option_values_are_what_the_query_layer_accepts() -> None:
-    """The dialog must not offer a spec `runs._resolve_compute` would reject.
+    """The dialog must not offer a spec `runs.resolve_compute` would reject.
 
     Only the cpu is checked against it: the gpu branch asks the host what it
     has, and CI has no GPU to agree with. The shape of the gpu values is the
     previous test's business.
     """
-    assert utrain.runs._resolve_compute("cpu") == "cpu"
+    assert utrain.runs.resolve_compute("cpu") == "cpu"
     assert [value for _, value in render.compute_options(_compute(2))][1:] == ["gpu0", "gpu1"]
 
 

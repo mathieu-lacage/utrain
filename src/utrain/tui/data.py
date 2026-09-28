@@ -158,7 +158,7 @@ class NewRunChoices:
     """The two lists the new-run dialog picks from.
 
     `compute` is handed over whole rather than as strings: which specs are valid
-    is `runs._resolve_compute`'s business, and how they are labelled is
+    is `runs.resolve_compute`'s business, and how they are labelled is
     `render.compute_options`'.
     """
 

@@ -3,6 +3,7 @@ import datetime
 import importlib.metadata
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from .. import (
     phases,
     runs,
     store,
+    sweeps,
 )
 from .. import db as dbmod
 from . import chat, debug, output, render
@@ -304,6 +306,111 @@ def _cmd_phase_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace
     _print_run_row(phases.restart_phase(args.addr, session), session)
 
 
+def _axes_args(values: list[str] | None) -> dict[str, object]:
+    axes: dict[str, object] = {}
+    for arg in values or []:
+        path, raw = sweeps.parse_axis_arg(arg)
+        if path in axes:
+            raise exceptions.UI(f"axis '{path}' given twice")
+        axes[path] = raw
+    return axes
+
+
+def _compute_arg(value: str | None) -> list[str]:
+    return [c.strip() for c in value.split(",") if c.strip()] if value else []
+
+
+@db_command
+def _cmd_sweep_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    # A spec file gives the whole sweep; flags fill in or override its fields,
+    # so a file can be reused with a different name or compute.
+    spec = (
+        sweeps.read_spec_file(pathlib.Path(args.spec))
+        if args.spec
+        else sweeps.SpecFile(None, None, None, {}, [], [])
+    )
+    axes = dict(spec.axes)
+    axes.update(_axes_args(args.axis))
+    name = args.name or spec.name
+    if name is None:
+        raise exceptions.UI("a sweep needs a name (--name, or 'name:' in the spec file)")
+    sweep_id = sweeps.create_sweep(
+        name=name,
+        axes=axes,
+        compute=_compute_arg(args.compute) or spec.compute,
+        settings=config.Settings(),
+        session=session,
+        image=args.image or spec.image,
+        base=args.base or spec.base,
+        replicate=(args.replicate or []) + spec.replicate,
+    )
+    if args.start:
+        sweeps.start_sweep(sweep_id, session)
+    if args.print_id:
+        print(sweep_id)
+    else:
+        print(render.sweep_detail(sweeps.get_sweep(sweep_id, session)))
+
+
+@db_command
+def _cmd_sweep_list(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    if args.quiet:
+        for sweep_id in sweeps.list_sweep_ids(session):
+            print(sweep_id)
+        return
+    print(render.sweep_table(sweeps.list_sweeps(session)))
+
+
+@db_command
+def _cmd_sweep_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    print(render.sweep_detail(sweeps.get_sweep(args.sweep, session)))
+
+
+def _print_sweep_row(sweep_id: str, session: sqlalchemy.orm.Session) -> None:
+    rows = [s for s in sweeps.list_sweeps(session) if s.id == sweep_id]
+    print(render.sweep_table(rows))
+
+
+@db_command
+def _cmd_sweep_start(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    _print_sweep_row(sweeps.start_sweep(args.sweep, session), session)
+
+
+@db_command
+def _cmd_sweep_pause(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    _print_sweep_row(sweeps.pause_sweep(args.sweep, session), session)
+
+
+@db_command
+def _cmd_sweep_cancel(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    _print_sweep_row(sweeps.cancel_sweep(args.sweep, session), session)
+
+
+@db_command
+def _cmd_sweep_retry(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    sweep_id, n = sweeps.retry_sweep(args.sweep, session)
+    print(f"requeued {n} run(s)")
+    _print_sweep_row(sweep_id, session)
+
+
+@db_command
+def _cmd_sweep_extend(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    sweep_id, n = sweeps.extend_sweep(args.sweep, _axes_args(args.axis), config.Settings(), session)
+    print(f"added {n} run(s)")
+    _print_sweep_row(sweep_id, session)
+
+
+@db_command
+def _cmd_sweep_delete(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
+    for ref in args.sweeps:
+        sweep_id, n = sweeps.delete_sweep(ref, force=args.force, session=session)
+        print(f"removed sweep {sweep_id} and its {n} run(s)")
+
+
+def _cmd_dispatch(args: argparse.Namespace) -> None:
+    sweeps.run_dispatcher(args.sweep_id, config.Settings())
+
+
 def _cmd_store_gc(args: argparse.Namespace) -> None:
     settings = config.Settings()
     print(render.gc_result(store.gc(settings)))
@@ -475,6 +582,71 @@ def build_parser() -> argparse.ArgumentParser:
     ph_restart.add_argument("addr", metavar="ADDR", help="RUN/PHASE or RUN/ATTEMPT/PHASE")
     ph_restart.set_defaults(func=_cmd_phase_restart)
 
+    # sweep
+    sweep_p = sub.add_parser("sweep", help="Grid searches: one run per combination of values")
+    sweep_sub = sweep_p.add_subparsers(dest="sweep_command", required=True)
+    sweep_ref_help = "a sweep's name, or a unique prefix of its id"
+
+    sw_create = sweep_sub.add_parser(
+        "create", help="Create a sweep and one queued run per point of its grid"
+    )
+    sw_create.add_argument(
+        "spec", nargs="?", default=None, metavar="SPEC", help="a sweep spec file (YAML)"
+    )
+    sw_create.add_argument("--name")
+    sw_create.add_argument("--image", help="the image to sweep (or use --from)")
+    sw_create.add_argument(
+        "--from", dest="base", metavar="RUN", help="copy the image and config from this run"
+    )
+    sw_create.add_argument(
+        "--axis",
+        action="append",
+        metavar="PATH=VALUES",
+        help="e.g. phases.pretrain.learning_rate=log:1e-4:1e-2:5 or globals.model.n_layer=4,6,8;"
+        " '*' sweeps every value of a bool or enum field. Repeatable.",
+    )
+    sw_create.add_argument(
+        "--compute", help="comma-separated computes; runs are spread across them"
+    )
+    sw_create.add_argument(
+        "--replicate",
+        action="append",
+        metavar="PATH",
+        help="an axis whose runs are averaged, not told apart, when compared (e.g. a seed)",
+    )
+    sw_create.add_argument("--start", action="store_true", help="start dispatching right away")
+    sw_create.add_argument("--print-id", action="store_true", dest="print_id")
+    sw_create.set_defaults(func=_cmd_sweep_create)
+
+    sw_list = sweep_sub.add_parser("list", help="List sweeps")
+    sw_list.add_argument("-q", "--quiet", action="store_true")
+    sw_list.set_defaults(func=_cmd_sweep_list)
+
+    sw_show = sweep_sub.add_parser("show", help="Show a sweep and its runs")
+    sw_show.add_argument("sweep", metavar="SWEEP", help=sweep_ref_help)
+    sw_show.set_defaults(func=_cmd_sweep_show)
+
+    for name, func, text in (
+        ("start", _cmd_sweep_start, "Start dispatching a sweep's queued runs"),
+        ("resume", _cmd_sweep_start, "Resume a paused sweep"),
+        ("pause", _cmd_sweep_pause, "Stop starting new runs; running ones carry on"),
+        ("cancel", _cmd_sweep_cancel, "Stop a sweep's running runs and drop its queued ones"),
+        ("retry", _cmd_sweep_retry, "Queue a sweep's failed and stopped runs again"),
+    ):
+        p = sweep_sub.add_parser(name, help=text)
+        p.add_argument("sweep", metavar="SWEEP", help=sweep_ref_help)
+        p.set_defaults(func=func)
+
+    sw_extend = sweep_sub.add_parser("extend", help="Add values to a sweep's axes")
+    sw_extend.add_argument("sweep", metavar="SWEEP", help=sweep_ref_help)
+    sw_extend.add_argument("--axis", action="append", required=True, metavar="PATH=VALUES")
+    sw_extend.set_defaults(func=_cmd_sweep_extend)
+
+    sw_delete = sweep_sub.add_parser("delete", help="Delete sweeps and all of their runs")
+    sw_delete.add_argument("sweeps", nargs="+", metavar="SWEEP")
+    sw_delete.add_argument("--force", action="store_true")
+    sw_delete.set_defaults(func=_cmd_sweep_delete)
+
     # store
     store_p = sub.add_parser("store", help="Data store")
     store_sub = store_p.add_subparsers(dest="store_command", required=True)
@@ -514,7 +686,12 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--from-phase", dest="from_phase", default=None)
     orch.set_defaults(func=_cmd_orchestrate)
 
-    sub.metavar = "{compute,image,run,attempt,phase,store,tui}"
+    # hidden _dispatch subcommand: a sweep's dispatcher process
+    dispatch = sub.add_parser("_dispatch")
+    dispatch.add_argument("sweep_id")
+    dispatch.set_defaults(func=_cmd_dispatch)
+
+    sub.metavar = "{compute,image,run,attempt,phase,sweep,store,tui}"
 
     return parser
 

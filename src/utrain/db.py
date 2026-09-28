@@ -26,6 +26,44 @@ runs = sqlalchemy.Table(
     sqlalchemy.Column("status", sqlalchemy.Text, nullable=False, default="configuring"),
     sqlalchemy.Column("config_hash", sqlalchemy.Text, nullable=True),
     sqlalchemy.Column("created_at", sqlalchemy.Float, nullable=False),
+    # The sweep that generated this run, and the point of its grid the run
+    # stands for: a JSON object of axis path to value. Both null for a run
+    # created on its own. See `utrain.sweeps`.
+    sqlalchemy.Column("sweep_id", sqlalchemy.Text, nullable=True),
+    sqlalchemy.Column("sweep_point", sqlalchemy.Text, nullable=True),
+)
+
+sweeps = sqlalchemy.Table(
+    "sweeps",
+    metadata,
+    sqlalchemy.Column("id", sqlalchemy.Text, primary_key=True),
+    # Unique, unlike a run's: a sweep is addressed by name (`@lr-depth`) as
+    # often as by id, so two of the same name would make one unreachable.
+    sqlalchemy.Column("name", sqlalchemy.Text, nullable=False, unique=True),
+    sqlalchemy.Column("image", sqlalchemy.Text, nullable=False),
+    # Frozen once for the whole sweep, as a run freezes its own: every point
+    # runs the same content, which is what makes them comparable.
+    sqlalchemy.Column("image_id", sqlalchemy.Text, nullable=False),
+    # The spec as JSON: axes, replicate axes, computes and base run. See
+    # `sweeps.Spec`.
+    sqlalchemy.Column("spec", sqlalchemy.Text, nullable=False),
+    # What the user last asked of the dispatcher: draft, running, paused or
+    # cancelled. Whether the sweep is *done* is derived from its runs.
+    sqlalchemy.Column("state", sqlalchemy.Text, nullable=False),
+    # The detached dispatcher's pid, as `run_attempts.pid` is the
+    # orchestrator's: a fallback for `lock.is_held`.
+    sqlalchemy.Column("pid", sqlalchemy.Integer, nullable=True),
+    sqlalchemy.Column("created_at", sqlalchemy.Float, nullable=False),
+)
+
+# Saved state of the TUI, one row per key: the run tray, the comparison
+# Compare is showing, and named comparisons. JSON values, so that what the
+# TUI keeps can change without a migration each time.
+tui_state = sqlalchemy.Table(
+    "tui_state",
+    metadata,
+    sqlalchemy.Column("key", sqlalchemy.Text, primary_key=True),
+    sqlalchemy.Column("value", sqlalchemy.Text, nullable=False),
 )
 
 run_attempts = sqlalchemy.Table(
@@ -102,6 +140,8 @@ def _migrate(engine: sqlalchemy.Engine) -> None:
                 ("compute", "TEXT NOT NULL DEFAULT 'cpu'"),
                 ("config_hash", "TEXT"),
                 ("created_at", "REAL NOT NULL DEFAULT 0"),
+                ("sweep_id", "TEXT"),
+                ("sweep_point", "TEXT"),
             ]:
                 if col not in existing["runs"]:
                     conn.execute(sqlalchemy.text(f"ALTER TABLE runs ADD COLUMN {col} {ddl}"))

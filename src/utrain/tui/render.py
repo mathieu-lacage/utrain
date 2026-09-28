@@ -123,11 +123,13 @@ class Plot:
 Cell = str | rich.text.Text
 
 # One mapping, used by both sidebar lists. Run statuses are configuring /
-# running / done / failed / stopped, phase statuses pending / running / done /
+# queued / running / done / failed / stopped (`queued` is a sweep run waiting
+# for its compute), phase statuses pending / running / done /
 # failed / stopped, and the two overlap enough that splitting them would only
 # invite them to drift apart.
 _STATUS_STYLES = {
     "configuring": "cyan",
+    "queued": "dim",
     "pending": "dim",
     "running": "bold yellow",
     "done": "green",
@@ -359,7 +361,7 @@ def build_plot(
 def compute_options(info: compute.ComputeInfo) -> list[tuple[str, str]]:
     """(label, value) pairs for the new-run dialog's compute picker.
 
-    The values are exactly what `runs._resolve_compute` accepts -- `cpu` and
+    The values are exactly what `runs.resolve_compute` accepts -- `cpu` and
     `gpu<index>` -- because it is the one that decides, and a dialog offering
     anything else would only be rejected on create.
     """

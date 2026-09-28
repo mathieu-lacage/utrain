@@ -1,6 +1,7 @@
 import collections.abc
 import contextlib
 import hashlib
+import json
 import os
 import pathlib
 import shutil
@@ -23,7 +24,7 @@ def _config_hash(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _resolve_compute(compute_spec: str) -> str:
+def resolve_compute(compute_spec: str) -> str:
     if compute_spec == "cpu":
         return "cpu"
     if compute_spec.startswith("gpu"):
@@ -98,6 +99,8 @@ def _run_row(
         if phase_rows:
             phase = str(phase_rows[0]["phase"])
 
+    sweep_id = row["sweep_id"]
+    point = row["sweep_point"]
     return types.RunRow(
         id=run_id,
         name=str(row["name"]),
@@ -108,6 +111,8 @@ def _run_row(
         created_at=float(row["created_at"]),
         attempt=attempt_n,
         phase=phase,
+        sweep_id=str(sweep_id) if sweep_id is not None else None,
+        point=_mapping(json.loads(point)) if point else {},
     )
 
 
@@ -188,7 +193,9 @@ def read_config(run_id_prefix: str, session: sqlalchemy.orm.Session) -> dict[str
     return _mapping(yaml.safe_load(path.read_text()))
 
 
-def _coerce(field: container.schema.FieldSchema, value: object) -> int | float | str | bool | None:
+def coerce_value(
+    field: container.schema.FieldSchema, value: object
+) -> int | float | str | bool | None:
     """One form value, checked against the field that declared it.
 
     The TUI edits through widgets that already restrict what can be typed, but
@@ -246,7 +253,7 @@ def _validated_section(
     out: dict[str, object] = {}
     for group in groups:
         source = values if flat else _mapping(values.get(group.name))
-        section = {f.key: _coerce(f, source.get(f.key, f.default)) for f in group.fields}
+        section = {f.key: coerce_value(f, source.get(f.key, f.default)) for f in group.fields}
         if not section:
             continue
         if flat:
@@ -280,12 +287,29 @@ def write_config(
 
     if described is None:
         described = container.podman.describe(dbmod.run_image_ref(row))
-    schema = described.config_schema
 
     path = dbmod.run_dir(run_id, session) / "config.yaml"
     current = _mapping(yaml.safe_load(path.read_text())) if path.exists() else {}
 
-    cfg: dict[str, object] = {"run_id": run_id, "compute": current.get("compute")}
+    cfg = validated_config(run_id, current.get("compute"), values, described.config_schema)
+    with writable(path):
+        path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
+
+
+def validated_config(
+    run_id: str,
+    compute: object,
+    values: dict[str, object],
+    schema: container.schema.ConfigSchema,
+) -> dict[str, object]:
+    """A whole config.yaml, with `values` checked against `schema`.
+
+    What `write_config` writes, and what a sweep writes for each of its points:
+    both take a nested ``{"globals": ..., "phases": ...}`` of candidate values
+    and must end up with exactly the file `_write_config` would have laid out.
+    A field `values` leaves out takes its default.
+    """
+    cfg: dict[str, object] = {"run_id": run_id, "compute": compute}
     globals_out = _validated_section(
         schema.globals.groups, _mapping(values.get("globals")), flat=False
     )
@@ -302,9 +326,7 @@ def write_config(
             phases_out[phase_name] = section
     if phases_out:
         cfg["phases"] = phases_out
-
-    with writable(path):
-        path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
+    return cfg
 
 
 def get_run_detail(
@@ -421,7 +443,7 @@ def create_run(
     if not describe.phase_order:
         raise exceptions.UI(f"image '{image}' has no phases")
 
-    compute_value = _resolve_compute(compute_spec)
+    compute_value = resolve_compute(compute_spec)
     run_id = uuid.uuid4().hex
     run_dir = settings.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -454,7 +476,9 @@ def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
         raise exceptions.UI("run is already running")
     if status in ("done", "failed", "stopped"):
         raise exceptions.UI("run is terminal; use 'run restart' to re-run")
-    if status != "configuring":
+    # `queued` is a sweep run waiting for its compute. Starting one by hand
+    # jumps the queue, which is the user's call to make.
+    if status not in ("configuring", "queued"):
         raise exceptions.UI(f"unexpected run status '{status}'")
 
     # Preflight while still in the foreground process: the orchestrator runs
