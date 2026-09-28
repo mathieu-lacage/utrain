@@ -621,19 +621,19 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 
 ```
  Runs  [Sweeps]  Compare  System                           2 marked    gpu0 97%  gpu1 12%
-      ┌──────────────────────────┐
-      │ Go to Sweeps          F2 │
-      │ ──────────────────────── │
-      │ New sweep…            N  │
-      │ Pause dispatch        p  │
-      │ Extend grid…          +  │
-      │ Retry failed runs     R  │
-      │ Cancel sweep…            │
-      │ ──────────────────────── │
-      │ Compare this sweep    C  │
-      └──────────────────────────┘
-╭─ … the active workspace …                                                                     ╮
-╰───────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ swe┌──────────────────────────┐lr-depth · gpu0,gpu1 ×2 · min val/loss ───────────────────────╮
+│ lr-d│ Go to Sweeps          F2 │         n_layer=4     n_layer=6     n_layer=8                │
+│ warm│ ──────────────────────── │1e-4     ● 1.41        ● 1.38        ◐ 1.52 ↓                 │
+│ seed│ New sweep…            N  │3e-4     ● 1.29 ★      ◐ 1.40 ↓      ○ queued                 │
+│     │ Pause dispatch        p  │1e-3     ✗ failed      ○ queued      ○ queued                 │
+│     │ Extend grid…          +  │3e-3     ○ queued      ○ queued      ○ queued                 │
+│     │ Retry failed runs     R  │1e-2     ○ queued      ○ queued      ○ queued                 │
+│     │ Cancel sweep…            │eue ──────────────────────────────────────────────────────────┤
+│     │ ──────────────────────── │0  lr=3e-4 L=6   pretrain  step 4100/5000   eta 6m            │
+│     │ Compare this sweep    C  │1  lr=1e-4 L=8   pretrain  step 1200/5000   eta 21m           │
+│     └──────────────────────────┘                                                              │
+│                           ││                                                                  │
+╰───────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
  lr-depth running 4/12 · 1 failed        space mark  enter open  : goto  ? help  F10 menu
 ```
 
@@ -654,6 +654,10 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   item, and `escape` or `F10` closes it. Each menu's first item is "Go to
   …" with the workspace's F-key, and every item shows its shortcut, which
   is how the keys are learned.
+* **A menu drops down over the workspace**, under its title, like any DOS
+  menu. The workspace does not move or resize, keeps refreshing underneath,
+  and is not dimmed, so the live state you may be acting on stays visible
+  around the menu.
 * **Commands act on the selection, wherever it is.** Opening the `Runs`
   menu while in Compare restarts or opens the run under the Compare
   cursor; items that don't apply are greyed. Opening a menu never switches
