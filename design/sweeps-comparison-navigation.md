@@ -687,6 +687,45 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   pane, plus `: goto`, `? help` and `F10 menu`. The menus list everything
   else.
 
+The **Runs** workspace is today's screen with three additions: sweep
+rows, a `POINT` column, and marks.
+
+```
+ [Runs]  Sweeps  Compare  System                           2 marked    gpu0 97%  gpu1 12%
+                                            2 Config   [3 Plots]   4 Logs
+╭─ 1 runs ───────────────────────────────╮╭─ lr-depth-04 · pretrain · lr=3e-4 L4 · attempt 1 ─────╮
+│    NAME          POINT      STATUS     ││ val/loss vs step · latest 1.29                        │
+│  ▾ lr-depth      ▰▰▰▰▱▱▱▱   4/12       ││ 3.2┤⠑⢄                                                │
+│ ◆├ lr-depth-01   lr=1e-4 L4 done       ││    │  ⠈⠢⡀                                             │
+│  ├ lr-depth-02   lr=1e-4 L6 done       ││    │     ⠈⠑⠢⢄⡀                                        │
+│  ├ lr-depth-03   lr=1e-4 L8 running    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
+│▶◆├ lr-depth-04   lr=3e-4 L4 done       ││    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀           │
+│  ├ lr-depth-05   lr=3e-4 L6 running    ││ 1.2┤                                                  │
+│  ├ lr-depth-07   lr=1e-3 L4 failed     ││    └────────────────────────────────────── step 5000  │
+│  └ 6 queued                            ││                                                       │
+│  ▸ warmup        ▰▰▰▰▰▰▰▰   8/8        ││ train/loss vs step · latest 1.11                      │
+│    baseline-0921            done       ││ 3.0┤⠑⠢⣀                                               │
+│    live                     running    ││    │   ⠈⠉⠒⠤⢄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀               │
+│    draft                    configuring││ 1.0┤                                                  │
+│                                        ││                                                       │
+╰────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
+ lr-depth 4/12 · 1 failed          enter phases  space mark  e edit  : goto  ? help  F10 menu
+```
+
+* **A sweep is a collapsible row** (`▾`/`▸`) with a progress bar and a
+  done count, and its runs are indented under it. A finished sweep can be
+  collapsed out of the way. Runs outside any sweep are listed below, as
+  today. With the cursor on a sweep row, the content pane shows that
+  sweep's status grid, the same one as in Sweeps.
+* **`POINT`** shows each sweep run's parameter values, using a short label
+  per axis (`L` for `n_layer`). Outside a sweep the column is empty. The
+  sidebar keeps its 42-cell width.
+* **`◆` marks a run for comparison** (`space`); here the top row counts
+  two. `▶` is the cursor, as the highlighted row is today.
+* **Everything else is unchanged:** `enter` drills into the run's phases,
+  `2`/`3`/`4` pick Config, Plots or Logs, and moving the cursor updates the
+  content pane.
+
 How the reference tasks play out:
 
 | Task | Today | Proposed |
