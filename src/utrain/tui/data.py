@@ -24,6 +24,7 @@ app, and `refresh()` drops it.
 import collections.abc
 import dataclasses
 import pathlib
+import subprocess
 import time
 
 import sqlalchemy.orm
@@ -189,6 +190,9 @@ class SystemSnapshot:
     # For what is running on each device, and what is queued for it.
     runs: list[types.RunRow]
     store: types.StoreSummary
+    # Why a section is empty when it could not be read -- no podman on the
+    # host -- rather than the workspace failing as a whole.
+    problem: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -886,10 +890,19 @@ class Data:
         # Through this class's own seams rather than the modules underneath,
         # so that a test which stubs them stubs this too.
         info = self.compute()
-        image_list = self.list_images()
+        problem = ""
+        try:
+            image_list = self.list_images()
+        except (exceptions.UI, OSError, subprocess.CalledProcessError) as e:
+            image_list = []
+            problem = f"cannot list images: {e}"
         rows = self.list_runs()
         return SystemSnapshot(
-            compute=info, images=image_list, runs=rows, store=store.summary(self._settings)
+            compute=info,
+            images=image_list,
+            runs=rows,
+            store=store.summary(self._settings),
+            problem=problem,
         )
 
     def remove_image(self, name: str) -> None:

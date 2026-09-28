@@ -3000,6 +3000,8 @@ class SystemScreen(_Screen):
     def apply(self, snapshot: data.SystemSnapshot) -> None:
         if not self.pulling:
             self.clear_error()
+            if snapshot.problem:
+                self.show_error(snapshot.problem)
         _fill(self.table("#compute"), render.system_compute_rows(snapshot.compute, snapshot.runs))
         self.image_names = [i.name for i in snapshot.images]
         _fill(

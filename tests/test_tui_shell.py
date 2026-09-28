@@ -355,3 +355,20 @@ async def test_g_cleans_the_store_once_asked(app: utrain.tui.app.UtrainApp) -> N
         screen = app.screen
         assert isinstance(screen, utrain.tui.screens.SystemScreen)
         assert "reclaimed 2.0 KB" in screen.error
+
+
+async def test_system_without_podman_says_so_and_shows_the_rest(
+    app: utrain.tui.app.UtrainApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_podman() -> list[object]:
+        raise FileNotFoundError(2, "No such file or directory", "podman")
+
+    monkeypatch.setattr(app.data, "list_images", no_podman)
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("f4")
+        await _settle(app, pilot)
+        screen = app.screen
+        assert isinstance(screen, utrain.tui.screens.SystemScreen)
+        assert screen.error.startswith("cannot list images:")
+        assert screen.table("#compute").row_count > 0
