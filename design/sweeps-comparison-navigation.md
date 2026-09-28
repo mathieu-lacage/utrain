@@ -246,7 +246,7 @@ differ. It can come from:
 
 * a **sweep**: all of its runs, with the sweep's axes;
 * **marks**: `space` on runs in any list, collected in a global *tray*
-  shown in the status bar (`◆ 4`);
+  shown in the top row as `4 marked`;
 * a **filter** (later): `status=done image=shakespeare-char`.
 
 When a set does not come from a sweep, its "axes" are computed as **the
@@ -620,7 +620,7 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 `Compare` tabs). One row carries both jobs instead:
 
 ```
- Runs  [Sweeps]  Compare  System  │ ◆ 2  : goto  ? help                     gpu0 97%  gpu1 12%
+ Runs  [Sweeps]  Compare  System                           2 marked    gpu0 97%  gpu1 12%
       ┌──────────────────────────┐
       │ Go to Sweeps          F2 │
       │ ──────────────────────── │
@@ -634,15 +634,22 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
       └──────────────────────────┘
 ╭─ … the active workspace …                                                                     ╮
 ╰───────────────────────────────────────────────────────────────────────────────────────────────╯
- lr-depth running 4/12 · 1 failed                      space mark  enter open  : goto  F10 menu
+ lr-depth running 4/12 · 1 failed        space mark  enter open  : goto  ? help  F10 menu
 ```
 
-* **Each title is a place.** `F1`–`F4` (or `alt+1..4`) switch to a
-  workspace, and the active title is highlighted. There is no separate
-  tab strip. Each workspace remembers its state.
+* **The two rows have separate jobs.** The top row says where you are
+  and shows state that matters everywhere: the workspace titles, the tray
+  and the GPU meters. The bottom row says what you can do here: the keys
+  for the focused pane, plus `: goto`, `? help` and `F10 menu`. Nothing
+  appears in both.
+* **Each title is a place.** `F1`–`F4` switch to a workspace, and the
+  active title is highlighted. There is no separate tab strip. Each
+  workspace remembers its state.
 * **Each title is also a menu** of the commands for *the selected item of
   that kind*. `F10` drops the menu of the workspace you are in; a click
-  drops the menu of the clicked title. Once a menu is open, `←`/`→` move to
+  drops the menu of the clicked title. Pressing the F-key of the workspace
+  you are already in also opens its menu, so `F2` `F2` means "go to Sweeps
+  and show me what I can do there". Once a menu is open, `←`/`→` move to
   the neighbouring menus without switching workspace, `enter` runs the
   item, and `escape` or `F10` closes it. Each menu's first item is "Go to
   …" with the workspace's F-key, and every item shows its shortcut, which
@@ -652,8 +659,6 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
   cursor; items that don't apply are greyed. Opening a menu never switches
   workspace, and only the "Go to" items do. So a run's commands are
   reachable from every workspace, not only from Runs.
-* **Global items** sit on the right of the same row: the tray (`◆ n`), the
-  `:` goto line and help, followed by always-relevant status (GPU meters).
 * **Workspaces:**
   * **Runs:** today's `MainScreen`, plus sweep grouping rows in the list
     (the §4.A tree, which costs little here). Unchanged for single-run
@@ -667,14 +672,16 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
     and the cursor row is highlighted in the plot.
   * **System:** compute and images as full views. `i` and `c` stay as the
     quick modal glances they are today.
-* **The run tray** is global: `space` marks a run in any list of runs, the
-  tray shows as `◆ n` in the top row, and Compare opens on it.
+* **The run tray** is global: `space` marks a run in any list of runs. The
+  top row shows `n marked` only while something is marked, and clicking it
+  opens Compare on those runs.
 * **The `:` goto line** accepts CLI addresses (`7/2/pretrain`), sweep
   addresses (`@lr-depth`) and resource kinds (`:images`). This connects the
   TUI and CLI vocabularies and makes cross-workspace jumps a single
   command.
 * **The footer** is reduced to the 4–6 keys that matter for the focused
-  pane, plus `F10 menu` and `: goto`. The menu lists everything else.
+  pane, plus `: goto`, `? help` and `F10 menu`. The menus list everything
+  else.
 
 How the reference tasks play out:
 
