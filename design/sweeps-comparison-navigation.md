@@ -35,9 +35,10 @@ VisiData-style sheets.
 
   §4 covers seven options across both dimensions.
 * **Recommendation (§5):** use **workspaces** for the structure (`Runs`,
-  `Sweeps`, `Compare`, `System`). For the command surface, add a **DOS-style
-  menu bar** so every command can be found, plus a **`:` goto line** that
-  accepts the CLI's own addresses. All of these are driven by a single
+  `Sweeps`, `Compare`, `System`), shown as **one DOS-style top row whose
+  titles are both the workspaces and their menus**, so every command can be
+  found without a second bar. Add a **`:` goto line** that accepts the
+  CLI's own addresses. All of these are driven by a single
   **command registry**. A global **run tray** holds the set being compared.
   Today's `MainScreen` becomes the `Runs` workspace almost as-is.
 
@@ -607,25 +608,49 @@ is a lens on a sheet.
 
 ## 5. Recommendation
 
-### 5.1 Shape: workspaces, a menu bar, a goto line and a tray
+### 5.1 Shape: one bar of workspaces that are also menus, a goto line and a tray
 
 Choose **C** as the structure and **B plus D (goto line only)** as the
-command surface. Borrow **G's** sort, pivot and cell drill-down inside
+command surface, with B's menu bar and C's workspace tabs **merged into a
+single row**. Borrow **G's** sort, pivot and cell drill-down inside
 Compare. Keep **F** as a possible later "board".
 
+A separate menu bar and tab strip would be two rows naming the same
+nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
+`Compare` tabs). One row carries both jobs instead:
+
 ```
- File  Run  Sweep  Compare  View  Go  Help                       ◆ 2  gpu0 97%  gpu1 12%  12:04
- F1 Runs   F2 Sweeps   [F3 Compare]   F4 System
+ Runs  [Sweeps]  Compare  System  │ ◆ 2  : goto  ? help                     gpu0 97%  gpu1 12%
+      ┌──────────────────────────┐
+      │ Go to Sweeps          F2 │
+      │ ──────────────────────── │
+      │ New sweep…            N  │
+      │ Pause dispatch        p  │
+      │ Extend grid…          +  │
+      │ Retry failed runs     R  │
+      │ Cancel sweep…            │
+      │ ──────────────────────── │
+      │ Compare this sweep    C  │
+      └──────────────────────────┘
 ╭─ … the active workspace …                                                                     ╮
 ╰───────────────────────────────────────────────────────────────────────────────────────────────╯
- lr-depth running 4/12 · 1 failed                  space mark  enter open  C compare  : goto  F10 menu
+ lr-depth running 4/12 · 1 failed                      space mark  enter open  : goto  F10 menu
 ```
 
-* **Row 1, the menu bar,** makes every command findable, with its
-  accelerator shown. The right edge carries status that is always
-  relevant: the tray count and GPU meters.
-* **Row 2, the workspace tabs,** are reached with `F1`–`F4` or `alt+1..4`.
-  They say where you are, and each remembers its state.
+* **Each title is a place.** `F1`–`F4` (or `alt+1..4`) switch to a
+  workspace, and the active title is highlighted. There is no separate
+  tab strip. Each workspace remembers its state.
+* **Each title is also a menu.** `F10` or a click drops the menu of the
+  title under it: the commands for *the selected item of that kind*. Its
+  first item is "Go to …" with the workspace's F-key. Each item shows its
+  shortcut, which is how the keys are learned.
+* **Commands act on the selection, wherever it is.** Opening the `Runs`
+  menu while in Compare restarts or opens the run under the Compare
+  cursor; items that don't apply are greyed. Opening a menu never switches
+  workspace, and only the "Go to" items do. So a run's commands are
+  reachable from every workspace, not only from Runs.
+* **Global items** sit on the right of the same row: the tray (`◆ n`), the
+  `:` goto line and help, followed by always-relevant status (GPU meters).
 * **Workspaces:**
   * **Runs:** today's `MainScreen`, plus sweep grouping rows in the list
     (the §4.A tree, which costs little here). Unchanged for single-run
@@ -640,7 +665,7 @@ Compare. Keep **F** as a possible later "board".
   * **System:** compute and images as full views. `i` and `c` stay as the
     quick modal glances they are today.
 * **The run tray** is global: `space` marks a run in any list of runs, the
-  tray shows as `◆ n` in the menu bar, and Compare opens on it.
+  tray shows as `◆ n` in the top row, and Compare opens on it.
 * **The `:` goto line** accepts CLI addresses (`7/2/pretrain`), sweep
   addresses (`@lr-depth`) and resource kinds (`:images`). This connects the
   TUI and CLI vocabularies and makes cross-workspace jumps a single
@@ -653,11 +678,11 @@ How the reference tasks play out:
 | Task | Today | Proposed |
 |---|---|---|
 | T1 live run loss | select, `enter`, `3` | same, in `F1` |
-| T2 launch sweep | *not possible* | `F2`, `N`, then form (or Sweep ▸ New sweep from run… in `F1`) |
+| T2 launch sweep | *not possible* | `F2`, `N`, then form (or Sweeps ▸ New sweep from run… from any workspace) |
 | T3 monitor sweep and GPUs | *not possible*, and GPUs are modal | `F2`: matrix, queue, GPU meters |
 | T4 best run, then its log | *not possible* | `F3`, sort the metric, `enter` (jumps to `F1` on that phase), `4` |
 | T5 baseline vs best | *not possible* | `space` on the baseline in `F1`, `space` on the best in `F3`, `C` |
-| T6 retry failed | `R` on each failed run | `F2`, `R` (Sweep ▸ Retry failed runs) |
+| T6 retry failed | `R` on each failed run | `F2`, `R` (Sweeps ▸ Retry failed runs) |
 
 ### 5.2 Prerequisite: a command registry
 
@@ -692,7 +717,7 @@ Each step can be shipped on its own:
 2. **Sweep backend and CLI:** the tables, the `queued` status, the
    dispatcher, `utrain sweep …`, and `run_metric_summary`. Testable with
    cram against the fake containers, as run lifecycle is today.
-3. **Shell:** the menu bar, and workspaces via `App.MODES`. `Runs` holds
+3. **Shell:** the top row (workspaces and their menus), via `App.MODES`. `Runs` holds
    `MainScreen`, and `System` holds compute and images.
 4. **Sweeps workspace:** the list, matrix, queue and create form. Sweep
    grouping rows are added to the Runs list.
