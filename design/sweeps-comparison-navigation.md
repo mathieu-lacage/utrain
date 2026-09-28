@@ -116,7 +116,7 @@ The current model (see the module docstring of `tui/screens.py`):
                     ┌─────────┐        ┌─────────┐
                     │  image  │        │ compute │
                     └────▲────┘        └────▲────┘
-                         │ frozen id        │ assigned at dispatch
+                         │ frozen id        │ fixed at creation   
  ┌─────────┐ generates ┌─┴──────────────────┴─┐  has  ┌─────────┐  has  ┌─────────────────┐
  │  sweep  ├──────────►│          run          ├──────►│ attempt ├──────►│      phase      │
  └────┬────┘           └───────────▲───────────┘       └─────────┘       │ metrics · log   │
@@ -161,9 +161,7 @@ axes:
   phases.pretrain.learning_rate: {log: [1.0e-4, 1.0e-2], num: 5}
   globals.model.n_layer: [4, 6, 8]
   phases.pretrain.seed: {values: [0, 1], replicate: true}
-mode: grid                     # v1; later: zip, random {n: 20}
-compute: [gpu0, gpu1]          # pool; "cpu" allowed with parallel > 1
-parallel: 2                    # max concurrent runs of this sweep
+compute: [gpu0, gpu1]          # each run gets one of these at creation, and keeps it
 ```
 
 * **Axis paths** use the config's own shape (`globals.<group>.<key>`,
@@ -176,9 +174,17 @@ parallel: 2                    # max concurrent runs of this sweep
 * **`replicate: true`** marks an axis, usually a seed, whose runs should be
   aggregated rather than told apart when compared (mean with a min/max
   band). This one flag makes comparisons of noisy runs much easier to read.
+* **Grid only.** Every combination of the axes' values is one run; there
+  are no paired-list or random-sampling modes.
 * **Grid size** is shown live as the spec is edited (`5 × 3 × 2 = 30
   runs`). If a base run has finished, the preview also estimates total time
-  from that run's phase durations divided by `parallel`.
+  from that run's phase durations, divided by the number of computes.
+* **Compute is fixed when the sweep is created,** as it is for any run,
+  because a run's parameters can depend on its GPU (a batch size that fits
+  its memory, for example). The runs are spread across the listed computes,
+  balanced by count, and the assignment shows in the form before anything
+  is created. A sweep whose configs must differ per GPU is one sweep per
+  GPU.
 
 #### Storage
 
@@ -200,28 +206,27 @@ still `done`; the failures are shown on the runs.
 
 #### Dispatch
 
-Today a run is started right away on a compute fixed at creation. A sweep
-needs a queue:
+Today a run is started right away on the compute fixed at its creation.
+Sweep runs keep that rule; what they add is waiting for their compute:
 
 * `utrain sweep start` spawns a **detached dispatcher**
   (`utrain sweep dispatch <id>`), following the same pattern as the
   per-run orchestrator: detached, holding a lock, with all state in the DB.
-* Each tick, the dispatcher reconciles, finds free slots, assigns a queued
-  run to a compute, and calls `runs.start_run`. A slot counts as free when
-  **no run at all** is running on that compute, so the user's manual runs
-  are respected.
-* **Compute is assigned when the run is dispatched**, which relaxes the
-  "frozen at creation" rule for `queued` runs only. The image id stays
-  frozen for the whole sweep, so every point runs the same bits. That
-  matters for comparability.
+* Each tick, the dispatcher reconciles and, for each of the sweep's
+  computes that is free, starts the next queued run assigned to it with
+  `runs.start_run`. A compute counts as free when **no run at all** is
+  running on it, so the user's manual runs are respected. Each compute
+  therefore runs one sweep run at a time, and a queued run waits for its
+  own compute even when another one is idle.
+* **The image id is frozen for the whole sweep**, so every point runs the
+  same bits. That matters for comparability.
 * **Crash handling:** `reconcile` already handles an orchestrator that has
   died. It gains a rule that restarts the dispatcher for a sweep that is
   `running` but has no live dispatcher.
 * **Dispatch order:** by default, the first point of each distinct
-  upstream config goes first. See the open question in §7 on cacheable
-  phases: today deduplication into the store runs only when the whole run
-  completes, so parallel siblings cannot share a cacheable `tokenizer`
-  phase until one of them finishes.
+  upstream config goes first, so that cacheable upstream phases are
+  computed once. How much this helps depends on when a phase's output
+  reaches the store (§7).
 
 #### Lifecycle commands (CLI and TUI)
 
@@ -246,7 +251,7 @@ A **run set** is an ordered list of runs, plus the axes along which they
 differ. It can come from:
 
 * a **sweep**: all of its runs, with the sweep's axes;
-* **marks**: `space` on runs in any list, collected in a global *tray*
+* **marks**: `space` on runs in any list, collected in one global *tray*
   shown in the top row as `4 marked`;
 * a **filter** (later): `status=done image=shakespeare-char`.
 
@@ -255,8 +260,11 @@ config keys whose values differ across the set**. The same computation
 drives the config-diff lens and the default table columns, so ad-hoc
 comparisons are as readable as sweep ones.
 
-Sets start out ephemeral. Saving a set as a named *comparison* is a later,
-optional step (§7).
+**Comparisons are saved.** The tray and Compare's settings (set, phase,
+metric, reducer, colour, lens, sort) are stored in a `comparisons` table
+as they change, so quitting and restarting the app puts Compare back
+exactly as it was. `Save as…` gives the current comparison a name so it
+can be reopened later from the set picker, and `Open saved…` lists them.
 
 #### Alignment
 
@@ -614,7 +622,7 @@ is a lens on a sheet.
 Choose **C** as the structure and **B plus D (goto line only)** as the
 command surface, with B's menu bar and C's workspace tabs **merged into a
 single row**. Borrow **G's** sort, pivot and cell drill-down inside
-Compare. Keep **F** as a possible later "board".
+Compare.
 
 A separate menu bar and tab strip would be two rows naming the same
 nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
@@ -634,12 +642,12 @@ nouns (`Run`, `Sweep` and `Compare` menus above `Runs`, `Sweeps` and
 │       │ Compare this sweep    C  │e ────────────────────────────────────────────────────────────╮
 │       └──────────────────────────┘ lr-depth-05  lr=3e-4 L6  pretrain  step 4100/5000  eta 6m    │
 │                           ││ gpu1  lr-depth-03  lr=1e-4 L8  pretrain  step 1200/5000  eta 21m   │
-│                           ││ next  lr-depth-06  lr=3e-4 L8                                      │
+│                           ││ next  gpu0 lr-depth-06 · gpu1 lr-depth-08                          │
 │                           │╰────────────────────────────────────────────────────────────────────╯
 │                           │╭─ spec ─────────────────────────────────────────────────────────────╮
 │                           ││ image  shakespeare-char@3f2a      base  baseline-0921              │
 │                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
-│                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
+│                           ││ compute gpu0, gpu1 (fixed per run)  left ~1h40 (8 runs)            │
 ╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
            tab pane  enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
 ```
@@ -872,12 +880,12 @@ that used to crowd the footer are under `Plot ▸`:
 │                           │╭─ queue ────────────────────────────────────────────────────────────╮
 │                           ││ gpu0  lr-depth-05  lr=3e-4 L6  pretrain  step 4100/5000  eta 6m    │
 │                           ││ gpu1  lr-depth-03  lr=1e-4 L8  pretrain  step 1200/5000  eta 21m   │
-│                           ││ next  lr-depth-06  lr=3e-4 L8                                      │
+│                           ││ next  gpu0 lr-depth-06 · gpu1 lr-depth-08                          │
 │                           │╰────────────────────────────────────────────────────────────────────╯
 │                           │╭─ spec ─────────────────────────────────────────────────────────────╮
 │                           ││ image  shakespeare-char@3f2a      base  baseline-0921              │
 │                           ││ axes   lr (log) 1e-4…3e-3 ×4 · n_layer 4,6,8 → 12 runs             │
-│                           ││ pool   gpu0, gpu1 · parallel 2   left  ~1h40 (8 runs)              │
+│                           ││ compute gpu0, gpu1 (fixed per run)  left ~1h40 (8 runs)            │
 ╰───────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
            tab pane  enter open  space mark  p pause  R retry  C compare  : goto  ? help  F10 menu
 ```
@@ -890,10 +898,10 @@ that used to crowd the footer are under `Plot ▸`:
   with more than two axes gets a picker for which two are shown; the rest
   are summarised (best, or mean over replicates).
 * **Queue:** what is running on each compute, its phase and progress, and
-  the next run to start. It is capped at one line per compute plus that
-  "next" line, so it never scrolls.
-* **Spec:** image, base run, axes, pool, and an estimate of the time left
-  from the durations of finished points.
+  the next run waiting for each compute. It is capped at one line per
+  compute plus that "next" line, so it never scrolls.
+* **Spec:** image, base run, axes, computes, and an estimate of the time
+  left from the durations of finished points.
 * `enter` on a cell opens that run in Runs, `space` marks it, and `C`
   opens the sweep in Compare.
 * **Creating a sweep** needs an image first, because the form is built
@@ -903,8 +911,7 @@ that used to crowd the footer are under `Plot ▸`:
     the common case: sweeping around a run you already like.
   * **Sweeps ▸ New sweep… (`N`)** first asks, in a dialog shaped like
     today's new-run dialog, for a name, the image, the base config (the
-    image's defaults or one of its runs), the compute pool and how many
-    runs at once.
+    image's defaults or one of its runs) and the computes to use.
 
   Both then open the same form: the config fields, each with a "sweep
   this" toggle that turns its value into a list or range, and a live grid
@@ -963,27 +970,28 @@ The Compare menu (`F3` again, or `F10`):
 │              │ ────────────────────────── │                                                     │
 │ val/loss vs s│ Compare the tray (2)       │▶ highlighted                                        │
 │ 3.2┤⠑⢄⠑⢄     │ Compare a sweep…           │                                ── lr=1e-4           │
-│    │ ⠈⠢⡀⠈⠢⡀⠑⢄│ Clear the tray             │                                ── lr=3e-4           │
-│    │    ⠈⠑⠢⢄⡀│ ────────────────────────── │                                ── lr=1e-3           │
-│    │         │ Phase…            pretrain │                                ── ▶ lr-depth-04     │
-│    │         │ Metric…           val/loss │                                                     │
-│ 1.2┤         │ Reduce by…             min │⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀                                           │
-│    └─────────│ Colour by…              lr │───────────────────────── step 5000                  │
-│              │ Next lens                ] │                                                     │
-├──────────────│ Sort by next column      > │─────────────────────────────────────────────────────┤
-│   RUN        │ ────────────────────────── │al/loss ▲  train/loss  tok/s  DURATION               │
-│ ▶ lr-depth-04│ Open run in Runs     enter │.29        1.11        41k    42m                    │
-│   lr-depth-02│ Mark / unmark        space │.38        1.24        33k    58m                    │
-│   lr-depth-05│ Export plot…             E │.40 ↓      1.30        33k    31m                    │
-│   lr-depth-01└────────────────────────────┘.41        1.30        41k    44m                    │
-│   lr-depth-03   1e-4   8        running   1.52 ↓      1.47        27k    12m                    │
-│   lr-depth-07   1e-3   4        failed    –           –           –      3m                     │
+│    │ ⠈⠢⡀⠈⠢⡀⠑⢄│ Open saved…                │                                ── lr=3e-4           │
+│    │    ⠈⠑⠢⢄⡀│ Save as…                   │                                ── lr=1e-3           │
+│    │         │ Clear the tray             │                                ── ▶ lr-depth-04     │
+│    │         │ ────────────────────────── │                                                     │
+│ 1.2┤         │ Phase…            pretrain │⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀                                           │
+│    └─────────│ Metric…           val/loss │───────────────────────── step 5000                  │
+│              │ Reduce by…             min │                                                     │
+├──────────────│ Colour by…              lr │─────────────────────────────────────────────────────┤
+│   RUN        │ Next lens                ] │al/loss ▲  train/loss  tok/s  DURATION               │
+│ ▶ lr-depth-04│ Sort by next column      > │.29        1.11        41k    42m                    │
+│   lr-depth-02│ ────────────────────────── │.38        1.24        33k    58m                    │
+│   lr-depth-05│ Open run in Runs     enter │.40 ↓      1.30        33k    31m                    │
+│   lr-depth-01│ Mark / unmark        space │.41        1.30        41k    44m                    │
+│   lr-depth-03│ Export plot…             E │.52 ↓      1.47        27k    12m                    │
+│   lr-depth-07└────────────────────────────┘           –           –      3m                     │
 │   6 queued runs not shown                                                                       │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
  best lr-depth-04 · 1.29  enter open run  space mark  [ ] lens  < > sort  : goto  ? help  F10 menu
 ```
 
-* The first group picks the set, the second how it is shown. For a
+* The first group picks the set, and opens or saves named comparisons;
+  the second picks how it is shown. For a
   setting (phase, metric, reducer, colour), the right-hand column shows
   its current value instead of a key; picking the item opens a list of
   the alternatives.
@@ -998,7 +1006,7 @@ The Compare menu (`F3` again, or `F10`):
 │   gpu0  gpu   RTX A5000       ▰▰▰▰▰▰▰▰▰▱  97%     22.1/24 GB    214 W   lr-depth-05             │
 │   gpu1  gpu   RTX A5000       ▰▱▱▱▱▱▱▱▱▱  12%     3.4/24 GB     61 W    lr-depth-03             │
 │                                                                                                 │
-│   queue: 6 runs of lr-depth waiting for gpu0 or gpu1                                            │
+│   queued (lr-depth): 3 for gpu0, 3 for gpu1                                                     │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ 2 images ──────────────────────────────────────────────────────────────────────────────────────╮
 │   NAME                    ID     SIZE     RUNS  SWEEPS  ADDED                                   │
@@ -1033,7 +1041,7 @@ The System menu (`F4` again, or `F10`):
 │   gpu0  gpu   RTX A500│ Add image…               a │.1/24 GB    214 W   lr-depth-05             │
 │   gpu1  gpu   RTX A500│ Delete image…            d │4/24 GB     61 W    lr-depth-03             │
 │                       │ ────────────────────────── │                                            │
-│   queue: 6 runs of lr-│ Check data store           │                                            │
+│   queued (lr-depth): 3│ Check data store           │                                            │
 ╰───────────────────────│ Clean up store…          G │────────────────────────────────────────────╯
 ╭─ 2 images ────────────│ ────────────────────────── │────────────────────────────────────────────╮
 │   NAME                │ Settings…                  │PS  ADDED                                   │
@@ -1105,11 +1113,10 @@ Each step can be shipped on its own:
    panes with `z` zoom, and config as an editor.
 5. **Sweeps workspace:** the list, matrix, queue and create form.
 6. **Tray and Compare workspace:** table and curves first, then heatmap,
-   response and diff.
+   response and diff. The tray and comparisons are saved from the start.
 7. **Goto line:** addresses, `@sweep`, and resource kinds, with
    completion.
-8. *(later)* Named comparisons, filter-defined sets, random and zip sweep
-   modes, and a saved tiling "board".
+8. *(later)* Filter-defined sets.
 
 ---
 
@@ -1131,26 +1138,47 @@ Each step can be shipped on its own:
   that `sweep extend` or `retry` can fill.
 * **Chat.** It stays run-scoped (`t`) and opens in the current workspace's
   stack.
+* **Restoring the session.** Saving comparisons (§7) extends naturally to
+  the rest of what the screen shows: the active workspace, each
+  workspace's cursor and focused pane, and which tree rows are expanded,
+  saved in the same database as a small per-user row. A restart then
+  reopens where you left off, not only in Compare.
 
 ---
 
-## 7. Open questions
+## 7. Decisions and the remaining open question
 
-1. **Grid only for v1,** or also `zip` (paired lists) and `random`
-   sampling?
-2. **Assigning compute at dispatch time** relaxes the rule that a run's
-   compute is fixed at creation, for queued runs only. Is that acceptable,
-   or should a sweep pre-assign compute round-robin and accept idle slots?
-3. **Cache interaction.** Deduplication into the store happens only when a
-   whole run completes, so parallel sweep siblings cannot share a
-   cacheable upstream phase until one of them finishes. Should
-   deduplication (or at least store insertion) happen per phase?
-4. **Should comparisons be saved** (a `comparisons` table), or are the
-   tray plus sweeps enough?
-5. **One global tray,** or several named sets?
-6. **Terminal constraints.** Do you use utrain over ssh, tmux, or terminals
-   where `F10`, `F1`–`F4` or `alt` are intercepted? That decides which
-   accelerators are primary and which are aliases.
-7. **Appetite for the more radical shells.** If E (Miller) or F (tiling)
-   appeals more than the recommendation, both can be prototyped as one
-   extra workspace without committing the whole app to them.
+Decided:
+
+1. **Grid only for the first version.** No paired-list or random modes.
+2. **Compute is assigned when a sweep is created** and never changes,
+   because a run's parameters can depend on its GPU. A queued run waits
+   for its own compute (§3.1).
+3. **Comparisons are saved,** so the app comes back as it was left (§3.2).
+4. **One global tray.**
+5. **utrain is used over ssh.** ssh passes function keys through, so
+   `F1`–`F4` and `F10` stay the primary keys. What can intercept them is
+   the local terminal emulator (GNOME Terminal takes `F1` and `F10` by
+   default; both can be switched off in its preferences). So:
+   * **No `alt` shortcuts at all.** Over ssh, `alt+x` arrives as `escape`
+     then `x`, which collides with `escape` as "back" and depends on a
+     timeout that network latency makes unreliable.
+   * **Every function key has a typed fallback:** `:runs`, `:sweeps`,
+     `:compare`, `:system` and `:menu` in the goto line.
+   * **The mouse works over ssh** (Textual's mouse reporting is plain
+     terminal escape codes), so clicking a title always opens its menu.
+     Copying already uses OSC 52, which is what reaches the local
+     clipboard from a remote session.
+6. **No prototype of the more radical shells** (Miller columns, tiling).
+
+Still open:
+
+7. **When a phase's output reaches the store.** In the current code,
+   `orchestrator.py` calls `_deduplicate_data` once, after the loop over
+   phases has finished ("All phases complete. Deduplicate into the store
+   *before* marking the run done"), not at the end of each phase. So a
+   sweep run cannot reuse a cacheable upstream phase (a tokenizer, say)
+   from a sibling until that sibling has finished *all* its phases.
+   Moving the store insertion for each phase into the loop, right after
+   the phase is marked done, would let siblings share it as soon as it
+   exists. That is a change to the orchestrator, separate from this design.
