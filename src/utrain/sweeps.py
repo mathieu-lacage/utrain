@@ -794,13 +794,14 @@ def ensure_dispatcher(sweep_id: str, session: sqlalchemy.orm.Session) -> None:
     # Committed first: the dispatcher is another process, and must see the
     # state and the runs this session has just written.
     session.commit()
-    log = open(directory / "dispatcher.log", "ab")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "utrain.cli.main", "_dispatch", sweep_id],
-        stdout=log,
-        stderr=log,
-        start_new_session=True,
-    )
+    # The child keeps its own copy of the descriptor; the parent's is closed.
+    with open(directory / "dispatcher.log", "ab") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "utrain.cli.main", "_dispatch", sweep_id],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
     session.execute(
         sqlalchemy.update(dbmod.sweeps).where(dbmod.sweeps.c.id == sweep_id).values(pid=proc.pid)
     )

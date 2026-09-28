@@ -7,6 +7,7 @@ creates, with what config, and which of them a tick of the dispatcher picks.
 
 import json
 import pathlib
+import types
 import typing
 
 import pytest
@@ -595,7 +596,10 @@ def test_ensure_dispatcher_starts_one_only_when_there_is_work(
     sweep_id = _create(session, settings, compute=["cpu"])
     # ...then the real one, with Popen recorded and no dispatcher alive.
     monkeypatch.setattr(utrain.sweeps, "ensure_dispatcher", real_ensure)
-    monkeypatch.setattr(utrain.sweeps.subprocess, "Popen", popen)
+    # The module's own name for `subprocess`, not the module: patching
+    # `subprocess.Popen` itself would reach every caller in the process,
+    # conftest's podman sweep at teardown included.
+    monkeypatch.setattr(utrain.sweeps, "subprocess", types.SimpleNamespace(Popen=popen))
     monkeypatch.setattr(utrain.sweeps.lock, "is_held", lambda *a: False)
 
     real_ensure(sweep_id, session)
