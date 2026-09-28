@@ -767,10 +767,14 @@ selection on the right. Runs follows the same shape:
   per axis (`L` for `n_layer`); the sidebar keeps its 42-cell width.
   **`◆`** marks a run for comparison (`space`), and `▶` is the cursor.
 
-Config is only edited before a run starts, so it does not need a
-permanent place. `e` opens it as an editor over the right side, and a run
-that is still configuring shows its config there instead of the plots it
-does not have yet:
+Config does not need a permanent place, because it can only be changed
+before a run starts: `runs.write_config` refuses any run that is not
+`configuring`. So the two cases are handled differently.
+
+**A configuring run edits its config in place.** The config is the
+right-hand pane (`2`), shown instead of the plots the run does not have
+yet. `e` puts the focus in it, and the fields edit in place as they do
+today; `escape` leaves a field and `s` starts the run:
 
 ```
  [Runs]  Sweeps  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
@@ -792,6 +796,38 @@ does not have yet:
 │▶ ▸ draft                    configuring││                                                       │
 ╰────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
                             tab pane  e edit config  s start  space mark  : goto  ? help  F10 menu
+```
+
+**A started run's config opens in a read-only popup.** Once a run has
+started, its config can only be looked at ("what learning rate did this
+one use?"), so it is a glance rather than a view: `e` opens it over the
+screen, the plots and log keep updating behind it, and `escape` closes it,
+like the images and compute pop-ups. Swept values are flagged, and `N`
+offers the usual next step, a new sweep around this run. The same key
+serves both cases: the Run menu calls it "Edit config" on a configuring run
+and "Show config" on any other. Comparing configs across runs is
+Compare's config diff.
+
+```
+ [Runs]  Sweeps  Compare  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ 1 runs ───────────────────────────────╮╭─ 2 plots · lr-depth-04/pretrain · lr=3e-4 L4 ─────────╮
+│  NAME            POINT      STATUS     ││ val/loss vs step · latest 1.29                        │
+│  ▾ lr-depth      ▰▰▰▰▱▱▱┌─ config · lr-depth-04 · read-only ───────────────┐                    │
+│ ◆  ▸ lr-depth-01 lr=1e-4│ shakespeare-char@3f2a on gpu0 · done · 1 attempt │                    │
+│    ▸ lr-depth-02 lr=1e-4│ sweep lr-depth, point lr=3e-4 L4                 │                    │
+│    ▸ lr-depth-03 lr=1e-4│                                                  │                    │
+│ ◆  ▾ lr-depth-04 lr=3e-4│ globals: Model                                   │⣀⣀⣀⣀⣀⣀⣀             │
+│        tokenizer        │   Layers                 4        ◂ swept        │                    │
+│▶       pretrain         │   Precision              bf16                    │────── step 5000    │
+│    ▸ lr-depth-05 lr=3e-4│                                                  │k metrics)          │
+│    ▸ lr-depth-07 lr=1e-3│ phase: pretrain                                  │────────────────────╯
+│      6 queued           │   Learning rate          3e-4     ◂ swept        │────────────────────╮
+│  ▸ warmup        ▰▰▰▰▰▰▰│   Batch size             64                      │lr 3.0e-4           │
+│  ▸ baseline-0921        │   Max steps              5000                    │lr 3.0e-4           │
+│  ▸ live                 │                                                  │lr 3.0e-4           │
+│  ▸ draft                │ N new sweep from this run · escape close         │t.pt                │
+╰─────────────────────────└──────────────────────────────────────────────────┘────────────────────╯
+                                      escape close  N new sweep from run  : goto  ? help  F10 menu
 ```
 
 The Runs menu (`F1` again, or `F10`), with its `Plot` submenu open. The
