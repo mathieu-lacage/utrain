@@ -1156,13 +1156,21 @@ Decided:
    for its own compute (§3.1).
 3. **Comparisons are saved,** so the app comes back as it was left (§3.2).
 4. **One global tray.**
-5. **utrain is used over ssh.** ssh passes function keys through, so
-   `F1`–`F4` and `F10` stay the primary keys. What can intercept them is
-   the local terminal emulator (GNOME Terminal takes `F1` and `F10` by
-   default; both can be switched off in its preferences). So:
-   * **No `alt` shortcuts at all.** Over ssh, `alt+x` arrives as `escape`
-     then `x`, which collides with `escape` as "back" and depends on a
-     timeout that network latency makes unreliable.
+5. **utrain is used over ssh, and from terminals that keep function keys.**
+   In practice the local terminal emulator often takes `F1`–`F4` and
+   `F10` for itself (GNOME Terminal takes `F1` and `F10` by default), so
+   they are not a default anyone can rely on. So:
+   * **`Alt` with a letter is the primary key:** `Alt+R` Runs, `Alt+S`
+     Sweeps, `Alt+C` Compare, `Alt+Y` System, the letter underlined in the
+     top row; pressed again, it opens that workspace's menu. A terminal
+     sends `Alt+x` as `escape` then `x` in one write, so over ssh the two
+     bytes travel together, and Textual reads them as `alt+x` when `x`
+     follows within `ESCDELAY` (100 ms). The costs: `Escape` then a letter
+     typed inside 100 ms reads as the chord; macOS terminals need "Use
+     Option as Meta" (Terminal.app) or Option as "Esc+" (iTerm2); and a
+     terminal showing its menu bar can take `Alt+F`-style menu keys.
+   * **The function keys stay** as a second binding, for terminals that
+     pass them on.
    * **Every function key has a typed fallback:** `:runs`, `:sweeps`,
      `:compare`, `:system` and `:menu` in the goto line.
    * **The mouse works over ssh** (Textual's mouse reporting is plain

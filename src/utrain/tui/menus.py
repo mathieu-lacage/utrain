@@ -38,11 +38,19 @@ _MIN_WIDTH = 24
 _KEY_GAP = 3
 
 
+def title_text(ws: commands.Workspace) -> rich.text.Text:
+    """A workspace's title with the letter Alt goes with underlined, as a DOS
+    menu bar marks its shortcuts."""
+    text = rich.text.Text(ws.title)
+    text.stylize("underline", ws.mnemonic, ws.mnemonic + 1)
+    return text
+
+
 class Title(textual.widgets.Static):
     """One workspace's name in the top row. A click drops its menu."""
 
     def __init__(self, ws: commands.Workspace, active: bool) -> None:
-        super().__init__(ws.title, classes="title -active" if active else "title")
+        super().__init__(title_text(ws), classes="title -active" if active else "title")
         self.workspace = ws
 
     def on_click(self, event: textual.events.Click) -> None:

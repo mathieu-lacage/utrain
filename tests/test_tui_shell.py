@@ -301,8 +301,8 @@ async def test_function_keys_are_off_under_a_dialog(app: utrain.tui.app.UtrainAp
 
 async def test_the_key_map_lists_every_workspace_menu(app: utrain.tui.app.UtrainApp) -> None:
     sections = dict(utrain.tui.screens.help_sections(list(utrain.tui.commands.WORKSPACES)))
-    assert ("s", "Run > Start") in sections["Runs (F1)"]
-    assert ("G", "Clean up store") in sections["System (F4)"]
+    assert ("s", "Run > Start") in sections["Runs (Alt+R)"]
+    assert ("G", "Clean up store") in sections["System (Alt+Y)"]
     assert ("F10", "open the menu of the workspace you are in") in sections["getting around"]
 
 
@@ -372,3 +372,54 @@ async def test_system_without_podman_says_so_and_shows_the_rest(
         assert isinstance(screen, utrain.tui.screens.SystemScreen)
         assert screen.error.startswith("cannot list images:")
         assert screen.table("#compute").row_count > 0
+
+
+# -- Alt with a letter ---------------------------------------------------------
+
+
+async def test_alt_with_the_underlined_letter_goes_to_each_workspace(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        for key, mode in (
+            ("alt+s", "sweeps"),
+            ("alt+c", "compare"),
+            ("alt+y", "system"),
+            ("alt+r", "runs"),
+        ):
+            await pilot.press(key)
+            await _settle(app, pilot)
+            assert app.current_mode == mode
+
+
+async def test_alt_again_opens_the_workspace_menu(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("alt+r")
+        await _settle(app, pilot)
+        assert _menu(app).workspace == "runs"
+        labels = dict(_menu(app).labels())
+        assert "Go to Runs" in labels
+
+
+def test_each_title_underlines_its_letter() -> None:
+    for ws in utrain.tui.commands.WORKSPACES:
+        text = utrain.tui.menus.title_text(ws)
+        underlined = [
+            text.plain[span.start : span.end]
+            for span in text.spans
+            if "underline" in str(span.style)
+        ]
+        assert [u.lower() for u in underlined] == [ws.letter]
+
+
+def test_the_raw_bytes_a_terminal_sends_for_alt_reach_the_binding() -> None:
+    """Escape then the letter, the way xterm and friends send Alt+letter."""
+    from textual import events
+    from textual._xterm_parser import XTermParser  # pyright: ignore[reportPrivateUsage]
+
+    parser = XTermParser()
+    keys = [e.key for e in parser.feed("\x1by") if isinstance(e, events.Key)]
+    keys += [e.key for e in parser.feed("") if isinstance(e, events.Key)]
+    assert keys == ["alt+y"]

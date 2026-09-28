@@ -20,23 +20,41 @@ import dataclasses
 
 @dataclasses.dataclass(frozen=True)
 class Workspace:
-    """A top-level place: its mode name, its title, and the key that goes there."""
+    """A top-level place: its mode name, its title, and the keys that go there.
+
+    Two keys each. `alt+<letter>` is the one shown: a letter is on every
+    keyboard layout and reaches the app from every terminal, where a function
+    key is often kept by the terminal for itself -- F1 for its help, F10 for
+    its menu bar. The function key stays, for the terminals that pass it on.
+    """
 
     name: str
     title: str
-    key: str
+    # The letter underlined in the title: `alt` with it goes there.
+    letter: str
+    fkey: str
+
+    @property
+    def alt(self) -> str:
+        return f"alt+{self.letter}"
 
     @property
     def key_display(self) -> str:
-        return self.key.upper()
+        return f"Alt+{self.letter.upper()}"
+
+    @property
+    def mnemonic(self) -> int:
+        """Where `letter` is in the title, for the top row to underline it."""
+        return self.title.lower().index(self.letter)
 
 
 # In the order the top row shows them, and the function keys follow it.
 WORKSPACES = (
-    Workspace("runs", "Runs", "f1"),
-    Workspace("sweeps", "Sweeps", "f2"),
-    Workspace("compare", "Compare", "f3"),
-    Workspace("system", "System", "f4"),
+    Workspace("runs", "Runs", "r", "f1"),
+    Workspace("sweeps", "Sweeps", "s", "f2"),
+    Workspace("compare", "Compare", "c", "f3"),
+    # `s` is Sweeps'.
+    Workspace("system", "System", "y", "f4"),
 )
 
 
@@ -160,7 +178,8 @@ MENUS: dict[str, tuple[Entry, ...]] = {
 # What `?` adds to the menus: the keys that move between places rather than
 # act on anything, which no menu lists.
 NAVIGATION = (
-    ("F1 - F4", "go to Runs, Sweeps, Compare, System; again opens its menu"),
+    ("Alt+R / S / C / Y", "go to Runs, Sweeps, Compare, System; again opens its menu"),
+    ("F1 - F4", "the same, where the terminal passes function keys on"),
     ("F10", "open the menu of the workspace you are in"),
     ("left / right", "in a menu: the neighbouring menu"),
     ("tab / shift+tab", "the next pane on screen, and the previous"),

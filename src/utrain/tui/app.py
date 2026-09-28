@@ -360,11 +360,14 @@ class UtrainApp(textual.app.App[None]):
         # bring it here -- where there is no terminal selection to copy, only
         # the one the app made, so it copies that.
         textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
-        # The workspaces, and the menus. No `alt` shortcuts: over ssh an
-        # `alt+x` arrives as `escape` then `x`, which is also "back" then a
-        # key, split by a timeout that network latency makes unreliable.
+        # The workspaces, and the menus: Alt with the title's underlined
+        # letter, or its function key where the terminal passes those on.
+        # A terminal sends Alt+x as escape then x, in one write; Textual reads
+        # the pair as `alt+x` when the x follows within ESCDELAY (100 ms).
         *(
-            textual.binding.Binding(ws.key, f"workspace_key('{ws.name}')", ws.title, show=False)
+            textual.binding.Binding(
+                f"{ws.alt},{ws.fkey}", f"workspace_key('{ws.name}')", ws.title, show=False
+            )
             for ws in commands.WORKSPACES
         ),
         textual.binding.Binding("f10", "menu", "menu", show=False),
