@@ -39,6 +39,7 @@ import textual.binding
 import textual.containers
 import textual.coordinate
 import textual.screen
+import textual.suggester
 import textual.timer
 import textual.widget
 import textual.widgets
@@ -631,6 +632,9 @@ class MainScreen(_Screen):
         # A run created this session, waiting for the fetch that will list it.
         # `apply_runs` puts the cursor on it and clears this.
         self._pending_run: str | None = None
+        # A phase's row to put the cursor on once it is drawn, by key: the
+        # goto line opens the run, and its phases come with the next fetch.
+        self._pending_phase: str | None = None
         # The last snapshot, for the read-only config popup.
         self._config: data.Snapshot | None = None
         self.x_axis = render.X_STEP
@@ -873,6 +877,16 @@ class MainScreen(_Screen):
         if not self.nodes:
             self.cursor_key = None
             return
+        if self._pending_phase is not None:
+            pending_run = self._pending_phase.removeprefix("phase:").split("/", 1)[0]
+            if any(n.key == self._pending_phase for n in self.nodes):
+                self.cursor_key = self._pending_phase
+                self._pending_phase = None
+            elif phases.get(pending_run):
+                # Its phases are listed, and it is not one of them.
+                name = self._pending_phase.rsplit("/", 1)[-1]
+                self.show_error(f"no phase '{name}' in that run", hold=True)
+                self._pending_phase = None
         index = self.index_of(self.cursor_key)
         if index is None:
             # The node has gone -- deleted, or folded away under a collapse --
@@ -1736,8 +1750,11 @@ class MainScreen(_Screen):
             self.draw_tree()
             self.refresh_data()
 
-    def reveal_run(self, run_id: str) -> None:
-        """Put the cursor on a run, opening its sweep if it has one."""
+    def reveal_run(self, run_id: str, phase: str | None = None) -> None:
+        """Put the cursor on a run, or on one of its phases, opening what it is in."""
+        if phase is not None:
+            self.expanded.add(render.run_key(run_id))
+            self._pending_phase = render.phase_key(run_id, phase)
         self.select_when_listed(run_id)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -4701,3 +4718,81 @@ class CompareScreen(_Screen):
         self.host.from_thread(
             self.change, **{f.name: getattr(state, f.name) for f in dataclasses.fields(state)}
         )
+
+
+class GotoScreen(textual.screen.ModalScreen[str | None]):
+    """The `:` line: where to go, typed.
+
+    A run by name or id prefix, a phase as `run/phase`, a sweep as `@name`,
+    a workspace by name, or `menu` for the menu of the one in front -- the
+    way to everything the function keys reach, for a terminal that does not
+    send them. `right` accepts the completion shown in grey.
+    """
+
+    BINDINGS = [
+        textual.binding.Binding("escape", "cancel", "cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    GotoScreen {
+        align: left bottom;
+        background: transparent;
+    }
+    #goto {
+        width: 100%;
+        height: auto;
+        background: $surface;
+        border-top: solid $accent;
+        padding: 0 1;
+    }
+    #goto-help {
+        color: $text-muted;
+        height: 1;
+    }
+    #goto-line {
+        height: 1;
+    }
+    #goto-line > Label {
+        width: 2;
+        color: $accent;
+        text-style: bold;
+    }
+    #goto-line > Input {
+        width: 1fr;
+        height: 1;
+    }
+    """
+
+    # The words that are not names: the workspaces, and the menu.
+    WORDS = (*(ws.name for ws in commands.WORKSPACES), "menu", "quit")
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self.names = names
+
+    def compose(self) -> textual.app.ComposeResult:
+        with textual.containers.Vertical(id="goto"):
+            yield textual.widgets.Static(
+                "a run, run/phase, @sweep, a workspace, or menu"
+                "  ·  right completes, enter goes, escape closes",
+                id="goto-help",
+            )
+            with textual.containers.Horizontal(id="goto-line"):
+                yield textual.widgets.Label(":")
+                yield textual.widgets.Input(
+                    compact=True,
+                    id="goto-field",
+                    suggester=textual.suggester.SuggestFromList(
+                        [*self.WORDS, *self.names], case_sensitive=False
+                    ),
+                )
+
+    def on_mount(self) -> None:
+        self.query_one("#goto-field", textual.widgets.Input).focus()
+
+    @textual.on(textual.widgets.Input.Submitted, "#goto-field")
+    def _submitted(self, event: textual.widgets.Input.Submitted) -> None:
+        self.dismiss(event.value.strip() or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

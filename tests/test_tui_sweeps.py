@@ -15,6 +15,7 @@ import utrain.compute
 import utrain.config
 import utrain.exceptions
 import utrain.tui.app
+import utrain.tui.menus
 import utrain.tui.render
 import utrain.tui.screens
 
@@ -328,3 +329,80 @@ async def test_quitting_keeps_where_you_were(
         main = base._main(again)  # pyright: ignore[reportPrivateUsage]
         assert main.selected_run == runs_tests.SWEPT_DONE
         assert runs_tests._names(again)[:3] == ["lr", "  lr-01", "  lr-02"]  # pyright: ignore[reportPrivateUsage]
+
+
+# -- the goto line -------------------------------------------------------------
+
+
+async def _goto(app: utrain.tui.app.UtrainApp, pilot: typing.Any, text: str) -> None:
+    await pilot.press("colon")
+    await _settle(app, pilot)
+    assert isinstance(app.screen, utrain.tui.screens.GotoScreen)
+    await pilot.press(*text, "enter")
+    await _settle(app, pilot)
+    await _settle(app, pilot)
+
+
+async def test_goto_a_workspace_by_name(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "system")
+        assert app.current_mode == "system"
+
+
+async def test_goto_a_sweep(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "@lr")
+        assert app.current_mode == "sweeps"
+        assert _sweeps(app).selected_sweep == runs_tests.SWEEP_ID
+
+
+async def test_goto_a_run_inside_a_sweep_opens_the_sweep(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("f2")
+        await _settle(app, pilot)
+        await _goto(app, pilot, "lr-02")
+        assert app.current_mode == "runs"
+        main = base._main(app)  # pyright: ignore[reportPrivateUsage]
+        assert main.selected_run == runs_tests.SWEPT_QUEUED
+        assert runs_tests._names(app)[:3] == ["lr", "  lr-01", "  lr-02"]  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_goto_a_phase(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "tiny-shakespeare/tokenizer")
+        main = base._main(app)  # pyright: ignore[reportPrivateUsage]
+        assert main.selected_run == base.RUN_ID
+        assert main.selected_phase == "tokenizer"
+        assert main.cursor_key == utrain.tui.render.phase_key(base.RUN_ID, "tokenizer")
+
+
+async def test_goto_somewhere_unknown_says_so(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "nowhere")
+        assert base._main(app).error == "run 'nowhere' not found"  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_goto_menu_is_f10_for_a_terminal_without_function_keys(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "menu sweeps")
+        screen = app.screen
+        assert isinstance(screen, utrain.tui.menus.MenuScreen)
+        assert screen.workspace == "sweeps"
+
+
+async def test_goto_a_phase_the_run_lacks_says_so(app: utrain.tui.app.UtrainApp) -> None:
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await _goto(app, pilot, "tiny-shakespeare/finetune")
+        await _settle(app, pilot)
+        main = base._main(app)  # pyright: ignore[reportPrivateUsage]
+        assert main.selected_run == base.RUN_ID
+        assert main.error == "no phase 'finetune' in that run"

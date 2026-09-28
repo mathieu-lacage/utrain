@@ -368,6 +368,7 @@ class UtrainApp(textual.app.App[None]):
             for ws in commands.WORKSPACES
         ),
         textual.binding.Binding("f10", "menu", "menu", show=False),
+        textual.binding.Binding("colon", "goto", "goto", key_display=":"),
     ]
 
     # The workspace the app opens on, before a saved session says otherwise.
@@ -536,8 +537,13 @@ class UtrainApp(textual.app.App[None]):
         before the viewer goes anywhere, but not under a menu, which they
         close on the way.
         """
-        if action in ("workspace_key", "menu"):
+        if action in ("workspace_key", "menu", "goto"):
             screen = self.screen
+            if action == "goto" and (
+                isinstance(screen, screens.ChatScreen) or widgets.in_config_field(self.focused)
+            ):
+                # A `:` typed at a field or at the chat prompt is a character.
+                return False
             return not isinstance(screen, textual.screen.ModalScreen) or isinstance(
                 screen, menus.MenuScreen
             )
@@ -628,15 +634,73 @@ class UtrainApp(textual.app.App[None]):
         self.action_workspace(name)
         return self.screen_stack[0]
 
-    def show_run(self, run_id: str) -> None:
-        screen = self.base_screen("runs")
-        if isinstance(screen, screens.MainScreen):
-            screen.reveal_run(run_id)
-
     def show_sweep(self, sweep_id: str) -> None:
         screen = self.base_screen("sweeps")
         if isinstance(screen, screens.SweepsScreen):
             screen.select_sweep(sweep_id)
+
+    def show_run(self, run_id: str, phase: str | None = None) -> None:
+        screen = self.base_screen("runs")
+        if isinstance(screen, screens.MainScreen):
+            screen.reveal_run(run_id, phase)
+
+    # -- the goto line ------------------------------------------------------
+
+    def action_goto(self) -> None:
+        """`:`: go somewhere by name. The names are read first, for completion."""
+        menus.close_menus(self)
+        self.goto_names()
+
+    @textual.work(thread=True, exclusive=True, group="goto")
+    def goto_names(self) -> None:
+        try:
+            names = self.data.goto_names()
+        except exceptions.UI:
+            names = []
+        self.call_from_thread(self.ask_goto, names)
+
+    def ask_goto(self, names: list[str]) -> None:
+        def answered(text: str | None) -> None:
+            if text:
+                self.goto(text)
+
+        self.ask(screens.GotoScreen(names), answered)
+
+    def goto(self, text: str) -> None:
+        """Where `text` says: a word, a sweep, or a run and perhaps a phase."""
+        word = text.removeprefix(":").strip()
+        lowered = word.lower()
+        if lowered in self.workspaces:
+            self.action_workspace(lowered)
+            return
+        if lowered == "menu" or lowered.startswith("menu "):
+            which = lowered.removeprefix("menu").strip() or self.current_mode
+            if which in self.workspaces:
+                menus.open_menu(self, which)
+            else:
+                self.tell(f"no workspace '{which}'")
+            return
+        if lowered in ("quit", "q"):
+            self.call_later(self.run_action, "quit")
+            return
+        self.resolve_goto(word)
+
+    @textual.work(thread=True, exclusive=True, group="goto")
+    def resolve_goto(self, word: str) -> None:
+        try:
+            if word.startswith("@"):
+                sweep_id = self.data.resolve_sweep(word)
+                self.call_from_thread(self.show_sweep, sweep_id)
+                return
+            # `run`, `run/phase` or `run/attempt/phase`: the attempt is where
+            # the tree shows it, so only the run and the phase matter here.
+            parts = word.split("/")
+            run_id = self.data.resolve_run(parts[0])
+            phase = parts[-1] if len(parts) > 1 and not parts[-1].isdigit() else None
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        self.call_from_thread(self.show_run, run_id, phase)
 
     def compare_sweep(self, sweep_id: str) -> None:
         screen = self.base_screen("compare")

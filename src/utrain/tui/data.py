@@ -689,6 +689,27 @@ class Data:
         with dbmod.with_db(self._settings) as session:
             return sweeps.delete_sweep(sweep_id, False, session)[1]
 
+    # -- the goto line ------------------------------------------------------
+
+    def goto_names(self) -> list[str]:
+        """What `:` completes: every run's name, and every sweep's as `@name`."""
+        with dbmod.with_db(self._settings) as session:
+            names = [r.name for r in runs.list_runs(session)]
+            names += [f"@{s.name}" for s in sweeps.list_sweeps(session)]
+        return list(dict.fromkeys(names))
+
+    def resolve_run(self, ref: str) -> str:
+        """A run's id from its name -- the newest of that name -- or an id prefix."""
+        with dbmod.with_db(self._settings) as session:
+            named = [r for r in runs.list_runs(session) if r.name == ref]
+            if named:
+                return max(named, key=lambda r: r.created_at).id
+            return dbmod.resolve_run_id(ref, session)
+
+    def resolve_sweep(self, ref: str) -> str:
+        with dbmod.with_db(self._settings) as session:
+            return sweeps.resolve_sweep_id(ref, session)
+
     # -- comparing ----------------------------------------------------------
 
     def compare(self, state: "comparemod.State", reader: str = "compare") -> CompareSnapshot:
