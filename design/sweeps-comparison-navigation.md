@@ -755,6 +755,38 @@ and marks.
   `2`/`3`/`4` pick Config, Plots or Logs, and moving the cursor updates the
   content pane.
 
+The Runs menu (`F1` again, or `F10`):
+
+```
+ [Runs]  Sweeps  Compare  System                           2 marked    gpu0 97%  gpu1 12%
+  ┌────────────────────────────┐            2 Config   [3 Plots]   4 Logs
+╭─│ Go to Runs              F1 │─────────╮╭─ lr-depth-04 · pretrain · lr=3e-4 L4 · attempt 1 ─────╮
+│ │ ────────────────────────── │ATUS     ││ val/loss vs step · latest 1.29                        │
+│ │ New run…                 n │12       ││ 3.2┤⠑⢄                                                │
+│ │ Edit config              e │ne       ││    │  ⠈⠢⡀                                             │
+│ │ Start                    s │ne       ││    │     ⠈⠑⠢⢄⡀                                        │
+│ │ Stop                     S │nning    ││    │          ⠈⠉⠒⠢⠤⣀⣀                                 │
+│▶│ Restart…                 R │ne       ││    │                 ⠈⠉⠉⠒⠒⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀           │
+│ │ Delete…                  d │nning    ││ 1.2┤                                                  │
+│ │ ────────────────────────── │iled     ││    └────────────────────────────────────── step 5000  │
+│ │ Mark for compare     space │         ││                                                       │
+│ │ Chat with model          t │8        ││ train/loss vs step · latest 1.11                      │
+│ │ New sweep from run…      N │ne       ││ 3.0┤⠑⠢⣀                                               │
+│ │ Show in Sweeps             │nning    ││    │   ⠈⠉⠒⠤⢄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀               │
+│ │ ────────────────────────── │nfiguring││ 1.0┤                                                  │
+│ │ Pick metrics…            m │         ││                                                       │
+╰─└────────────────────────────┘─────────╯╰───────────────────────────────────────────────────────╯
+ lr-depth 4/12 · 1 failed          enter phases  space mark  e edit  : goto  ? help  F10 menu
+```
+
+* It holds the run lifecycle (`n e s S R d`), then what else can be done
+  with the selected run, then the plot's metric picker. Items that don't
+  apply are greyed rather than hidden: on this finished run, `Start` and
+  `Stop` are grey.
+* `Show in Sweeps` jumps to the run's cell in its sweep's status grid.
+  The plot's display keys (`x`, `l`, `b`, `E`) stay in the plot pane's
+  footer rather than in the menu, which is capped to fit the screen.
+
 #### Sweeps
 
 ```
@@ -796,6 +828,8 @@ and marks.
 * `enter` on a cell opens that run in Runs, `space` marks it, and `C`
   opens the sweep in Compare. Creating a sweep (`N`) opens the form over
   this screen.
+
+The Sweeps menu is the one shown open at the top of this section.
 
 #### Compare
 
@@ -839,6 +873,40 @@ and marks.
 * `enter` opens the run in Runs on this phase; `space` adds it to the
   tray, which is how the best of a sweep is set against a baseline.
 
+The Compare menu (`F3` again, or `F10`):
+
+```
+ Runs  Sweeps  [Compare]  System                                    2 marked    gpu0 97%  gpu1 12%
+╭─ compare · lr┌────────────────────────────┐ic val/loss · reduce min ────────────────────────────╮
+│ [curves + tab│ Go to Compare           F3 │f              set lr-depth (12) ▾   tray 2 ▸        │
+│              │ ────────────────────────── │                                                     │
+│ val/loss vs s│ Compare the tray (2)       │▶ highlighted                                        │
+│ 3.2┤⠑⢄⠑⢄     │ Compare a sweep…           │                                ── lr=1e-4           │
+│    │ ⠈⠢⡀⠈⠢⡀⠑⢄│ Clear the tray             │                                ── lr=3e-4           │
+│    │    ⠈⠑⠢⢄⡀│ ────────────────────────── │                                ── lr=1e-3           │
+│    │         │ Phase…            pretrain │                                ── ▶ lr-depth-04     │
+│    │         │ Metric…           val/loss │                                                     │
+│ 1.2┤         │ Reduce by…             min │⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀                                           │
+│    └─────────│ Colour by…              lr │───────────────────────── step 5000                  │
+│              │ Next lens                ] │                                                     │
+├──────────────│ Sort by next column      > │─────────────────────────────────────────────────────┤
+│   RUN        │ ────────────────────────── │al/loss ▲  train/loss  tok/s  DURATION               │
+│ ▶ lr-depth-04│ Open run in Runs     enter │.29        1.11        41k    42m                    │
+│   lr-depth-02│ Mark / unmark        space │.38        1.24        33k    58m                    │
+│   lr-depth-05│ Export plot…             E │.40 ↓      1.30        33k    31m                    │
+│   lr-depth-01└────────────────────────────┘.41        1.30        41k    44m                    │
+│   lr-depth-03   1e-4   8        running   1.52 ↓      1.47        27k    12m                    │
+│   lr-depth-07   1e-3   4        failed    –           –           –      3m                     │
+│   6 queued runs not shown                                                                       │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+ best lr-depth-04 · 1.29  enter open run  space mark  [ ] lens  < > sort  : goto  ? help  F10 menu
+```
+
+* The first group picks the set, the second how it is shown. For a
+  setting (phase, metric, reducer, colour), the right-hand column shows
+  its current value instead of a key; picking the item opens a list of
+  the alternatives.
+
 #### System
 
 ```
@@ -873,6 +941,37 @@ and marks.
 * `tab` moves between compute (`1`) and images (`2`); the one-line data
   store pane does not take focus. `i` and `c` still open the images
   and compute pop-ups from any workspace for a quick look.
+
+The System menu (`F4` again, or `F10`):
+
+```
+ Runs  Sweeps  Compare  [System]                                    2 marked    gpu0 97%  gpu1 12%
+╭─ 1 compute ───────────┌────────────────────────────┐────────────────────────────────────────────╮
+│   ID    KIND  NAME    │ Go to System            F4 │MORY        POWER   RUNNING                 │
+│ ▶ cpu   cpu   EPYC 744│ ────────────────────────── │/256 GB     –       live                    │
+│   gpu0  gpu   RTX A500│ Add image…               a │.1/24 GB    214 W   lr-depth-05             │
+│   gpu1  gpu   RTX A500│ Delete image…            d │4/24 GB     61 W    lr-depth-03             │
+│                       │ ────────────────────────── │                                            │
+│   queue: 6 runs of lr-│ Check data store           │                                            │
+╰───────────────────────│ Clean up store…          G │────────────────────────────────────────────╯
+╭─ 2 images ────────────│ ────────────────────────── │────────────────────────────────────────────╮
+│   NAME                │ Settings…                  │PS  ADDED                                   │
+│   shakespeare-char:1.2│ Quit                     q │    3d ago                                  │
+│   utrain-fake:latest  └────────────────────────────┘    20d ago                                 │
+│   nanochat:0.4            77b0   6.8 GB   0     0       now     pulling ▰▰▰▰▰▰▱▱▱▱ 61%          │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ data store ────────────────────────────────────────────────────────────────────────────────────╮
+│   2 340 files · 18.4 GB · 312 MB orphaned (reclaim with G)                                      │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+                             tab pane  a add image  d delete  G gc store  : goto  ? help  F10 menu
+```
+
+* `Quit` lives here, as `Exit` lived in a DOS program's `File` menu: the
+  menu for the app itself is the natural place for it. `q` still quits
+  from anywhere.
+* `Settings…` edits `utrain.yaml`, where settings such as the plot
+  character set (`tui_charset`) can already be written by hand or given
+  as `UTRAIN_*` environment variables.
 
 How the reference tasks play out:
 
