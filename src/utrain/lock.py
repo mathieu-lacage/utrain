@@ -45,12 +45,19 @@ _ACQUIRE_TIMEOUT = 2.0
 _ACQUIRE_INTERVAL = 0.01
 
 
-def path(attempt_dir: pathlib.Path) -> pathlib.Path:
+# The lock file's name. An orchestrator owns an attempt dir; the dispatcher
+# owns its own dir under the data dir and takes the same kind of lock under its
+# own name, so that one reading of "is it alive" serves both.
+ORCHESTRATOR = "orchestrator.lock"
+DISPATCHER = "dispatcher.lock"
+
+
+def path(attempt_dir: pathlib.Path, name: str = ORCHESTRATOR) -> pathlib.Path:
     """Host path of the attempt's orchestrator lock."""
-    return attempt_dir / "orchestrator.lock"
+    return attempt_dir / name
 
 
-def hold(attempt_dir: pathlib.Path) -> typing.BinaryIO:
+def hold(attempt_dir: pathlib.Path, name: str = ORCHESTRATOR) -> typing.BinaryIO:
     """Take the attempt's lock, or raise if another orchestrator holds it.
 
     The caller must keep the returned file open for as long as it wants the
@@ -64,7 +71,7 @@ def hold(attempt_dir: pathlib.Path) -> typing.BinaryIO:
     """
     # O_CREAT|O_RDWR rather than "wb": opening for write would truncate the
     # incumbent's file before we even learn the lock is taken.
-    fd = os.open(path(attempt_dir), os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(path(attempt_dir, name), os.O_CREAT | os.O_RDWR, 0o644)
     f = os.fdopen(fd, "r+b")
 
     deadline = time.time() + _ACQUIRE_TIMEOUT
@@ -75,7 +82,8 @@ def hold(attempt_dir: pathlib.Path) -> typing.BinaryIO:
         except OSError:
             if time.time() >= deadline:
                 f.close()
-                raise exceptions.UI(f"an orchestrator is already running for {attempt_dir}")
+                owner = name.removesuffix(".lock")
+                raise exceptions.UI(f"another {owner} is already running for {attempt_dir}")
             time.sleep(_ACQUIRE_INTERVAL)
 
     f.truncate(0)
@@ -84,7 +92,7 @@ def hold(attempt_dir: pathlib.Path) -> typing.BinaryIO:
     return f
 
 
-def is_held(attempt_dir: pathlib.Path, fallback_pid: int | None) -> bool:
+def is_held(attempt_dir: pathlib.Path, fallback_pid: int | None, name: str = ORCHESTRATOR) -> bool:
     """Whether an orchestrator is alive and owns this attempt.
 
     `fallback_pid` is the pid the parent recorded when it spawned the
@@ -94,7 +102,7 @@ def is_held(attempt_dir: pathlib.Path, fallback_pid: int | None) -> bool:
     that is still going. Pass None when there is nothing to fall back to.
     """
     try:
-        f = open(path(attempt_dir), "rb")
+        f = open(path(attempt_dir, name), "rb")
     except OSError:
         # No lock file: either an attempt predating it, or one whose
         # orchestrator has not started yet.

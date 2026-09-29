@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import pathlib
@@ -11,7 +12,7 @@ import naw
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import config, container, exceptions, lock
+from . import config, container, exceptions, lock, store
 from . import db as dbmod
 
 # Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy
@@ -195,6 +196,19 @@ def write_control(attempt_dir: pathlib.Path, action: str) -> None:
     (mount_dir(attempt_dir) / "control.json").write_text(json.dumps({"action": action}))
 
 
+def stop_requested(attempt_dir: pathlib.Path) -> bool:
+    """Whether `write_control` has asked for a stop.
+
+    Read before each phase: a stop can land before this process's pid is
+    recorded, when the flag is the only thing that says so.
+    """
+    try:
+        control: object = json.loads((mount_dir(attempt_dir) / "control.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return control == {"action": "stop"}
+
+
 def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None:
     """Lay out the container's read-only view of the run before starting it.
 
@@ -216,6 +230,104 @@ def init_mount_dir(attempt_dir: pathlib.Path, config_path: pathlib.Path) -> None
     shutil.copy2(config_path, mnt / "config.yaml")
     os.chmod(mnt / "config.yaml", 0o444)
     write_control(attempt_dir, "continue")
+
+
+def config_hash(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def launch(
+    run_id: str, from_phase: str | None, session: sqlalchemy.orm.Session
+) -> subprocess.Popen[bytes] | None:
+    """Create a queued run's next attempt and spawn the orchestrator that runs it.
+
+    Only the dispatcher calls this. It is the one process that starts runs, so
+    two starts can never land on the same compute. The run's frozen image
+    decides the phases, and a restart from `from_phase` skips the ones before
+    it. The attempt and its phases are committed before the orchestrator is
+    spawned, since that is another process and reads them back.
+
+    Returns None, having done nothing, if the run was taken off the queue in
+    the meantime.
+    """
+    row = dbmod.get_run(run_id, session)
+    ensure_gpu_toolkit(str(row["compute"]))
+    # Fails fast if the image has left the store; the phases are the stored
+    # description's.
+    dbmod.run_image_ref(row)
+    describe = dbmod.run_description(row, session)
+    start_order = 0
+    if from_phase is not None:
+        if from_phase not in describe.phase_order:
+            raise exceptions.UI(f"phase '{from_phase}' not found in image")
+        start_order = describe.phase_order.index(from_phase)
+    phases = describe.phase_order[start_order:]
+
+    run_dir = dbmod.run_dir(run_id, session)
+    config_path = run_dir / "config.yaml"
+    # Claimed in one statement, so that a `run stop` taking the run off the
+    # queue at the same moment either lands first and is seen here, or lands
+    # after and finds the run running, which it knows how to stop.
+    claimed = session.execute(
+        sqlalchemy.update(dbmod.runs)
+        .where((dbmod.runs.c.id == run_id) & (dbmod.runs.c.status == "queued"))
+        .values(
+            status="running",
+            queued_from_phase=None,
+            config_hash=config_hash(config_path),
+        )
+        .returning(dbmod.runs.c.id)
+    ).first()
+    if claimed is None:
+        return None
+
+    attempt = (dbmod.latest_attempt(run_id, session) or 0) + 1
+    attempt_dir = run_dir / "attempt" / str(attempt)
+    (attempt_dir / "logs").mkdir(parents=True, exist_ok=True)
+    init_mount_dir(attempt_dir, config_path)
+
+    now = time.time()
+    session.execute(
+        sqlalchemy.insert(dbmod.run_attempts).values(
+            run_id=run_id,
+            attempt=attempt,
+            from_phase=from_phase,
+            status="running",
+            pid=None,
+            started_at=now,
+            ended_at=None,
+        )
+    )
+    # The first phase is optimistically running, in the same commit that
+    # claims the run, so that nobody reads a running run with nothing running.
+    for i, phase in enumerate(phases, start=start_order):
+        first = i == start_order
+        session.execute(
+            sqlalchemy.insert(dbmod.run_phases).values(
+                run_id=run_id,
+                attempt=attempt,
+                phase=phase,
+                phase_order=i,
+                status="running" if first else "pending",
+                started_at=now if first else None,
+                ended_at=None,
+            )
+        )
+    session.commit()
+
+    args = [sys.executable, "-m", "utrain.cli.main", "_orchestrate", run_id, str(attempt)]
+    if from_phase is not None:
+        args += ["--from-phase", from_phase]
+    # The child keeps its own copy of the descriptor; the parent's is closed.
+    with open(attempt_dir / "orchestrator.log", "wb") as log:
+        proc = subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
+
+    session.execute(
+        sqlalchemy.update(dbmod.run_attempts)
+        .where((dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt))
+        .values(pid=proc.pid)
+    )
+    return proc
 
 
 def _mount_args(
@@ -513,12 +625,14 @@ def run_orchestrator(
         compute = str(run_row["compute"])
         # Resolve to the run's frozen image id. The detached process has
         # nowhere to raise a UI error, so say it in the log and leave the
-        # attempt for reconcile to mark failed.
+        # attempt for the dispatcher to finalize.
         try:
             image = dbmod.run_image_ref(run_row)
         except exceptions.UI as exc:
             print(f"orchestrator: {exc}", file=sys.stderr)
             sys.exit(1)
+        described = dbmod.run_description(run_row, session)
+        cacheable_phases = {p.name for p in described.phases if p.cacheable}
 
         phase_rows = (
             session.execute(
@@ -535,8 +649,8 @@ def run_orchestrator(
     attempt_dir = run_dir / "attempt" / str(attempt)
 
     # Held for this process's whole life, and released by the kernel when it
-    # ends however it ends. reconcile reads a free lock as proof the
-    # orchestrator died, so letting go early would let a reader finalize a run
+    # ends however it ends. The dispatcher reads a free lock as proof the
+    # orchestrator is gone, so letting go early would have it finalize a run
     # that is still going. Underscore-prefixed because the name exists only to
     # keep the file open -- closing it releases the lock.
     _orchestrator_lock = lock.hold(attempt_dir)
@@ -544,12 +658,12 @@ def run_orchestrator(
     phases_to_run = [str(r["phase"]) for r in phase_rows]
     phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 
-    describe_output = container.podman.describe(image)
-    cacheable_phases = {p.name for p in describe_output.phases if p.cacheable}
     store_dir = settings.data_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
     for phase in phases_to_run:
+        if stop_requested(attempt_dir):
+            shutting_down = True
         if shutting_down:
             break
 
@@ -565,6 +679,11 @@ def run_orchestrator(
                 manifest = _check_cache(image, attempt_dir, phase, data_dir)
                 if manifest is not None:
                     cache_hit = _try_serve_from_cache(manifest, data_dir, store_dir)
+            if cache_hit:
+                # As for a phase that ran: into the store before it is
+                # recorded done. What the cache served is store files already,
+                # so this is a stat per file.
+                store.consolidate(data_dir, settings)
             values: dict[str, object] = {
                 "status": "done" if cache_hit else "running",
                 "started_at": now,
@@ -616,23 +735,14 @@ def run_orchestrator(
                         )
                         .values(status="stopped", ended_at=now)
                     )
-                final_status = "stopped" if shutting_down else "failed"
-                session.execute(
-                    sqlalchemy.update(dbmod.run_attempts)
-                    .where(
-                        (dbmod.run_attempts.c.run_id == run_id)
-                        & (dbmod.run_attempts.c.attempt == attempt)
-                    )
-                    .values(status=final_status, ended_at=now)
-                )
-                session.execute(
-                    sqlalchemy.update(dbmod.runs)
-                    .where(dbmod.runs.c.id == run_id)
-                    .values(status=final_status)
-                )
                 session.commit()
             sys.exit(1 if exit_code != 0 else 0)
 
+        # Into the store before the phase is recorded `done`, which is what a
+        # `done` phase promises readers -- `store check`, `serve`, and a
+        # restart that carries this phase's data forward. Whatever becomes of
+        # the phases after it, this one's data is deduplicated.
+        store.consolidate(data_dir, settings)
         with sqlalchemy.orm.Session(engine) as session:
             session.execute(
                 sqlalchemy.update(dbmod.run_phases)
@@ -648,52 +758,8 @@ def run_orchestrator(
         print(f"orchestrator: phase '{phase}' done")
         sys.stdout.flush()
 
-    # All phases complete. Deduplicate into the store *before* marking the run
-    # done: reconcile keeps the run non-terminal while this orchestrator is alive,
-    # so `run show --wait` only returns once the store is fully populated.
+    # The attempt and the run are the dispatcher's to mark done, once this
+    # process has exited and released its lock. Each phase was consolidated
+    # before it was recorded done, so the store is complete by then.
     if not shutting_down:
-        _deduplicate_data(attempt_dir, phases_to_run, settings)
-
-        now = time.time()
-        with sqlalchemy.orm.Session(engine) as session:
-            session.execute(
-                sqlalchemy.update(dbmod.run_attempts)
-                .where(
-                    (dbmod.run_attempts.c.run_id == run_id)
-                    & (dbmod.run_attempts.c.attempt == attempt)
-                )
-                .values(status="done", ended_at=now)
-            )
-            session.execute(
-                sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="done")
-            )
-            session.commit()
         print("orchestrator: all phases done")
-
-
-def _deduplicate_data(
-    attempt_dir: pathlib.Path,
-    phases: list[str],
-    settings: config.Settings,
-) -> None:
-    import hashlib
-
-    store_dir = settings.data_dir / "store"
-    store_dir.mkdir(parents=True, exist_ok=True)
-
-    for phase in phases:
-        data_dir = attempt_dir / "data" / phase
-        if not data_dir.exists():
-            continue
-        for fpath in data_dir.rglob("*"):
-            if not fpath.is_file():
-                continue
-            content = fpath.read_bytes()
-            sha = hashlib.sha256(content).hexdigest()
-            store_path = store_dir / sha
-            if not store_path.exists():
-                store_path.write_bytes(content)
-                os.chmod(store_path, 0o444)
-            # Replace with hardlink
-            fpath.unlink()
-            os.link(store_path, fpath)

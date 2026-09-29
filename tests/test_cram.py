@@ -115,6 +115,10 @@ def test_data_store(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "data-store.t", fake_image)
 
 
+def test_data_store_per_phase(fake_image: dict[str, str]) -> None:
+    _run_cram(_CRAM_DIR / "data-store-per-phase.t", fake_image)
+
+
 def test_wandb_compat(fake_image: dict[str, str]) -> None:
     _run_cram(_CRAM_DIR / "wandb-compat.t", fake_image)
 
