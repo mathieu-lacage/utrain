@@ -201,6 +201,19 @@ def ensure(session: sqlalchemy.orm.Session) -> None:
     _spawn(settings)
 
 
+def ensure_once(session: sqlalchemy.orm.Session) -> None:
+    """`ensure`, at most once per session: for reads.
+
+    A fetch reads runs, sweeps and phases through one session, and each of
+    those asks; one probe answers them all. A write that queues work calls
+    `ensure` itself, since what it just queued may be the work.
+    """
+    if session.info.get("dispatcher_ensured"):
+        return
+    ensure(session)
+    session.info["dispatcher_ensured"] = True
+
+
 def _spawn(settings: config.Settings) -> None:
     directory = settings.dispatcher_dir
     directory.mkdir(parents=True, exist_ok=True)

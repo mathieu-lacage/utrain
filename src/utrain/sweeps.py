@@ -18,6 +18,7 @@ running on it, so runs started by hand, and other sweeps' runs, are respected.
 Pausing or cancelling the sweep holds its queued runs back.
 """
 
+import collections.abc
 import copy
 import dataclasses
 import itertools
@@ -467,17 +468,6 @@ def _row(sweep_id: str, session: sqlalchemy.orm.Session) -> sqlalchemy.engine.Ro
     return row
 
 
-def _run_statuses(sweep_id: str, session: sqlalchemy.orm.Session) -> list[str]:
-    return [
-        str(s)
-        for s in session.execute(
-            sqlalchemy.select(dbmod.runs.c.status).where(dbmod.runs.c.sweep_id == sweep_id)
-        )
-        .scalars()
-        .fetchall()
-    ]
-
-
 def _counts(statuses: list[str]) -> types.SweepCounts:
     return types.SweepCounts(
         total=len(statuses),
@@ -496,35 +486,50 @@ def status_of(state: str, counts: types.SweepCounts) -> str:
     return state
 
 
-def _sweep_row(
-    row: sqlalchemy.engine.RowMapping, session: sqlalchemy.orm.Session
-) -> types.SweepRow:
-    spec = Spec.from_json(str(row["spec"]))
-    counts = _counts(_run_statuses(str(row["id"]), session))
-    return types.SweepRow(
-        id=str(row["id"]),
-        name=str(row["name"]),
-        image=str(row["image"]),
-        image_id=str(row["image_id"]),
-        status=status_of(str(row["state"]), counts),
-        created_at=float(row["created_at"]),
-        axes=spec.axes,
-        replicate=spec.replicate,
-        compute=spec.compute,
-        base=spec.base,
-        counts=counts,
-    )
+def _sweep_rows(
+    rows: collections.abc.Sequence[sqlalchemy.engine.RowMapping],
+    session: sqlalchemy.orm.Session,
+) -> list[types.SweepRow]:
+    """`sweeps` rows as `SweepRow`s, their runs counted in one query."""
+    statuses: dict[str, list[str]] = {str(r["id"]): [] for r in rows}
+    for sweep_id, status in session.execute(
+        sqlalchemy.select(dbmod.runs.c.sweep_id, dbmod.runs.c.status).where(
+            dbmod.runs.c.sweep_id.in_(list(statuses))
+        )
+    ).tuples():
+        statuses[str(sweep_id)].append(str(status))
+
+    out: list[types.SweepRow] = []
+    for row in rows:
+        spec = Spec.from_json(str(row["spec"]))
+        counts = _counts(statuses[str(row["id"])])
+        out.append(
+            types.SweepRow(
+                id=str(row["id"]),
+                name=str(row["name"]),
+                image=str(row["image"]),
+                image_id=str(row["image_id"]),
+                status=status_of(str(row["state"]), counts),
+                created_at=float(row["created_at"]),
+                axes=spec.axes,
+                replicate=spec.replicate,
+                compute=spec.compute,
+                base=spec.base,
+                counts=counts,
+            )
+        )
+    return out
 
 
 def list_sweeps(session: sqlalchemy.orm.Session) -> list[types.SweepRow]:
     """Every sweep, newest first."""
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
     rows = (
         session.execute(sqlalchemy.select(dbmod.sweeps).order_by(dbmod.sweeps.c.created_at.desc()))
         .mappings()
         .fetchall()
     )
-    return [_sweep_row(r, session) for r in rows]
+    return _sweep_rows(rows, session)
 
 
 def list_sweep_ids(session: sqlalchemy.orm.Session) -> list[str]:
@@ -540,7 +545,7 @@ def list_sweep_ids(session: sqlalchemy.orm.Session) -> list[str]:
 
 def get_sweep(ref: str, session: sqlalchemy.orm.Session) -> types.SweepDetail:
     sweep_id = resolve_sweep_id(ref, session)
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
     row = _row(sweep_id, session)
     run_rows = (
         session.execute(
@@ -552,8 +557,8 @@ def get_sweep(ref: str, session: sqlalchemy.orm.Session) -> types.SweepDetail:
         .fetchall()
     )
     return types.SweepDetail(
-        sweep=_sweep_row(row, session),
-        runs=[runs.get_run(str(r["id"]), session) for r in run_rows],
+        sweep=_sweep_rows([row], session)[0],
+        runs=runs.run_rows(run_rows, session),
     )
 
 

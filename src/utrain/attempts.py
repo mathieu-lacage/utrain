@@ -12,7 +12,7 @@ def list_attempts(
     a = address.parse(addr, session)
     run_id = a.run_id
 
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
 
     query = (
         sqlalchemy.select(dbmod.run_attempts)
@@ -64,7 +64,7 @@ def show_attempt(
     session: sqlalchemy.orm.Session,
 ) -> types.AttemptDetail:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
 
     run_row = dbmod.get_run(run_id, session)
     run_dir = dbmod.run_dir(run_id, session)

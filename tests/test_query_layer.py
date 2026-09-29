@@ -18,6 +18,7 @@ import typing
 
 import pytest
 import sqlalchemy
+import sqlalchemy.event
 import sqlalchemy.orm
 
 import utrain.cli.render
@@ -31,6 +32,7 @@ import utrain.logs
 import utrain.orchestrator
 import utrain.phases
 import utrain.runs
+import utrain.sweeps
 import utrain.types
 
 # A plausible podman image id, for seeds and frozen-id assertions.
@@ -705,3 +707,66 @@ def test_only_the_database_layer_asks_an_image_to_describe_itself() -> None:
         and node.func.value.attr == "podman"
     }
     assert callers == {"db.py"}
+
+
+def _count_statements(session: sqlalchemy.orm.Session) -> list[str]:
+    statements: list[str] = []
+
+    def record(conn: object, cursor: object, statement: str, *rest: object) -> None:
+        statements.append(statement)
+
+    sqlalchemy.event.listen(session.get_bind(), "before_cursor_execute", record)
+    return statements
+
+
+def _seed_runs(session: sqlalchemy.orm.Session, n: int) -> None:
+    for i in range(n):
+        run_id = f"{i:032x}"
+        _insert_run(session, run_id, f"run-{i}", created_at=float(i), status="running")
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_attempts).values(
+                run_id=run_id, attempt=1, status="running", pid=None, started_at=1.0
+            )
+        )
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_phases).values(
+                run_id=run_id, attempt=1, phase="train", phase_order=0, status="running"
+            )
+        )
+
+
+def _statements_to_list(tmp_path: pathlib.Path, runs: int, sweeps: int) -> tuple[int, int]:
+    """How many statements `list_runs` and `list_sweeps` issue over a seeded DB."""
+    settings = utrain.config.Settings(data_dir=tmp_path / f"{runs}-{sweeps}")
+    with utrain.db.with_db(settings) as session:
+        _seed_runs(session, runs)
+        for i in range(sweeps):
+            session.execute(
+                sqlalchemy.insert(utrain.db.sweeps).values(
+                    id=f"s{i:031x}",
+                    name=f"sweep-{i}",
+                    image="img",
+                    image_id=FROZEN_ID,
+                    spec='{"axes": {}, "compute": ["cpu"]}',
+                    state="running",
+                    created_at=float(i),
+                )
+            )
+        # Every run in the first sweep, so counting them is real work.
+        if sweeps:
+            session.execute(sqlalchemy.update(utrain.db.runs).values(sweep_id=f"s{0:031x}"))
+        session.commit()
+        statements = _count_statements(session)
+        utrain.runs.list_runs(session)
+        run_count = len(statements)
+        statements.clear()
+        utrain.sweeps.list_sweeps(session)
+        return run_count, len(statements)
+
+
+def test_listing_costs_the_same_queries_however_many_rows_there_are(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing to spawn and nothing to finalize: the attempts read as alive.
+    monkeypatch.setattr(utrain.lock, "is_held", lambda *a, **k: True)
+    assert _statements_to_list(tmp_path, 2, 1) == _statements_to_list(tmp_path, 20, 5)

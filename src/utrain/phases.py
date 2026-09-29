@@ -18,7 +18,7 @@ def list_phases(
     if attempt_n is None:
         raise exceptions.UI("run has no attempts yet")
 
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
 
     attempt_row = (
         session.execute(
@@ -185,7 +185,7 @@ def _resolve_phase(
     if attempt_n is None:
         raise exceptions.UI("run has no attempts yet")
 
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
 
     run_dir = dbmod.run_dir(run_id, session)
     return run_id, attempt_n, phase, run_dir / "attempt" / str(attempt_n)

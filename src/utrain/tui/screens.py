@@ -38,6 +38,7 @@ import textual.app
 import textual.binding
 import textual.containers
 import textual.coordinate
+import textual.message_pump
 import textual.screen
 import textual.suggester
 import textual.timer
@@ -411,6 +412,66 @@ class _Screen(textual.screen.Screen[None]):
         line = typing.cast(textual.widgets.Static, lines.first())
         line.remove_class(_OK_CLASS)
         line.update("")
+
+
+# How long work runs before `Busy` says so. Long enough that creating a run
+# from an image already described never flashes a popin; short enough that
+# the first run from a new one, which starts a container to describe it, is
+# acknowledged before the viewer wonders whether the key took.
+_BUSY_DELAY_SECONDS = 0.3
+
+
+class BusyScreen(textual.screen.ModalScreen[None]):
+    """Says that work is under way, until `done` is called.
+
+    No keys: the work is a thread worker, which cannot be interrupted, so
+    there is nothing a cancel could honestly do. Nothing opens over it
+    either -- the app's own actions are off while a modal is up -- so it is
+    the top screen when `done` dismisses it.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> textual.app.ComposeResult:
+        with textual.containers.Vertical(id="busy"):
+            yield textual.widgets.Static(self.message, id="busy-message")
+            yield textual.widgets.LoadingIndicator()
+
+    def done(self) -> None:
+        if self.is_current:
+            self.dismiss()
+
+
+class Busy:
+    """A `BusyScreen` for work that may take a while, shown only if it does.
+
+    Made on the message loop as the worker is started; the worker calls
+    `finish` through `from_thread` once it is done, however it ended, and
+    before it reports the outcome.
+    """
+
+    def __init__(
+        self,
+        owner: textual.message_pump.MessagePump,
+        open_screen: collections.abc.Callable[[textual.screen.Screen[None]], None],
+        message: str,
+    ) -> None:
+        self._open = open_screen
+        self._message = message
+        self._screen: BusyScreen | None = None
+        self._timer = owner.set_timer(_BUSY_DELAY_SECONDS, self._show)
+
+    def _show(self) -> None:
+        self._screen = BusyScreen(self._message)
+        self._open(self._screen)
+
+    def finish(self) -> None:
+        self._timer.stop()
+        if self._screen is not None:
+            self._screen.done()
+            self._screen = None
 
 
 class _Popover(_Screen, textual.screen.ModalScreen[None]):
@@ -2003,18 +2064,24 @@ class MainScreen(_Screen):
     def open_new_run(self, choices: data.NewRunChoices) -> None:
         def answered(answer: NewRun | None) -> None:
             if answer is not None:
-                self.create(answer)
+                busy = Busy(self, self.host.open, f"creating run {answer.name} from {answer.image}")
+                self.create(answer, busy)
 
         self.host.ask(NewRunScreen(choices), answered)
 
     @textual.work(thread=True, group="lifecycle")
-    def create(self, spec: NewRun) -> None:
-        """`runs.create_run` describes the image, which starts a container."""
+    def create(self, spec: NewRun, busy: Busy) -> None:
+        """A worker: the first run from an image starts a container to describe it."""
         try:
             run_id = self.data.create_run(spec.name, spec.image, spec.compute)
         except exceptions.UI as e:
+            self.host.from_thread(busy.finish)
             self.host.from_thread(self.held_error, str(e))
             return
+        except BaseException:
+            self.host.from_thread(busy.finish)
+            raise
+        self.host.from_thread(busy.finish)
         self.host.from_thread(self.select_when_listed, run_id)
 
     def select_when_listed(self, run_id: str) -> None:

@@ -67,56 +67,77 @@ def _write_config(
     config_path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
 
 
-def _run_row(
-    row: sqlalchemy.engine.RowMapping,
+def run_rows(
+    rows: collections.abc.Sequence[sqlalchemy.engine.RowMapping],
     session: sqlalchemy.orm.Session,
-) -> types.RunRow:
-    run_id = str(row["id"])
-    attempt_n = dbmod.latest_attempt(run_id, session)
+) -> list[types.RunRow]:
+    """`runs` rows as `RunRow`s, in the order given.
 
-    phase: str | None = None
-    if attempt_n is not None:
-        phase_rows = (
-            session.execute(
-                sqlalchemy.select(dbmod.run_phases)
-                .where(
-                    (dbmod.run_phases.c.run_id == run_id)
-                    & (dbmod.run_phases.c.attempt == attempt_n)
-                    & (dbmod.run_phases.c.status.notin_(["done", "stopped", "failed"]))
-                )
-                .order_by(dbmod.run_phases.c.phase_order)
-            )
-            .mappings()
-            .fetchall()
+    Each carries its latest attempt and the first phase of it that has not
+    finished. Read for all the rows at once -- two queries however many there
+    are -- since a list refreshed every second would otherwise cost two per
+    run.
+    """
+    ids = [str(r["id"]) for r in rows]
+    latest = (
+        sqlalchemy.select(
+            dbmod.run_attempts.c.run_id,
+            sqlalchemy.func.max(dbmod.run_attempts.c.attempt).label("attempt"),
         )
-        if phase_rows:
-            phase = str(phase_rows[0]["phase"])
-
-    sweep_id = row["sweep_id"]
-    point = row["sweep_point"]
-    return types.RunRow(
-        id=run_id,
-        name=str(row["name"]),
-        image=str(row["image"]),
-        image_id=str(row["image_id"]),
-        compute=str(row["compute"]),
-        status=str(row["status"]),
-        created_at=float(row["created_at"]),
-        attempt=attempt_n,
-        phase=phase,
-        sweep_id=str(sweep_id) if sweep_id is not None else None,
-        point=_mapping(json.loads(point)) if point else {},
+        .where(dbmod.run_attempts.c.run_id.in_(ids))
+        .group_by(dbmod.run_attempts.c.run_id)
+        .subquery()
     )
+    attempts = {
+        str(run_id): int(attempt)
+        for run_id, attempt in session.execute(
+            sqlalchemy.select(latest.c.run_id, latest.c.attempt)
+        ).tuples()
+    }
+    phases: dict[str, str] = {}
+    for run_id, phase in session.execute(
+        sqlalchemy.select(dbmod.run_phases.c.run_id, dbmod.run_phases.c.phase)
+        .join(
+            latest,
+            (dbmod.run_phases.c.run_id == latest.c.run_id)
+            & (dbmod.run_phases.c.attempt == latest.c.attempt),
+        )
+        .where(dbmod.run_phases.c.status.notin_(types.TERMINAL))
+        .order_by(dbmod.run_phases.c.run_id, dbmod.run_phases.c.phase_order)
+    ).tuples():
+        phases.setdefault(str(run_id), str(phase))
+
+    out: list[types.RunRow] = []
+    for row in rows:
+        run_id = str(row["id"])
+        sweep_id = row["sweep_id"]
+        point = row["sweep_point"]
+        out.append(
+            types.RunRow(
+                id=run_id,
+                name=str(row["name"]),
+                image=str(row["image"]),
+                image_id=str(row["image_id"]),
+                compute=str(row["compute"]),
+                status=str(row["status"]),
+                created_at=float(row["created_at"]),
+                attempt=attempts.get(run_id),
+                phase=phases.get(run_id),
+                sweep_id=str(sweep_id) if sweep_id is not None else None,
+                point=_mapping(json.loads(point)) if point else {},
+            )
+        )
+    return out
 
 
 def list_runs(session: sqlalchemy.orm.Session) -> list[types.RunRow]:
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
     rows = (
         session.execute(sqlalchemy.select(dbmod.runs).order_by(dbmod.runs.c.created_at.desc()))
         .mappings()
         .fetchall()
     )
-    return [_run_row(r, session) for r in rows]
+    return run_rows(rows, session)
 
 
 def list_run_ids(session: sqlalchemy.orm.Session) -> list[str]:
@@ -130,7 +151,7 @@ def list_run_ids(session: sqlalchemy.orm.Session) -> list[str]:
 
 def get_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> types.RunRow:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    return _run_row(dbmod.get_run(run_id, session), session)
+    return run_rows([dbmod.get_run(run_id, session)], session)[0]
 
 
 def config_path(run_id_prefix: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
@@ -326,7 +347,7 @@ def get_run_detail(
     if wait:
         wait_for_run(run_id, session, timeout)
     else:
-        dispatcher.ensure(session)
+        dispatcher.ensure_once(session)
 
     row = dbmod.get_run(run_id, session)
     attempt_n = dbmod.latest_attempt(run_id, session)
@@ -394,7 +415,7 @@ def _run_detail(
     )
 
     return types.RunDetail(
-        run=_run_row(row, session),
+        run=run_rows([row], session)[0],
         run_dir=dbmod.run_dir(run_id, session),
         n_attempts=len(all_attempts),
         latest_attempt_status=(

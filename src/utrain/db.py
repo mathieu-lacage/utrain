@@ -220,20 +220,40 @@ def _migrate(conn: sqlalchemy.Connection) -> None:
             pass  # SQLite < 3.35 can't drop columns; leave it, it's harmless.
 
 
+def open_engine(settings: config.Settings) -> sqlalchemy.Engine:
+    """An engine on the settings' database, with its schema brought up to date.
+
+    A process that reads the database more than once -- the TUI, every second
+    -- keeps one: each engine has its own pool and compiled-statement cache,
+    and checks the schema when it is opened.
+    """
+    engine = create_engine(settings)
+    init_db(engine)
+    return engine
+
+
+@contextlib.contextmanager
+def session(
+    engine: sqlalchemy.Engine, settings: config.Settings
+) -> collections.abc.Generator[sqlalchemy.orm.Session, None, None]:
+    """A session committed on success and rolled back on error."""
+    with sqlalchemy.orm.Session(engine) as s:
+        s.info["settings"] = settings
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+
+
 @contextlib.contextmanager
 def with_db(
     settings: config.Settings,
 ) -> collections.abc.Generator[sqlalchemy.orm.Session, None, None]:
-    engine = create_engine(settings)
-    init_db(engine)
-    with sqlalchemy.orm.Session(engine) as session:
-        session.info["settings"] = settings
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+    """A session on an engine of its own, for a process that opens just one."""
+    with session(open_engine(settings), settings) as s:
+        yield s
 
 
 def resolve_run_id(prefix: str, session: sqlalchemy.orm.Session) -> str:

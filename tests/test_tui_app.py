@@ -14,6 +14,7 @@ import dataclasses
 import os
 import pathlib
 import subprocess
+import threading
 import time
 import typing
 
@@ -467,6 +468,9 @@ class _RecordingData(utrain.tui.data.Data):
         self.added: list[str] = []
         # Set by the test that wants to see a failure marshalled back.
         self.fail = ""
+        # Set by the test that wants creating a run to take a while: the
+        # create waits for it.
+        self.hold: threading.Event | None = None
 
     def snapshot(
         self,
@@ -543,6 +547,8 @@ class _RecordingData(utrain.tui.data.Data):
         wait for the fetch that lists it and put the cursor there; a create that
         recorded and did nothing else could not be told from one that got lost.
         """
+        if self.hold is not None:
+            self.hold.wait(10)
         if self.fail:
             raise utrain.exceptions.UI(self.fail)
         self.created.append((name, image, compute_spec))
@@ -2773,6 +2779,105 @@ async def test_filling_the_dialog_creates_the_run_and_selects_it(
         screen = _main(draft_app)
         assert screen.selected_run == NEW_ID
         assert screen._pending_run is None
+
+
+def test_the_app_checks_the_schema_once_not_per_fetch(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One engine for the app: each engine opened checks the schema."""
+    _seed(tmp_path)
+    checks: list[object] = []
+    real = utrain.db.init_db
+
+    def counted(engine: sqlalchemy.Engine) -> None:
+        checks.append(engine)
+        real(engine)
+
+    monkeypatch.setattr(utrain.db, "init_db", counted)
+    source = utrain.tui.data.Data(utrain.config.Settings(data_dir=tmp_path))
+    for _ in range(3):
+        source.list_runs()
+    source.snapshot(RUN_ID, None)
+    assert len(checks) == 1
+
+
+async def _create_fresh(app: utrain.tui.app.UtrainApp, pilot: typing.Any) -> None:
+    """Answer the new-run dialog, without waiting for the create to finish."""
+    await pilot.press("n")
+    await _settle(app, pilot)
+    await pilot.press(*"fresh")
+    await pilot.press("enter")
+
+
+async def test_a_slow_create_says_so_until_it_is_done(
+    draft_app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The first run from an image describes it, which starts a container."""
+    hold = threading.Event()
+    _recording(draft_app).hold = hold
+    try:
+        async with draft_app.run_test(size=SIZE) as pilot:
+            await _settle(draft_app, pilot)
+            await _create_fresh(draft_app, pilot)
+            await pilot.pause(0.5)
+
+            busy = draft_app.screen
+            assert isinstance(busy, utrain.tui.screens.BusyScreen)
+            assert "creating run fresh" in busy.message
+            # A thread cannot be interrupted, so nothing offers to.
+            await pilot.press("escape")
+            assert draft_app.screen is busy
+
+            hold.set()
+            await _settle(draft_app, pilot)
+            await _settle(draft_app, pilot)
+            assert isinstance(draft_app.screen, utrain.tui.screens.MainScreen)
+            assert _main(draft_app).selected_run == NEW_ID
+    finally:
+        hold.set()
+
+
+async def test_a_quick_create_shows_no_popin(
+    draft_app: utrain.tui.app.UtrainApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[str] = []
+    monkeypatch.setattr(
+        utrain.tui.screens.BusyScreen,
+        "on_mount",
+        lambda self: shown.append(self.message),
+        raising=False,
+    )
+    async with draft_app.run_test(size=SIZE) as pilot:
+        await _settle(draft_app, pilot)
+        await _create_fresh(draft_app, pilot)
+        await _settle(draft_app, pilot)
+        await pilot.pause(0.5)
+
+        assert shown == []
+        assert isinstance(draft_app.screen, utrain.tui.screens.MainScreen)
+        assert _recording(draft_app).created == [("fresh", IMAGE, "gpu0")]
+
+
+async def test_a_slow_create_that_fails_closes_the_popin_and_says_why(
+    draft_app: utrain.tui.app.UtrainApp,
+) -> None:
+    hold = threading.Event()
+    recording = _recording(draft_app)
+    recording.hold = hold
+    recording.fail = "image gone"
+    try:
+        async with draft_app.run_test(size=SIZE) as pilot:
+            await _settle(draft_app, pilot)
+            await _create_fresh(draft_app, pilot)
+            await pilot.pause(0.5)
+            assert isinstance(draft_app.screen, utrain.tui.screens.BusyScreen)
+
+            hold.set()
+            await _settle(draft_app, pilot)
+            assert isinstance(draft_app.screen, utrain.tui.screens.MainScreen)
+            assert _main(draft_app).error == "image gone"
+    finally:
+        hold.set()
 
 
 async def test_a_run_needs_a_name(draft_app: utrain.tui.app.UtrainApp) -> None:

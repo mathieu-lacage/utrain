@@ -203,6 +203,25 @@ class UtrainApp(textual.app.App[None]):
     NewRunScreen {
         align: center middle;
     }
+    BusyScreen {
+        align: center middle;
+    }
+    /* Sized, as `#new-run` is: the indicator is `1fr` wide, and an `auto`
+       box around it would resolve to nothing. */
+    #busy {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        border: round $accent;
+        background: $surface;
+    }
+    #busy-message {
+        width: 100%;
+    }
+    #busy LoadingIndicator {
+        height: 1;
+        margin-top: 1;
+    }
     /* Unlike the confirm dialog, this one is sized rather than shrunk to fit:
        an `Input` and two `Select`s have no natural width, and a dialog whose
        width followed the longest image name would move under the viewer. */
@@ -759,33 +778,48 @@ class UtrainApp(textual.app.App[None]):
 
         def answered(answer: screens.NewSweep | None) -> None:
             if answer is not None:
-                self.sweep_form(answer)
+                busy = screens.Busy(self, self.open, f"reading image {answer.image}")
+                self.sweep_form(answer, busy)
 
         self.ask(screens.NewSweepScreen(choices, run), answered)
 
     @textual.work(thread=True, exclusive=True, group="new-sweep")
-    def sweep_form(self, spec: screens.NewSweep) -> None:
+    def sweep_form(self, spec: screens.NewSweep, busy: screens.Busy) -> None:
+        """A worker: an image no run was created from yet is described first."""
         try:
             form = self.data.sweep_form(spec.image, spec.base)
         except exceptions.UI as e:
+            self.call_from_thread(busy.finish)
             self.call_from_thread(self.tell, str(e))
             return
+        except BaseException:
+            self.call_from_thread(busy.finish)
+            raise
+        self.call_from_thread(busy.finish)
         self.call_from_thread(self.ask_axes, spec, form)
 
     def ask_axes(self, spec: screens.NewSweep, form: data.SweepForm) -> None:
         def answered(axes: dict[str, object] | None) -> None:
             if axes:
-                self.create_sweep(spec, axes)
+                busy = screens.Busy(self, self.open, f"creating sweep {spec.name}")
+                self.create_sweep(spec, axes, busy)
 
         self.ask(screens.SweepFormScreen(spec, form), answered)
 
     @textual.work(thread=True, exclusive=True, group="new-sweep")
-    def create_sweep(self, spec: screens.NewSweep, axes: dict[str, object]) -> None:
+    def create_sweep(
+        self, spec: screens.NewSweep, axes: dict[str, object], busy: screens.Busy
+    ) -> None:
         try:
             sweep_id = self.data.create_sweep(spec.name, spec.image, spec.base, axes, spec.compute)
         except exceptions.UI as e:
+            self.call_from_thread(busy.finish)
             self.call_from_thread(self.tell, str(e))
             return
+        except BaseException:
+            self.call_from_thread(busy.finish)
+            raise
+        self.call_from_thread(busy.finish)
         self.call_from_thread(self.show_sweep, sweep_id)
         self.call_from_thread(self.tell, f"created sweep {spec.name}; s starts it", True)
 

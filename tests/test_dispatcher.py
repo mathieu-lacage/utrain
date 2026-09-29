@@ -485,3 +485,22 @@ def test_an_orchestrator_reads_a_stop_before_each_phase(tmp_path: pathlib.Path) 
     assert not utrain.orchestrator.stop_requested(attempt_dir)
     utrain.orchestrator.write_control(attempt_dir, "stop")
     assert utrain.orchestrator.stop_requested(attempt_dir)
+
+
+def test_reads_probe_for_a_dispatcher_once_per_session_and_writes_every_time(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: utrain.config.Settings,
+    _no_dispatcher: list[utrain.config.Settings],
+) -> None:
+    monkeypatch.setattr(utrain.lock, "is_held", lambda *a: False)
+    with utrain.db.with_db(settings) as session:
+        _run(session, "queued", queued_at=1.0)
+        utrain.dispatcher.ensure_once(session)
+        utrain.dispatcher.ensure_once(session)
+        assert len(_no_dispatcher) == 1
+        # What a write calls after queueing: it checks again regardless.
+        utrain.dispatcher.ensure(session)
+        assert len(_no_dispatcher) == 2
+    with utrain.db.with_db(settings) as session:
+        utrain.dispatcher.ensure_once(session)
+    assert len(_no_dispatcher) == 3

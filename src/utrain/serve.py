@@ -123,7 +123,7 @@ def start(
         ).scalar_one_or_none()
         if found is None:
             raise exceptions.UI(f"attempt {attempt} of run '{run_id}' not found")
-    dispatcher.ensure(session)
+    dispatcher.ensure_once(session)
 
     # What the image can do comes first: it is a fact about the image, true
     # whatever state the run is in, so an image that will never serve should say

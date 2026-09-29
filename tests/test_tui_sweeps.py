@@ -6,6 +6,7 @@ would spawn a dispatcher or describe an image are recorded instead of made.
 """
 
 import pathlib
+import threading
 import typing
 
 import pytest
@@ -16,6 +17,7 @@ import utrain.config
 import utrain.container.podman
 import utrain.exceptions
 import utrain.tui.app
+import utrain.tui.data
 import utrain.tui.menus
 import utrain.tui.render
 import utrain.tui.screens
@@ -35,6 +37,8 @@ class _SweepData(base._RecordingData):  # pyright: ignore[reportPrivateUsage]
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
         self.sweep_ops: list[tuple[str, str]] = []
+        # Set by the test that wants reading the image to take a while.
+        self.form_hold: threading.Event | None = None
         self.extended: list[tuple[str, dict[str, object]]] = []
         self.new_sweeps: list[tuple[str, str, str | None, dict[str, object], list[str]]] = []
 
@@ -62,6 +66,11 @@ class _SweepData(base._RecordingData):  # pyright: ignore[reportPrivateUsage]
     def delete_sweep(self, sweep_id: str) -> int:
         self.sweep_ops.append(("delete", sweep_id))
         return 2
+
+    def sweep_form(self, image: str, base: str | None) -> utrain.tui.data.SweepForm:
+        if self.form_hold is not None:
+            self.form_hold.wait(10)
+        return super().sweep_form(image, base)
 
     def extend_sweep(self, sweep_id: str, axes: dict[str, object]) -> int:
         self.extended.append((sweep_id, axes))
@@ -277,6 +286,30 @@ async def test_n_from_a_run_makes_a_sweep_around_it(app: utrain.tui.app.UtrainAp
         ]
         # And the viewer is taken to it.
         assert app.current_mode == "sweeps"
+
+
+async def test_reading_an_image_for_the_form_says_so_while_it_takes(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    hold = threading.Event()
+    _data(app).form_hold = hold
+    try:
+        async with app.run_test(size=base.SIZE) as pilot:
+            await _open(app, pilot)
+            await pilot.press("N")
+            await _settle(app, pilot)
+            await pilot.press(*"depth", "enter")
+            await pilot.pause(0.5)
+
+            busy = app.screen
+            assert isinstance(busy, utrain.tui.screens.BusyScreen)
+            assert busy.message.startswith("reading image ")
+
+            hold.set()
+            await _settle(app, pilot)
+            assert isinstance(app.screen, utrain.tui.screens.SweepFormScreen)
+    finally:
+        hold.set()
 
 
 async def test_the_form_says_what_a_field_refuses(app: utrain.tui.app.UtrainApp) -> None:

@@ -2,10 +2,14 @@
 
 Two things live here that the widgets must not have to think about.
 
-**Sessions are per-fetch.** Every method opens a `db.with_db` session, uses it,
-and closes it, the way `cli/main._cmd_run_delete` does. A long-lived session
-would hold a SQLite connection for the life of the app against a detached
-orchestrator that is writing, and they share a 5s busy timeout.
+**Sessions are per-fetch, over one engine.** Every method opens a session,
+uses it, and closes it. A long-lived session would hold a SQLite transaction
+for the life of the app against a detached orchestrator and dispatcher that
+are writing, and they share a 5s busy timeout. The engine is kept for the
+life of the app: opening one checks the schema and starts with an empty
+compiled-statement cache, which every refresh would otherwise pay for. It is
+shared by the worker threads, which is what pysqlite is opened for
+(`db.create_engine`).
 
 **Descriptions are memoized.** What an image says about itself -- its phases,
 their labels and plots, its config schema -- is stored in the database when a
@@ -18,6 +22,7 @@ message loop ask for it (`described`) without touching the database.
 """
 
 import collections.abc
+import contextlib
 import dataclasses
 import pathlib
 import subprocess
@@ -296,6 +301,7 @@ class Data:
         describe_cache: dict[str, containermod.schema.DescribeOutput] | None = None,
     ) -> None:
         self._settings = settings if settings is not None else config.Settings()
+        self._engine: sqlalchemy.Engine | None = None
         self._describe: dict[str, containermod.schema.DescribeOutput] = (
             describe_cache if describe_cache is not None else {}
         )
@@ -310,6 +316,15 @@ class Data:
     @property
     def settings(self) -> config.Settings:
         return self._settings
+
+    @contextlib.contextmanager
+    def _session(self) -> collections.abc.Generator[sqlalchemy.orm.Session, None, None]:
+        # Opened on first use rather than in __init__, so that building a Data
+        # touches nothing until it is asked something.
+        if self._engine is None:
+            self._engine = dbmod.open_engine(self._settings)
+        with dbmod.session(self._engine, self._settings) as session:
+            yield session
 
     def refresh(self) -> None:
         """Drop the preset cache, so the next read sees an image added or removed.
@@ -341,7 +356,7 @@ class Data:
         cached = self._describe.get(image_id)
         if cached is not None:
             return cached
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             described = dbmod.description(image_id, session)
         self._describe[image_id] = described
         return described
@@ -358,28 +373,28 @@ class Data:
     # -- runs -------------------------------------------------------------
 
     def list_runs(self) -> list[types.RunRow]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.list_runs(session)
 
     def run_detail(self, run_id: str) -> types.RunDetail:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.get_run_detail(run_id, session)
 
     # -- phases -----------------------------------------------------------
 
     def list_phases(self, run_id: str) -> list[types.PhaseListEntry]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return phases.list_phases(run_id, session)
 
     def phase_detail(self, addr: str) -> types.PhaseDetail:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return phases.show_phase(addr, session)
 
     def phase_log_tail(self, detail: types.PhaseDetail, n: int) -> list[str]:
         return phases.read_log_tail(detail, n)
 
     def write_run_config(self, run_id: str, values: dict[str, object]) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.write_config(run_id, values, session)
             session.commit()
 
@@ -389,21 +404,21 @@ class Data:
     # always has one, and resolving a prefix is a CLI concern.
 
     def start_run(self, run_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.start_run(run_id, session)
 
     def stop_run(self, run_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.stop_run(run_id, session)
 
     def restart_run(self, run_id: str, from_phase: str | None) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.restart_run(run_id, from_phase, session)
 
     def delete_run(self, run_id: str) -> None:
         """Never forced: the TUI greys `d` out on a running run rather than
         killing an attempt behind a delete prompt. Stopping is `S`, and it asks."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.delete_run(run_id, force=False, session=session)
 
     def start_server(self, run_id: str, phase: str | None = None) -> serve.Server:
@@ -417,11 +432,11 @@ class Data:
         The container is spawned but not yet listening -- `Server.wait_for_port`
         is the second half, and is the caller's to wait on.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return serve.start(run_id, session, phase)
 
     def create_run(self, name: str, image: str, compute_spec: str) -> str:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.create_run(name, image, compute_spec, self._settings, session)
 
     def new_run_choices(self) -> NewRunChoices:
@@ -436,7 +451,7 @@ class Data:
         The Tail is handed to the caller to keep: following a live phase means
         one reader held open across refreshes, not a fresh read each time.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             path = phases.metrics_path(addr, session)
         return None if path is None else metrics.Tail(path)
 
@@ -460,7 +475,7 @@ class Data:
         `--from-phase` restart inherited; None means the run's current attempt.
         """
         now = time.time()
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             rows = runs.list_runs(session)
             sweep_rows = sweeps.list_sweeps(session)
             marked = tuistate.tray(session)
@@ -581,7 +596,7 @@ class Data:
         Scored as Compare would score them when opened on the sweep: its
         default metric, reduced its default way.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             listed = sweeps.list_sweeps(session)
             rows = runs.list_runs(session)
             marked = tuistate.tray(session)
@@ -627,7 +642,7 @@ class Data:
         A worker's: an image no run was created from yet is described by
         starting a container.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             if base is not None:
                 run = runs.get_run(base, session)
                 described = self.describe(run.image_id)
@@ -653,7 +668,7 @@ class Data:
         axes: dict[str, object],
         compute_specs: list[str],
     ) -> str:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return sweeps.create_sweep(
                 name,
                 axes,
@@ -665,49 +680,49 @@ class Data:
             )
 
     def start_sweep(self, sweep_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             sweeps.start_sweep(sweep_id, session)
 
     def pause_sweep(self, sweep_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             sweeps.pause_sweep(sweep_id, session)
 
     def cancel_sweep(self, sweep_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             sweeps.cancel_sweep(sweep_id, session)
 
     def retry_sweep(self, sweep_id: str) -> int:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return sweeps.retry_sweep(sweep_id, session)[1]
 
     def extend_sweep(self, sweep_id: str, axes: dict[str, object]) -> int:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return sweeps.extend_sweep(sweep_id, axes, self._settings, session)[1]
 
     def delete_sweep(self, sweep_id: str) -> int:
         """Never forced, like `delete_run`: a sweep with running runs is cancelled first."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return sweeps.delete_sweep(sweep_id, False, session)[1]
 
     # -- the goto line ------------------------------------------------------
 
     def goto_names(self) -> list[str]:
         """What `:` completes: every run's name, and every sweep's as `@name`."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             names = [r.name for r in runs.list_runs(session)]
             names += [f"@{s.name}" for s in sweeps.list_sweeps(session)]
         return list(dict.fromkeys(names))
 
     def resolve_run(self, ref: str) -> str:
         """A run's id from its name -- the newest of that name -- or an id prefix."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             named = [r for r in runs.list_runs(session) if r.name == ref]
             if named:
                 return max(named, key=lambda r: r.created_at).id
             return dbmod.resolve_run_id(ref, session)
 
     def resolve_sweep(self, ref: str) -> str:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return sweeps.resolve_sweep_id(ref, session)
 
     # -- comparing ----------------------------------------------------------
@@ -719,7 +734,7 @@ class Data:
         phases and no curve, and is listed without them.
         """
         now = time.time()
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             all_sweeps = sweeps.list_sweeps(session)
             marked = tuistate.tray(session)
             saved = tuistate.saved_names(session)
@@ -848,21 +863,21 @@ class Data:
         return out
 
     def saved_comparison(self, name: str) -> object:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return tuistate.get(session, tuistate.SAVED_PREFIX + name)
 
     def save_comparison(self, name: str, value: object) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             tuistate.put(session, tuistate.SAVED_PREFIX + name, value)
 
     def delete_comparison(self, name: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             tuistate.delete(session, tuistate.SAVED_PREFIX + name)
 
     # -- the rest of the CLI's read surface -------------------------------
 
     def list_images(self) -> list[images.ImageInfo]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return images.list_images(session)
 
     def add_image(self, url: str) -> str:
@@ -903,7 +918,7 @@ class Data:
 
     def remove_image(self, name: str) -> None:
         """Never forced: an image a run still uses is refused, and says so."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             images.remove_image(name, session, force=False)
         self.refresh()
 
@@ -911,7 +926,7 @@ class Data:
         return store.summary(self._settings)
 
     def store_check(self) -> types.StoreCheckResult:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return store.check(self._settings, session)
 
     def store_gc(self) -> types.GcResult:
@@ -920,23 +935,23 @@ class Data:
     # -- what the TUI keeps -----------------------------------------------
 
     def tray(self) -> list[str]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return tuistate.tray(session)
 
     def toggle_mark(self, run_id: str) -> bool:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return tuistate.toggle_mark(session, run_id)
 
     def set_tray(self, run_ids: list[str]) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             tuistate.set_tray(session, run_ids)
 
     def get_state(self, key: str) -> object:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return tuistate.get(session, key)
 
     def put_state(self, key: str, value: object) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             tuistate.put(session, key, value)
 
     def status_line(self) -> str:
