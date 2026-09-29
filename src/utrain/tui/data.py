@@ -2,32 +2,52 @@
 
 Two things live here that the widgets must not have to think about.
 
-**Sessions are per-fetch.** Every method opens a `db.with_db` session, uses it,
-and closes it, the way `cli/main._cmd_run_delete` does. A long-lived session
-would hold a SQLite connection for the life of the app against a detached
-orchestrator that is writing, and they share a 5s busy timeout.
+**Sessions are per-fetch, over one engine.** Every method opens a session,
+uses it, and closes it. A long-lived session would hold a SQLite transaction
+for the life of the app against a detached orchestrator and dispatcher that
+are writing, and they share a 5s busy timeout. The engine is kept for the
+life of the app: opening one checks the schema and starts with an empty
+compiled-statement cache, which every refresh would otherwise pay for. It is
+shared by the worker threads, which is what pysqlite is opened for
+(`db.create_engine`).
 
-**Describe is cached.** `phases.list_phases` and `phases.show_phase` both call
-`container.podman.describe`, which is `podman run --rm <image> describe` -- it
-starts a container -- and `container.podman.list_presets`, which shells out to
-`podman images`. Neither is cached in the query layer, which is right for a CLI
-that runs one command and exits, and unusable for a view that refreshes every
-second: it would launch a container per frame. An image's phase list does not
-change under a running app, so it is fetched once per image and kept.
+**Descriptions are memoized.** What an image says about itself -- its phases,
+their labels and plots, its config schema -- is stored in the database when a
+run is created from it (`db.description`), and cannot change: runs are frozen
+to an image id. So it is read once per image and kept, which also lets the
+message loop ask for it (`described`) without touching the database.
 
-The cache is held here rather than in `container.podman` deliberately. A global
-memo there would change what the CLI does and would leave a long-lived process
-believing a stale answer after an image was rebuilt; here it is scoped to one
-app, and `refresh()` drops it.
+**Presets are cached briefly.** `container.podman.list_presets` shells out to
+`podman images`; a few seconds of staleness keeps it off the refresh path.
 """
 
+import collections.abc
+import contextlib
 import dataclasses
 import pathlib
+import subprocess
 import time
 
-from .. import compute, config, exceptions, images, metrics, phases, runs, serve, types
+import sqlalchemy.orm
+
+from .. import (
+    compute,
+    config,
+    exceptions,
+    images,
+    metrics,
+    phases,
+    runs,
+    serve,
+    store,
+    sweeps,
+    tuistate,
+    types,
+)
 from .. import container as containermod
 from .. import db as dbmod
+from . import compare as comparemod
+from . import render
 
 # How much of a phase's output each refresh reads. `logs.tail_lines` seeks
 # backwards from the end in blocks, so a deep tail costs no more to read than a
@@ -89,6 +109,15 @@ class Snapshot:
     # directory, and the address the screen keys its series by follows the
     # latest attempt -- and starts those series over.
     metrics_path: pathlib.Path | None
+    # The sweeps, for the tree's top level and the grid a sweep row shows.
+    sweeps: list[types.SweepRow] = dataclasses.field(default_factory=list[types.SweepRow])
+    # The phases of every run the tree has open, by run id: the tree lists
+    # them under their run whether or not that run is the one selected.
+    expanded: dict[str, list[types.PhaseListEntry]] = dataclasses.field(
+        default_factory=dict[str, list[types.PhaseListEntry]]
+    )
+    # The runs marked for comparison, which the tree marks.
+    marked: list[str] = dataclasses.field(default_factory=list[str])
 
 
 def _address(run_id: str, phase: str | None, attempt: int | None) -> str | None:
@@ -154,11 +183,25 @@ def _snapshot_phase(
 
 
 @dataclasses.dataclass(frozen=True)
+class SystemSnapshot:
+    """One tick of the System workspace."""
+
+    compute: compute.ComputeInfo
+    images: list[images.ImageInfo]
+    # For what is running on each device, and what is queued for it.
+    runs: list[types.RunRow]
+    store: types.StoreSummary
+    # Why a section is empty when it could not be read -- no podman on the
+    # host -- rather than the workspace failing as a whole.
+    problem: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class NewRunChoices:
     """The two lists the new-run dialog picks from.
 
     `compute` is handed over whole rather than as strings: which specs are valid
-    is `runs._resolve_compute`'s business, and how they are labelled is
+    is `runs.resolve_compute`'s business, and how they are labelled is
     `render.compute_options`'.
     """
 
@@ -166,12 +209,90 @@ class NewRunChoices:
     compute: compute.ComputeInfo
 
 
-class Data:
-    """Typed reads for the TUI, with the podman work cached.
+@dataclasses.dataclass(frozen=True)
+class SweepsSnapshot:
+    """One tick of the Sweeps workspace.
 
-    ``describe_cache`` is injectable so tests can seed it: with it primed,
-    nothing in the phase or run screens shells out, which is what lets the TUI
-    tests run in CI. The cram suite cannot -- CI has no podman at all.
+    Every run rather than the selected sweep's: the queue shows what is on
+    each compute, and that can be a run of another sweep, or of none.
+    """
+
+    sweeps: list[types.SweepRow]
+    runs: list[types.RunRow]
+    marked: list[str]
+    # The selected sweep's runs reduced to a number each, formatted, the best
+    # starred -- what its grid shows once there are curves -- and what the
+    # number is ("min val/loss").
+    values: dict[str, str] = dataclasses.field(default_factory=dict[str, str])
+    value_label: str = ""
+    # The sweep `values` are for.
+    scored: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class NewSweepChoices:
+    """What the new-sweep dialog picks from: images, computes, and base runs."""
+
+    images: list[str]
+    compute: compute.ComputeInfo
+    runs: list[types.RunRow]
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepForm:
+    """What the sweep form is built from: the image's fields and their values."""
+
+    schema: containermod.schema.ConfigSchema
+    values: dict[str, object]
+    phase_order: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class CompareSnapshot:
+    """One tick of the Compare workspace.
+
+    `state` comes back resolved: the phase and metric it names are ones the
+    runs have, picked for it when it named none, so the screen draws what it
+    is told rather than guessing again.
+    """
+
+    state: "comparemod.State"
+    runs: list[types.RunRow]
+    sweep: types.SweepRow | None
+    sweeps: list[types.SweepRow]
+    marked: list[str]
+    saved: list[str]
+    # Every phase any of the runs has, in pipeline order, and every metric
+    # the chosen phase logged on any of them.
+    phases: list[str]
+    metric_names: list[str]
+    # Each run's metrics for the chosen phase, by name.
+    points: dict[str, dict[str, list[metrics.MetricPoint]]]
+    # How long each run's chosen phase took, or has been taking.
+    durations: dict[str, str]
+    # Each run's config, flattened to dotted paths.
+    configs: dict[str, dict[str, object]]
+
+
+class _Curves:
+    """A metrics file followed across ticks: its reader, and what it has read."""
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.tail = metrics.Tail(path)
+        self.points: dict[str, list[metrics.MetricPoint]] = {}
+
+    def read(self) -> dict[str, list[metrics.MetricPoint]]:
+        update = self.tail.read()
+        for name, new in update.points.items():
+            self.points.setdefault(name, []).extend(new)
+        return self.points
+
+
+class Data:
+    """Typed reads for the TUI, with image descriptions memoized.
+
+    ``describe_cache`` is injectable so tests can seed the memo, keyed by
+    image id, for the message-loop reads of `described`.
     """
 
     def __init__(
@@ -180,19 +301,37 @@ class Data:
         describe_cache: dict[str, containermod.schema.DescribeOutput] | None = None,
     ) -> None:
         self._settings = settings if settings is not None else config.Settings()
+        self._engine: sqlalchemy.Engine | None = None
         self._describe: dict[str, containermod.schema.DescribeOutput] = (
             describe_cache if describe_cache is not None else {}
         )
         self._presets: dict[str, str] = {}
         self._presets_at = 0.0
+        # The metrics files Compare and Sweeps follow, one reader each, so a
+        # live sweep is read by what it appended rather than from the top
+        # every tick. Kept per reader, so that one closing the files it has
+        # stopped using does not close the other's.
+        self._curves: dict[str, dict[pathlib.Path, _Curves]] = {}
 
     @property
     def settings(self) -> config.Settings:
         return self._settings
 
+    @contextlib.contextmanager
+    def _session(self) -> collections.abc.Generator[sqlalchemy.orm.Session, None, None]:
+        # Opened on first use rather than in __init__, so that building a Data
+        # touches nothing until it is asked something.
+        if self._engine is None:
+            self._engine = dbmod.open_engine(self._settings)
+        with dbmod.session(self._engine, self._settings) as session:
+            yield session
+
     def refresh(self) -> None:
-        """Drop the caches, so the next read reflects a rebuilt image."""
-        self._describe.clear()
+        """Drop the preset cache, so the next read sees an image added or removed.
+
+        The descriptions stay: they are keyed by image id, and an id's content
+        cannot change.
+        """
         self._presets = {}
         self._presets_at = 0.0
 
@@ -203,24 +342,23 @@ class Data:
             self._presets_at = now
         return self._presets
 
-    def described(self, ref: str) -> containermod.schema.DescribeOutput | None:
-        """What is already known about an image, or None -- never a container.
+    def described(self, image_id: str) -> containermod.schema.DescribeOutput | None:
+        """What is already known about an image, or None -- never a query.
 
-        `describe` shells out on a miss, which is right everywhere it is called
-        from a worker and wrong on the message loop: `check_action` runs there,
-        once per key and once per footer rebuild, and a `podman run` from it
-        would freeze the app. The cache is warmed by every snapshot fetch, so
-        the answer is at worst one tick late.
+        For the message loop: `check_action` runs there, once per key and once
+        per footer rebuild. The memo is warmed by every snapshot fetch, so the
+        answer is at worst one tick late.
         """
-        return self._describe.get(ref)
+        return self._describe.get(image_id)
 
-    def describe(self, ref: str) -> containermod.schema.DescribeOutput:
-        """An image's phase list, fetched at most once per image per app."""
-        cached = self._describe.get(ref)
+    def describe(self, image_id: str) -> containermod.schema.DescribeOutput:
+        """An image's stored description, read at most once per image per app."""
+        cached = self._describe.get(image_id)
         if cached is not None:
             return cached
-        described = phases.describe_image(ref)
-        self._describe[ref] = described
+        with self._session() as session:
+            described = dbmod.description(image_id, session)
+        self._describe[image_id] = described
         return described
 
     def phase_order(self, ref: str) -> list[str]:
@@ -235,32 +373,29 @@ class Data:
     # -- runs -------------------------------------------------------------
 
     def list_runs(self) -> list[types.RunRow]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.list_runs(session)
 
     def run_detail(self, run_id: str) -> types.RunDetail:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.get_run_detail(run_id, session)
 
     # -- phases -----------------------------------------------------------
 
     def list_phases(self, run_id: str) -> list[types.PhaseListEntry]:
-        with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(run_id, session)
-            return phases.list_phases(run_id, session, self.describe(run.image_id))
+        with self._session() as session:
+            return phases.list_phases(run_id, session)
 
     def phase_detail(self, addr: str) -> types.PhaseDetail:
-        with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(addr.split("/")[0], session)
-            return phases.show_phase(addr, session, self.describe(run.image_id))
+        with self._session() as session:
+            return phases.show_phase(addr, session)
 
     def phase_log_tail(self, detail: types.PhaseDetail, n: int) -> list[str]:
         return phases.read_log_tail(detail, n)
 
     def write_run_config(self, run_id: str, values: dict[str, object]) -> None:
-        with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(run_id, session)
-            runs.write_config(run_id, values, session, self.describe(run.image_id))
+        with self._session() as session:
+            runs.write_config(run_id, values, session)
             session.commit()
 
     # -- lifecycle --------------------------------------------------------
@@ -269,21 +404,21 @@ class Data:
     # always has one, and resolving a prefix is a CLI concern.
 
     def start_run(self, run_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.start_run(run_id, session)
 
     def stop_run(self, run_id: str) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.stop_run(run_id, session)
 
     def restart_run(self, run_id: str, from_phase: str | None) -> None:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.restart_run(run_id, from_phase, session)
 
     def delete_run(self, run_id: str) -> None:
         """Never forced: the TUI greys `d` out on a running run rather than
         killing an attempt behind a delete prompt. Stopping is `S`, and it asks."""
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             runs.delete_run(run_id, force=False, session=session)
 
     def start_server(self, run_id: str, phase: str | None = None) -> serve.Server:
@@ -297,11 +432,11 @@ class Data:
         The container is spawned but not yet listening -- `Server.wait_for_port`
         is the second half, and is the caller's to wait on.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return serve.start(run_id, session, phase)
 
     def create_run(self, name: str, image: str, compute_spec: str) -> str:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return runs.create_run(name, image, compute_spec, self._settings, session)
 
     def new_run_choices(self) -> NewRunChoices:
@@ -316,7 +451,7 @@ class Data:
         The Tail is handed to the caller to keep: following a live phase means
         one reader held open across refreshes, not a fresh read each time.
         """
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             path = phases.metrics_path(addr, session)
         return None if path is None else metrics.Tail(path)
 
@@ -327,6 +462,7 @@ class Data:
         attempt: int | None = None,
         tail: metrics.Tail | None = None,
         log_lines: int = _LOG_LINES,
+        expanded: collections.abc.Collection[str] = (),
     ) -> Snapshot:
         """Everything the main screen shows, read through one session.
 
@@ -339,8 +475,11 @@ class Data:
         `--from-phase` restart inherited; None means the run's current attempt.
         """
         now = time.time()
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             rows = runs.list_runs(session)
+            sweep_rows = sweeps.list_sweeps(session)
+            marked = tuistate.tray(session)
+            open_phases = self._expanded_phases(session, rows, expanded)
             if run_id is None:
                 return Snapshot(
                     now=now,
@@ -359,13 +498,16 @@ class Data:
                     update=metrics.MetricUpdate(columns=[], points={}),
                     tail=tail,
                     metrics_path=None,
+                    sweeps=sweep_rows,
+                    expanded=open_phases,
+                    marked=marked,
                 )
 
             detail = runs.get_run_detail(run_id, session)
             described = self.describe(detail.run.image_id)
             config = runs.read_config(run_id, session)
             try:
-                entries = phases.list_phases(run_id, session, described)
+                entries = phases.list_phases(run_id, session)
             except exceptions.UI:
                 entries = []
 
@@ -418,12 +560,324 @@ class Data:
             update=update,
             tail=tail,
             metrics_path=metrics_path,
+            sweeps=sweep_rows,
+            expanded=open_phases,
+            marked=marked,
         )
+
+    def _expanded_phases(
+        self,
+        session: sqlalchemy.orm.Session,
+        rows: list[types.RunRow],
+        expanded: collections.abc.Collection[str],
+    ) -> dict[str, list[types.PhaseListEntry]]:
+        """The phase lists of the runs the tree has open.
+
+        Tolerant, as the rest of the snapshot is: a run whose phases cannot be
+        read shows none rather than blanking the tree.
+        """
+        out: dict[str, list[types.PhaseListEntry]] = {}
+        by_id = {r.id: r for r in rows}
+        for run_id in expanded:
+            run = by_id.get(run_id)
+            if run is None or run.attempt is None:
+                continue
+            try:
+                out[run_id] = phases.list_phases(run_id, session)
+            except exceptions.UI:
+                out[run_id] = []
+        return out
+
+    # -- sweeps -----------------------------------------------------------
+
+    def sweeps_snapshot(self, selected: str | None = None) -> SweepsSnapshot:
+        """The sweeps, and for the `selected` one, what each of its runs scored.
+
+        Scored as Compare would score them when opened on the sweep: its
+        default metric, reduced its default way.
+        """
+        with self._session() as session:
+            listed = sweeps.list_sweeps(session)
+            rows = runs.list_runs(session)
+            marked = tuistate.tray(session)
+        values: dict[str, str] = {}
+        label = ""
+        if not any(s.id == selected for s in listed):
+            selected = None
+        if selected is not None:
+            scored = self.compare(comparemod.State(source="sweep", sweep=selected), reader="sweeps")
+            metric = scored.state.metric
+            if metric is not None:
+                reducer = comparemod.auto_reducer(metric)
+                reduced = {
+                    run_id: value
+                    for run_id, points in scored.points.items()
+                    if (value := comparemod.reduce(points.get(metric, []), reducer)) is not None
+                }
+                best = comparemod.best_of(reduced, reducer)
+                values = {
+                    run_id: render.format_value(value)
+                    + (f" {comparemod.BEST}" if run_id == best else "")
+                    for run_id, value in reduced.items()
+                }
+                label = f"{reducer} {metric}"
+        return SweepsSnapshot(
+            sweeps=listed,
+            runs=rows,
+            marked=marked,
+            values=values,
+            value_label=label,
+            scored=selected,
+        )
+
+    def new_sweep_choices(self) -> NewSweepChoices:
+        """Read in a worker before the dialog opens, as `new_run_choices` is."""
+        return NewSweepChoices(
+            images=sorted(self.presets()), compute=self.compute(), runs=self.list_runs()
+        )
+
+    def sweep_form(self, image: str, base: str | None) -> SweepForm:
+        """The fields a new sweep can vary, valued from its base run or defaults.
+
+        A worker's: an image no run was created from yet is described by
+        starting a container.
+        """
+        with self._session() as session:
+            if base is not None:
+                run = runs.get_run(base, session)
+                described = self.describe(run.image_id)
+                values = runs.read_config(base, session)
+            else:
+                presets = self.presets()
+                if image not in presets:
+                    raise exceptions.UI(f"image '{image}' not found")
+                image_id = containermod.podman.image_id(presets[image])
+                described = self._describe.get(image_id) or dbmod.describe_image(image_id, session)
+                values = {}
+        return SweepForm(
+            schema=described.config_schema,
+            values=values,
+            phase_order=list(described.phase_order),
+        )
+
+    def create_sweep(
+        self,
+        name: str,
+        image: str,
+        base: str | None,
+        axes: dict[str, object],
+        compute_specs: list[str],
+    ) -> str:
+        with self._session() as session:
+            return sweeps.create_sweep(
+                name,
+                axes,
+                compute_specs,
+                self._settings,
+                session,
+                image=None if base is not None else image,
+                base=base,
+            )
+
+    def start_sweep(self, sweep_id: str) -> None:
+        with self._session() as session:
+            sweeps.start_sweep(sweep_id, session)
+
+    def pause_sweep(self, sweep_id: str) -> None:
+        with self._session() as session:
+            sweeps.pause_sweep(sweep_id, session)
+
+    def cancel_sweep(self, sweep_id: str) -> None:
+        with self._session() as session:
+            sweeps.cancel_sweep(sweep_id, session)
+
+    def retry_sweep(self, sweep_id: str) -> int:
+        with self._session() as session:
+            return sweeps.retry_sweep(sweep_id, session)[1]
+
+    def extend_sweep(self, sweep_id: str, axes: dict[str, object]) -> int:
+        with self._session() as session:
+            return sweeps.extend_sweep(sweep_id, axes, self._settings, session)[1]
+
+    def delete_sweep(self, sweep_id: str) -> int:
+        """Never forced, like `delete_run`: a sweep with running runs is cancelled first."""
+        with self._session() as session:
+            return sweeps.delete_sweep(sweep_id, False, session)[1]
+
+    # -- the goto line ------------------------------------------------------
+
+    def goto_names(self) -> list[str]:
+        """What `:` completes: every run's name, and every sweep's as `@name`."""
+        with self._session() as session:
+            names = [r.name for r in runs.list_runs(session)]
+            names += [f"@{s.name}" for s in sweeps.list_sweeps(session)]
+        return list(dict.fromkeys(names))
+
+    def resolve_run(self, ref: str) -> str:
+        """A run's id from its name -- the newest of that name -- or an id prefix."""
+        with self._session() as session:
+            named = [r for r in runs.list_runs(session) if r.name == ref]
+            if named:
+                return max(named, key=lambda r: r.created_at).id
+            return dbmod.resolve_run_id(ref, session)
+
+    def resolve_sweep(self, ref: str) -> str:
+        with self._session() as session:
+            return sweeps.resolve_sweep_id(ref, session)
+
+    # -- comparing ----------------------------------------------------------
+
+    def compare(self, state: "comparemod.State", reader: str = "compare") -> CompareSnapshot:
+        """Everything the Compare workspace shows, read through one session.
+
+        Tolerant as the main snapshot is: a run that has not started has no
+        phases and no curve, and is listed without them.
+        """
+        now = time.time()
+        with self._session() as session:
+            all_sweeps = sweeps.list_sweeps(session)
+            marked = tuistate.tray(session)
+            saved = tuistate.saved_names(session)
+            rows = runs.list_runs(session)
+            by_id = {r.id: r for r in rows}
+            sweep = next((s for s in all_sweeps if s.id == state.sweep), None)
+            if state.source == "sweep":
+                chosen = sorted(
+                    (r for r in rows if sweep is not None and r.sweep_id == sweep.id),
+                    key=lambda r: r.created_at,
+                )
+            else:
+                ids = marked if state.source == "tray" else list(state.runs)
+                chosen = [by_id[i] for i in ids if i in by_id]
+                sweep = None
+
+            entries: dict[str, list[types.PhaseListEntry]] = {}
+            order: list[str] = []
+            for run in chosen:
+                try:
+                    described = self.describe(run.image_id)
+                except exceptions.UI:
+                    continue
+                for phase in described.phase_order:
+                    if phase not in order:
+                        order.append(phase)
+                if run.attempt is None:
+                    continue
+                try:
+                    entries[run.id] = phases.list_phases(run.id, session)
+                except exceptions.UI:
+                    entries[run.id] = []
+
+            phase = state.phase if state.phase in order else self._compare_phase(order, entries)
+            addresses: dict[str, str] = {}
+            durations: dict[str, str] = {}
+            for run_id, listed in entries.items():
+                for entry in listed:
+                    if entry.phase != phase:
+                        continue
+                    durations[run_id] = render.format_duration(
+                        entry.started_at, entry.ended_at, now
+                    )
+                    if entry.status not in (None, "pending"):
+                        addresses[run_id] = entry.address
+            paths: dict[str, pathlib.Path] = {}
+            for run_id, addr in addresses.items():
+                try:
+                    path = phases.metrics_path(addr, session)
+                except exceptions.UI:
+                    path = None
+                if path is not None:
+                    paths[run_id] = path
+            configs: dict[str, dict[str, object]] = {}
+            for run in chosen:
+                try:
+                    configs[run.id] = comparemod.flatten(runs.read_config(run.id, session))
+                except (exceptions.UI, OSError):
+                    configs[run.id] = {}
+
+        points = self._read_curves(paths, reader)
+        names: list[str] = []
+        for series in points.values():
+            for name in series:
+                if name not in names:
+                    names.append(name)
+        metric = state.metric if state.metric in names else comparemod.default_metric(names)
+        resolved = dataclasses.replace(
+            state,
+            phase=phase,
+            metric=metric,
+            sweep=sweep.id if sweep is not None else None,
+        )
+        return CompareSnapshot(
+            state=resolved,
+            runs=chosen,
+            sweep=sweep,
+            sweeps=all_sweeps,
+            marked=marked,
+            saved=saved,
+            phases=order,
+            metric_names=sorted(names),
+            points=points,
+            durations=durations,
+            configs=configs,
+        )
+
+    @staticmethod
+    def _compare_phase(
+        order: list[str], entries: dict[str, list[types.PhaseListEntry]]
+    ) -> str | None:
+        """The phase a comparison opens on: the last one any run has reached."""
+        reached = {
+            e.phase
+            for listed in entries.values()
+            for e in listed
+            if e.status not in (None, "pending")
+        }
+        for phase in reversed(order):
+            if phase in reached:
+                return phase
+        return order[-1] if order else None
+
+    def _read_curves(
+        self, paths: dict[str, pathlib.Path], reader: str
+    ) -> dict[str, dict[str, list[metrics.MetricPoint]]]:
+        """Each run's points, from the reader held on its file.
+
+        A file no run of this comparison uses any more has its reader closed.
+        """
+        held = self._curves.setdefault(reader, {})
+        wanted = set(paths.values())
+        for path in list(held):
+            if path not in wanted:
+                held.pop(path).tail.close()
+        out: dict[str, dict[str, list[metrics.MetricPoint]]] = {}
+        for run_id, path in paths.items():
+            curves = held.get(path)
+            if curves is None:
+                curves = _Curves(path)
+                held[path] = curves
+            try:
+                out[run_id] = curves.read()
+            except (OSError, ValueError):
+                out[run_id] = curves.points
+        return out
+
+    def saved_comparison(self, name: str) -> object:
+        with self._session() as session:
+            return tuistate.get(session, tuistate.SAVED_PREFIX + name)
+
+    def save_comparison(self, name: str, value: object) -> None:
+        with self._session() as session:
+            tuistate.put(session, tuistate.SAVED_PREFIX + name, value)
+
+    def delete_comparison(self, name: str) -> None:
+        with self._session() as session:
+            tuistate.delete(session, tuistate.SAVED_PREFIX + name)
 
     # -- the rest of the CLI's read surface -------------------------------
 
     def list_images(self) -> list[images.ImageInfo]:
-        with dbmod.with_db(self._settings) as session:
+        with self._session() as session:
             return images.list_images(session)
 
     def add_image(self, url: str) -> str:
@@ -441,3 +895,79 @@ class Data:
 
     def compute(self) -> compute.ComputeInfo:
         return compute.collect_compute()
+
+    def system(self) -> "SystemSnapshot":
+        """Everything the System workspace shows, read in one worker."""
+        # Through this class's own seams rather than the modules underneath,
+        # so that a test which stubs them stubs this too.
+        info = self.compute()
+        problem = ""
+        try:
+            image_list = self.list_images()
+        except (exceptions.UI, OSError, subprocess.CalledProcessError) as e:
+            image_list = []
+            problem = f"cannot list images: {e}"
+        rows = self.list_runs()
+        return SystemSnapshot(
+            compute=info,
+            images=image_list,
+            runs=rows,
+            store=store.summary(self._settings),
+            problem=problem,
+        )
+
+    def remove_image(self, name: str) -> None:
+        """Never forced: an image a run still uses is refused, and says so."""
+        with self._session() as session:
+            images.remove_image(name, session, force=False)
+        self.refresh()
+
+    def store_summary(self) -> types.StoreSummary:
+        return store.summary(self._settings)
+
+    def store_check(self) -> types.StoreCheckResult:
+        with self._session() as session:
+            return store.check(self._settings, session)
+
+    def store_gc(self) -> types.GcResult:
+        return store.gc(self._settings)
+
+    # -- what the TUI keeps -----------------------------------------------
+
+    def tray(self) -> list[str]:
+        with self._session() as session:
+            return tuistate.tray(session)
+
+    def toggle_mark(self, run_id: str) -> bool:
+        with self._session() as session:
+            return tuistate.toggle_mark(session, run_id)
+
+    def set_tray(self, run_ids: list[str]) -> None:
+        with self._session() as session:
+            tuistate.set_tray(session, run_ids)
+
+    def get_state(self, key: str) -> object:
+        with self._session() as session:
+            return tuistate.get(session, key)
+
+    def put_state(self, key: str, value: object) -> None:
+        with self._session() as session:
+            tuistate.put(session, key, value)
+
+    def status_line(self) -> str:
+        """The top row's right-hand side: marked runs, then each GPU's load.
+
+        The GPUs are left off rather than failing the line when they cannot be
+        read: a host without `nvidia-smi` has none to show.
+        """
+        parts: list[str] = []
+        marked = len(self.tray())
+        if marked:
+            parts.append(f"{marked} marked")
+        try:
+            gpus = self.compute().gpus
+        except (exceptions.UI, OSError, ValueError):
+            gpus = []
+        if gpus:
+            parts.append("  ".join(f"gpu{g.index} {g.util}%" for g in gpus))
+        return "    ".join(parts)

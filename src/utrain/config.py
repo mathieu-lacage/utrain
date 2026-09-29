@@ -54,3 +54,8 @@ class Settings(pydantic_settings.BaseSettings):
     @property
     def runs_dir(self) -> pathlib.Path:
         return self.data_dir / "runs"
+
+    @property
+    def dispatcher_dir(self) -> pathlib.Path:
+        """Where the dispatcher keeps its lock and its log."""
+        return self.data_dir / "dispatcher"

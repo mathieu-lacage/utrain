@@ -7,13 +7,17 @@ both through the `screens.Host` protocol, which this implements.
 
 import base64
 import collections.abc
+import functools
 import os
+import typing
 
+import textual
 import textual.app
 import textual.binding
 import textual.screen
 
-from . import data, render, screens, widgets
+from .. import exceptions, tuistate
+from . import commands, data, menus, render, screens, widgets
 
 
 class UtrainApp(textual.app.App[None]):
@@ -35,10 +39,17 @@ class UtrainApp(textual.app.App[None]):
     #content {
         width: 1fr;
     }
-    #runs, #phases {
+    #runs {
         height: 1fr;
         border: round $panel;
         border-title-align: left;
+    }
+    /* A sweep's status grid, which the right side shows for a sweep row. */
+    #sweep {
+        height: 1fr;
+        border: round $panel;
+        border-title-align: left;
+        padding: 0 1;
     }
     /* The metric picker is a drawer rather than a fourth list in the sidebar.
        It is a control for the plots -- it decides which curves are drawn, not
@@ -72,13 +83,18 @@ class UtrainApp(textual.app.App[None]):
         background: $primary;
         color: $text;
     }
-    /* The tab strip: one line above the content panes, naming which of the
-       three is up and the number that gets to the others. */
-    #tabs {
-        height: 1;
-        padding: 0 1;
-    }
     #sidebar > *:focus, #content > *:focus, #content > *:focus-within {
+        border: round $accent;
+    }
+    /* The other workspaces' panes, framed and lit the way the Runs panes
+       above are. Here rather than in each screen's own CSS, which ranks
+       below a DataTable's built-in focus style and so never showed: the
+       app's stylesheet is what outranks a widget's defaults. */
+    .pane {
+        border: round $panel;
+        border-title-align: left;
+    }
+    .pane:focus, .pane:focus-within {
         border: round $accent;
     }
     #empty {
@@ -187,6 +203,25 @@ class UtrainApp(textual.app.App[None]):
     NewRunScreen {
         align: center middle;
     }
+    BusyScreen {
+        align: center middle;
+    }
+    /* Sized, as `#new-run` is: the indicator is `1fr` wide, and an `auto`
+       box around it would resolve to nothing. */
+    #busy {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        border: round $accent;
+        background: $surface;
+    }
+    #busy-message {
+        width: 100%;
+    }
+    #busy LoadingIndicator {
+        height: 1;
+        margin-top: 1;
+    }
     /* Unlike the confirm dialog, this one is sized rather than shrunk to fit:
        an `Input` and two `Select`s have no natural width, and a dialog whose
        width followed the longest image name would move under the viewer. */
@@ -226,6 +261,56 @@ class UtrainApp(textual.app.App[None]):
         align-horizontal: right;
     }
     #new-run-buttons Button {
+        margin: 0 1;
+        min-width: 0;
+        padding: 0 2;
+    }
+    /* A menu's box. Here rather than in `MenuScreen`'s own CSS because an
+       `OptionList` brings a border of its own, and the app's stylesheet is
+       what outranks a widget's defaults. */
+    PickScreen OptionList {
+        height: auto;
+        max-height: 20;
+        border: none;
+        background: $surface;
+    }
+    MenuScreen > OptionList {
+        height: auto;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 0;
+    }
+    NewSweepScreen {
+        align: center middle;
+    }
+    /* The new-run dialog's shape, a few lines taller for the computes. */
+    #new-sweep {
+        width: 60;
+        height: auto;
+        padding: 0 1;
+        border: round $accent;
+        border-title-align: left;
+        background: $surface;
+    }
+    #new-sweep > Label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    #new-sweep-compute {
+        height: auto;
+        max-height: 8;
+    }
+    #new-sweep-error {
+        color: $error;
+        height: auto;
+    }
+    #new-sweep-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #new-sweep-buttons Button {
         margin: 0 1;
         min-width: 0;
         padding: 0 2;
@@ -298,14 +383,38 @@ class UtrainApp(textual.app.App[None]):
     }
     """
 
-    BINDINGS = [
-        textual.binding.Binding("q", "quit", "quit"),
-        # Textual's own copy key is ctrl+c (or super+c). ctrl+shift+c is what
-        # a desktop terminal uses to copy its own selection, and the fingers
-        # bring it here -- where there is no terminal selection to copy, only
-        # the one the app made, so it copies that.
-        textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("q", "quit", "quit"),
+            # Textual's own copy key is ctrl+c (or super+c). ctrl+shift+c is what
+            # a desktop terminal uses to copy its own selection, and the fingers
+            # bring it here -- where there is no terminal selection to copy, only
+            # the one the app made, so it copies that.
+            textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
+            # The workspaces: Alt with the title's underlined letter, or its
+            # function key where the terminal passes those on. A terminal sends
+            # Alt+x as escape then x, in one write; Textual reads the pair as
+            # `alt+x` when the x follows within ESCDELAY (100 ms).
+            *(
+                textual.binding.Binding(
+                    f"{ws.alt},{ws.fkey}", f"workspace('{ws.name}')", ws.title, show=False
+                )
+                for ws in commands.WORKSPACES
+            ),
+            # And the workspace's menu: every command it has, where the footer has
+            # room for a few. In the footer itself, being how the rest are found.
+            textual.binding.Binding("alt+m,f10", "menu", "menu", key_display="Alt+M"),
+            textual.binding.Binding("colon", "goto", "goto", key_display=":"),
+            textual.binding.Binding("question_mark", "screen.help", "help", key_display="?"),
+        ]
+    )
+
+    # The workspace the app opens on, before a saved session says otherwise.
+    DEFAULT_MODE = "runs"
+
+    # How often the top row's status is read: the marked-run count and the
+    # GPUs' utilisation. `nvidia-smi` forks, so not every second.
+    _STATUS_SECONDS = 3.0
 
     def __init__(self, source: data.Data | None = None) -> None:
         super().__init__()
@@ -317,10 +426,140 @@ class UtrainApp(textual.app.App[None]):
         # with the view, and the next `i` mounts the same screen again. See
         # `_Popover` for the `_closed` latch that makes that safe.
         self._panels: dict[str, textual.screen.Screen[None]] = {}
+        # One mode per workspace, each with its own screen stack: a dialog or
+        # a chat opened in one stays there while another is looked at.
+        self.workspaces: dict[str, collections.abc.Callable[[], textual.screen.Screen[None]]] = {
+            "runs": lambda: screens.MainScreen(self, self.data),
+            "sweeps": lambda: screens.SweepsScreen(self, self.data),
+            "compare": lambda: screens.CompareScreen(self, self.data),
+            "system": lambda: screens.SystemScreen(self, self.data),
+        }
+        # Each workspace's own screen, once its mode has built it: what the
+        # session is read from on the way out, and restored into.
+        self.workspace_screens: dict[str, textual.screen.Screen[None]] = {}
+        # The last session, once read; see `resume_session`.
+        self.restored: dict[str, object] | None = None
+        for name in self.workspaces:
+            # Textual types a mode's factory as returning `Screen[Unknown]`.
+            self.add_mode(name, functools.partial(self.make_workspace, name))  # pyright: ignore[reportUnknownMemberType]
+        # What the top row's right-hand side says; see `refresh_status`.
+        self.status_line = ""
 
-    def get_default_screen(self) -> textual.screen.Screen[None]:
-        """Runs is the whole app; everything else is a panel over it."""
-        return screens.MainScreen(self, self.data)
+    def make_workspace(self, name: str) -> textual.screen.Screen[None]:
+        screen = self.workspaces[name]()
+        self.workspace_screens[name] = screen
+        if self.restored is not None:
+            self.restore_into(screen, self.restored)
+        return screen
+
+    def on_mount(self) -> None:
+        self.set_interval(self._STATUS_SECONDS, self.refresh_status)
+        self.refresh_status()
+        self.read_session()
+
+    # -- the session ------------------------------------------------------
+    #
+    # Where the viewer was when they quit -- the workspace, the run under the
+    # cursor and the tree rows open, the sweep selected -- is kept, and the app
+    # opens there next time. Compare keeps its own comparison as it changes.
+
+    @textual.work(thread=True, group="session")
+    def read_session(self) -> None:
+        try:
+            value = self.data.get_state(tuistate.SESSION)
+        except exceptions.UI:
+            return
+        if isinstance(value, dict):
+            session = {str(k): v for k, v in typing.cast(dict[object, object], value).items()}
+            self.call_from_thread(self.resume_session, session)
+
+    def resume_session(self, session: dict[str, object]) -> None:
+        # Kept for the workspaces not built yet, which `make_workspace` hands
+        # it to as their modes are first switched to.
+        self.restored = session
+        for screen in self.workspace_screens.values():
+            self.restore_into(screen, session)
+        workspace = session.get("workspace")
+        if isinstance(workspace, str) and workspace in self.workspaces:
+            self.action_workspace(workspace)
+
+    @staticmethod
+    def restore_into(screen: textual.screen.Screen[None], session: dict[str, object]) -> None:
+        def part(name: str) -> dict[str, object]:
+            value = session.get(name)
+            if not isinstance(value, dict):
+                return {}
+            return {str(k): v for k, v in typing.cast(dict[object, object], value).items()}
+
+        if isinstance(screen, screens.MainScreen):
+            saved = part("runs")
+            cursor = saved.get("cursor")
+            opened = saved.get("expanded")
+            screen.restore(
+                str(cursor) if cursor is not None else None,
+                [str(k) for k in typing.cast(list[object], opened)]
+                if isinstance(opened, list)
+                else [],
+            )
+        elif isinstance(screen, screens.SweepsScreen):
+            sweep = part("sweeps").get("sweep")
+            if isinstance(sweep, str):
+                screen.wanted = sweep
+
+    def session(self) -> dict[str, object]:
+        out: dict[str, object] = {"workspace": self.current_mode}
+        main = self.workspace_screens.get("runs")
+        if isinstance(main, screens.MainScreen):
+            out["runs"] = {"cursor": main.cursor_key, "expanded": sorted(main.expanded)}
+        sweeps = self.workspace_screens.get("sweeps")
+        if isinstance(sweeps, screens.SweepsScreen):
+            out["sweeps"] = {"sweep": sweeps.selected_sweep}
+        return out
+
+    async def action_quit(self) -> None:
+        """`q`: keep where the viewer was, and go.
+
+        The write is on the loop, and it is one small row: the app is leaving,
+        so there is no frame for it to hold up.
+        """
+        try:
+            self.data.put_state(tuistate.SESSION, self.session())
+        except (exceptions.UI, OSError):
+            pass
+        await super().action_quit()
+
+    @textual.work(thread=True, exclusive=True, group="status")
+    def refresh_status(self) -> None:
+        try:
+            line = self.data.status_line()
+        except exceptions.UI:
+            return
+        self.call_from_thread(self.show_status, line)
+
+    def show_status(self, line: str) -> None:
+        self.status_line = line
+        for bar in self.screen.query(menus.TopBar):
+            bar.show_status(line)
+
+    def action_workspace(self, name: str) -> None:
+        """`Alt+R`, `F1` and the rest: go to a workspace, and only that.
+
+        A menu that is open closes, being about the workspace being left.
+        """
+        menus.close_menus(self)
+        if name in self.workspaces and name != self.current_mode:
+            self.switch_mode(name)
+
+    def action_menu(self) -> None:
+        """`Alt+M`: the menu of the workspace in front of the viewer."""
+        menus.open_menu(self, self.current_mode)
+
+    def on_top_bar_clicked(self, event: menus.TopBar.Clicked) -> None:
+        """A click on a title goes there; on the one you are in, drops its menu."""
+        if event.workspace == self.current_mode:
+            self.action_menu()
+        else:
+            self.action_workspace(event.workspace)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """`q` is off while a config field's editor or a confirm prompt is open.
@@ -328,7 +567,21 @@ class UtrainApp(textual.app.App[None]):
         An `Input` swallows the key, but the option list a `Select` drops does
         not, so without this a `q` aimed at an enum would quit the app instead
         of picking an option. The screen switches off its own keys the same way.
+
+        The workspace and menu keys are off under a dialog, which has to be
+        answered before the viewer goes anywhere, but not under a menu, which
+        they close on the way.
         """
+        if action in ("workspace", "menu", "goto"):
+            screen = self.screen
+            if action == "goto" and (
+                isinstance(screen, screens.ChatScreen) or widgets.in_config_field(self.focused)
+            ):
+                # A `:` typed at a field or at the chat prompt is a character.
+                return False
+            return not isinstance(screen, textual.screen.ModalScreen) or isinstance(
+                screen, menus.MenuScreen
+            )
         if action != "quit":
             return True
         # App bindings are global, so `q` at a dialog would quit instead of
@@ -382,7 +635,10 @@ class UtrainApp(textual.app.App[None]):
         )
 
     def close(self) -> None:
-        self.pop_screen()
+        # A workspace's own screen is the bottom of its mode's stack, and
+        # popping it is an error Textual raises rather than a no-op.
+        if len(self.screen_stack) > 1:
+            self.pop_screen()
 
     def go(self, which: str) -> None:
         """Show a panel -- `images` or `compute` -- over the screen showing.
@@ -404,6 +660,168 @@ class UtrainApp(textual.app.App[None]):
         *args: object,
     ) -> None:
         self.call_from_thread(callback, *args)
+
+    # -- across workspaces ------------------------------------------------
+
+    def base_screen(self, name: str) -> textual.screen.Screen[None]:
+        """A workspace's own screen, under whatever is open over it.
+
+        Switching to a mode builds its screen then and there, so after
+        `action_workspace` the stack in front is that workspace's.
+        """
+        self.action_workspace(name)
+        return self.screen_stack[0]
+
+    def show_sweep(self, sweep_id: str) -> None:
+        screen = self.base_screen("sweeps")
+        if isinstance(screen, screens.SweepsScreen):
+            screen.select_sweep(sweep_id)
+
+    def show_run(self, run_id: str, phase: str | None = None) -> None:
+        screen = self.base_screen("runs")
+        if isinstance(screen, screens.MainScreen):
+            screen.reveal_run(run_id, phase)
+
+    # -- the goto line ------------------------------------------------------
+
+    def action_goto(self) -> None:
+        """`:`: go somewhere by name. The names are read first, for completion."""
+        menus.close_menus(self)
+        self.goto_names()
+
+    @textual.work(thread=True, exclusive=True, group="goto")
+    def goto_names(self) -> None:
+        try:
+            names = self.data.goto_names()
+        except exceptions.UI:
+            names = []
+        self.call_from_thread(self.ask_goto, names)
+
+    def ask_goto(self, names: list[str]) -> None:
+        def answered(text: str | None) -> None:
+            if text:
+                self.goto(text)
+
+        self.ask(screens.GotoScreen(names), answered)
+
+    def goto(self, text: str) -> None:
+        """Where `text` says: a word, a sweep, or a run and perhaps a phase."""
+        word = text.removeprefix(":").strip()
+        lowered = word.lower()
+        if lowered in self.workspaces:
+            self.action_workspace(lowered)
+            return
+        if lowered == "menu" or lowered.startswith("menu "):
+            # `menu sweeps` goes there first: a menu is always the menu of
+            # the workspace in front.
+            which = lowered.removeprefix("menu").strip() or self.current_mode
+            if which not in self.workspaces:
+                self.tell(f"no workspace '{which}'")
+                return
+            self.action_workspace(which)
+            self.action_menu()
+            return
+        if lowered in ("quit", "q"):
+            self.call_later(self.run_action, "quit")
+            return
+        self.resolve_goto(word)
+
+    @textual.work(thread=True, exclusive=True, group="goto")
+    def resolve_goto(self, word: str) -> None:
+        try:
+            if word.startswith("@"):
+                sweep_id = self.data.resolve_sweep(word)
+                self.call_from_thread(self.show_sweep, sweep_id)
+                return
+            # `run`, `run/phase` or `run/attempt/phase`: the attempt is where
+            # the tree shows it, so only the run and the phase matter here.
+            parts = word.split("/")
+            run_id = self.data.resolve_run(parts[0])
+            phase = parts[-1] if len(parts) > 1 and not parts[-1].isdigit() else None
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        self.call_from_thread(self.show_run, run_id, phase)
+
+    def compare_sweep(self, sweep_id: str) -> None:
+        screen = self.base_screen("compare")
+        if isinstance(screen, screens.CompareScreen):
+            screen.show_sweep(sweep_id)
+
+    def tell(self, message: str, ok: bool = False) -> None:
+        """Put a message on the error line of the screen in front, if it has one."""
+        say = getattr(self.screen, "held_message" if ok else "held_error", None)
+        if callable(say):
+            say(message)
+
+    def new_sweep(self, base: str | None) -> None:
+        """Three hops, each a worker or a dialog: the choices, the dialog, then
+        the form -- built from the image's schema, which `describe` reads --
+        and last the create, which describes the image again to store its
+        description, and writes a config per point."""
+        self.sweep_choices(base)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def sweep_choices(self, base: str | None) -> None:
+        try:
+            choices = self.data.new_sweep_choices()
+        except exceptions.UI as e:
+            self.call_from_thread(self.tell, str(e))
+            return
+        if not choices.images and base is None:
+            self.call_from_thread(self.tell, "no images; add one with 'utrain image add'")
+            return
+        self.call_from_thread(self.ask_sweep, choices, base)
+
+    def ask_sweep(self, choices: data.NewSweepChoices, base: str | None) -> None:
+        run = next((r for r in choices.runs if r.id == base), None)
+
+        def answered(answer: screens.NewSweep | None) -> None:
+            if answer is not None:
+                busy = screens.Busy(self, self.open, f"reading image {answer.image}")
+                self.sweep_form(answer, busy)
+
+        self.ask(screens.NewSweepScreen(choices, run), answered)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def sweep_form(self, spec: screens.NewSweep, busy: screens.Busy) -> None:
+        """A worker: an image no run was created from yet is described first."""
+        try:
+            form = self.data.sweep_form(spec.image, spec.base)
+        except exceptions.UI as e:
+            self.call_from_thread(busy.finish)
+            self.call_from_thread(self.tell, str(e))
+            return
+        except BaseException:
+            self.call_from_thread(busy.finish)
+            raise
+        self.call_from_thread(busy.finish)
+        self.call_from_thread(self.ask_axes, spec, form)
+
+    def ask_axes(self, spec: screens.NewSweep, form: data.SweepForm) -> None:
+        def answered(axes: dict[str, object] | None) -> None:
+            if axes:
+                busy = screens.Busy(self, self.open, f"creating sweep {spec.name}")
+                self.create_sweep(spec, axes, busy)
+
+        self.ask(screens.SweepFormScreen(spec, form), answered)
+
+    @textual.work(thread=True, exclusive=True, group="new-sweep")
+    def create_sweep(
+        self, spec: screens.NewSweep, axes: dict[str, object], busy: screens.Busy
+    ) -> None:
+        try:
+            sweep_id = self.data.create_sweep(spec.name, spec.image, spec.base, axes, spec.compute)
+        except exceptions.UI as e:
+            self.call_from_thread(busy.finish)
+            self.call_from_thread(self.tell, str(e))
+            return
+        except BaseException:
+            self.call_from_thread(busy.finish)
+            raise
+        self.call_from_thread(busy.finish)
+        self.call_from_thread(self.show_sweep, sweep_id)
+        self.call_from_thread(self.tell, f"created sweep {spec.name}; s starts it", True)
 
 
 def run(source: data.Data | None = None) -> None:
