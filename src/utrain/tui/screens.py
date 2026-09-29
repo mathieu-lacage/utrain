@@ -274,15 +274,24 @@ class _Screen(textual.screen.Screen[None]):
         self.timer = self.set_interval(self.REFRESH_SECONDS, self.refresh_data)
         self.refresh_data()
 
+    # The pane `escape` comes back to on a workspace's own screen -- which is
+    # the bottom of its stack, with nothing under it to go back to. None for
+    # a screen pushed over one (a chat, a panel), which `escape` closes.
+    HOME: str | None = None
+
     def action_back(self) -> None:
-        """`escape`: leave this screen.
+        """`escape`: leave this screen, or on a workspace, go back to its list.
 
         MainScreen overrides this with its ladder, since it is where the ladder
         bottoms out: out of the editor or the picker, out of the pane, up one
-        list level, and there it stops -- `q` is how the app is left. A panel
-        (see `_Popover`) is left the same way, which is the point of it being
-        pushed rather than switched to.
+        list level, and there it stops -- `q` is how the app is left. The other
+        workspaces stop at their `HOME` pane the same way. A panel (see
+        `_Popover`) or a chat is closed, which is the point of it being pushed
+        rather than switched to.
         """
+        if self.HOME is not None:
+            self.query_one(self.HOME).focus()
+            return
         self.host.close()
 
     def action_help(self) -> None:
@@ -2937,6 +2946,7 @@ class SystemScreen(_Screen):
     """
 
     WORKSPACE = "system"
+    HOME = "#images"
 
     BINDINGS = [
         textual.binding.Binding("1", "focus_pane('compute')", "compute", show=False),
@@ -3159,6 +3169,7 @@ class SweepsScreen(_Screen):
     """
 
     WORKSPACE = "sweeps"
+    HOME = "#sweeps"
 
     BINDINGS = [
         textual.binding.Binding("1", "focus_pane('sweeps')", "sweeps", show=False),
@@ -4121,6 +4132,7 @@ class CompareScreen(_Screen):
     """
 
     WORKSPACE = "compare"
+    HOME = "#compare-table"
 
     # Every run's config and phase list, and its curve's new points: heavier
     # than the other workspaces' fetches, and a comparison is read rather

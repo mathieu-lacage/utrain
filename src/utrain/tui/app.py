@@ -602,7 +602,10 @@ class UtrainApp(textual.app.App[None]):
         )
 
     def close(self) -> None:
-        self.pop_screen()
+        # A workspace's own screen is the bottom of its mode's stack, and
+        # popping it is an error Textual raises rather than a no-op.
+        if len(self.screen_stack) > 1:
+            self.pop_screen()
 
     def go(self, which: str) -> None:
         """Show a panel -- `images` or `compute` -- over the screen showing.

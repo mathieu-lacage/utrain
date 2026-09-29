@@ -430,3 +430,34 @@ def test_the_raw_bytes_a_terminal_sends_for_alt_reach_the_binding() -> None:
     keys = [e.key for e in parser.feed("\x1by") if isinstance(e, events.Key)]
     keys += [e.key for e in parser.feed("") if isinstance(e, events.Key)]
     assert keys == ["alt+y"]
+
+
+# -- escape --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "home", "other"),
+    [
+        ("alt+r", "#runs", "2"),
+        ("alt+s", "#sweeps", "2"),
+        ("alt+c", "#compare-table", None),
+        ("alt+y", "#images", "1"),
+    ],
+)
+async def test_escape_on_a_workspace_comes_back_to_its_list_and_stays(
+    app: utrain.tui.app.UtrainApp, key: str, home: str, other: str | None
+) -> None:
+    """A workspace's own screen has nothing under it: escape must not close it."""
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press(key)
+        await _settle(app, pilot)
+        screen = app.screen
+        if other is not None:
+            await pilot.press(other)  # into another pane
+            await _settle(app, pilot)
+        for _ in range(3):
+            await pilot.press("escape")
+            await _settle(app, pilot)
+        assert app.screen is screen
+        assert app.focused is screen.query_one(home)
