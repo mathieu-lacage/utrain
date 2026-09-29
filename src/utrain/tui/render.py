@@ -119,8 +119,8 @@ class Plot:
 Cell = str | rich.text.Text
 
 # One mapping, used by both sidebar lists. Run statuses are configuring /
-# queued / running / done / failed / stopped (`queued` is a sweep run waiting
-# for its compute), phase statuses pending / running / done /
+# queued / running / done / failed / stopped (`queued` is a run waiting for
+# its compute), phase statuses pending / running / done /
 # failed / stopped, and the two overlap enough that splitting them would only
 # invite them to drift apart.
 _STATUS_STYLES = {

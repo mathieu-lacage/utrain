@@ -21,7 +21,7 @@ import typing
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import container, exceptions, logs, orchestrator, reconcile
+from . import container, dispatcher, exceptions, logs, orchestrator, types
 from . import db as dbmod
 
 # How long to wait for the container to publish its port. Generous, because it
@@ -123,9 +123,7 @@ def start(
         ).scalar_one_or_none()
         if found is None:
             raise exceptions.UI(f"attempt {attempt} of run '{run_id}' not found")
-    attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
+    dispatcher.ensure(session)
 
     # What the image can do comes first: it is a fact about the image, true
     # whatever state the run is in, so an image that will never serve should say
@@ -143,11 +141,11 @@ def start(
             f"image '{image_key}' does not serve phase '{phase}'; it serves: {offered}"
         )
 
-    # Re-read the status after reconciling: a run whose orchestrator died still
-    # says "running" in the row fetched above. Waiting for the run to end is
+    # Re-read the status: the row fetched above predates the commit in
+    # `dispatcher.ensure`, so it may be stale. Waiting for the run to end is
     # about the GPU -- the phase's own data has been final since it ended.
     status = str(dbmod.get_run(run_id, session)["status"])
-    if status not in reconcile.TERMINAL:
+    if status not in types.TERMINAL:
         raise exceptions.UI(
             f"run '{run_id}' is still {status}; chat is available once the run has finished"
         )

@@ -58,7 +58,6 @@ def _seed_grid(data_dir: pathlib.Path) -> None:
                 image_id=base.IMAGE_ID,
                 spec=json.dumps(spec),
                 state="done",
-                pid=None,
                 created_at=1000.0,
             )
         )

@@ -1,4 +1,4 @@
-"""Sweeps: a grid of runs over some config axes, and the dispatcher that runs it.
+"""Sweeps: a grid of runs over some config axes, started in turn.
 
 A sweep is not a new kind of run. It is a name, an image frozen once for all of
 its points, and a spec -- the axes and the values each takes -- and creating it
@@ -11,14 +11,11 @@ parameters can depend on its GPU (a batch size that fits its memory), so a run
 must not be moved to another one. The runs are spread across the sweep's
 computes round-robin, and each waits for its own.
 
-Starting them is the dispatcher's job. It is a detached process, like the
-orchestrator: it holds a lock in the sweep's dir for as long as it lives, and on
-each tick starts the next queued run on each of the sweep's computes that is
-free -- where free means no run at all is running on it, so runs started by hand
-are respected. It exits when it has nothing left to start, or when the sweep is
-paused or cancelled. Everything it knows is in the database, so a dispatcher
-that dies loses nothing: `reconcile` starts another one for a sweep that is
-still `running` and has runs left to start.
+Starting them is the dispatcher's job, as it is for every queued run (see
+`dispatcher`): while the sweep is `running` it starts the next of its runs on
+each of the sweep's computes that is free -- where free means no run at all is
+running on it, so runs started by hand, and other sweeps' runs, are respected.
+Pausing or cancelling the sweep holds its queued runs back.
 """
 
 import copy
@@ -28,9 +25,6 @@ import json
 import math
 import pathlib
 import re
-import shutil
-import subprocess
-import sys
 import time
 import typing
 import uuid
@@ -39,7 +33,7 @@ import sqlalchemy
 import sqlalchemy.orm
 import yaml
 
-from . import config, container, exceptions, lock, orchestrator, reconcile, runs, types
+from . import config, container, dispatcher, exceptions, orchestrator, runs, types
 from . import db as dbmod
 
 # What the user last asked of a sweep. `done` is not one of them: it is what a
@@ -50,17 +44,9 @@ PAUSED = "paused"
 CANCELLED = "cancelled"
 DONE = "done"
 
-# How often the dispatcher looks for a free compute. A run takes minutes at the
-# least, so a few seconds of latency before the next one starts costs nothing,
-# and each tick reconciles every running run, which is a read of each one's
-# lock.
-_TICK_SECONDS = 2.0
-
 # A sweep's name is how it is addressed (`@lr-depth`) and the stem of its runs'
 # names, so it is held to what reads well in both.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-_TERMINAL = ("done", "failed", "stopped")
 
 
 def name_problem(name: str) -> str | None:
@@ -384,7 +370,6 @@ def create_sweep(
             image_id=img.image_id,
             spec=spec.to_json(),
             state=DRAFT,
-            pid=None,
             created_at=time.time(),
         )
     )
@@ -435,6 +420,7 @@ def _create_points(
                 # Strictly increasing, so that creation order -- grid order --
                 # is also what `created_at` sorts by.
                 created_at=now + index * 1e-6,
+                queued_at=now + index * 1e-6,
                 sweep_id=sweep_id,
                 sweep_point=json.dumps(point),
             )
@@ -530,27 +516,14 @@ def _sweep_row(
     )
 
 
-def _reconcile_runs(session: sqlalchemy.orm.Session, sweep_id: str | None = None) -> None:
-    """Finalize any running run whose orchestrator died -- all of them, or a sweep's."""
-    query = sqlalchemy.select(dbmod.runs.c.id).where(dbmod.runs.c.status == "running")
-    if sweep_id is not None:
-        query = query.where(dbmod.runs.c.sweep_id == sweep_id)
-    for run_id in session.execute(query).scalars().fetchall():
-        attempt = dbmod.latest_attempt(str(run_id), session)
-        if attempt is not None:
-            reconcile.reconcile_attempt(str(run_id), attempt, session)
-
-
 def list_sweeps(session: sqlalchemy.orm.Session) -> list[types.SweepRow]:
-    """Every sweep, newest first, after repairing what a dead process left behind."""
-    _reconcile_runs(session)
+    """Every sweep, newest first."""
+    dispatcher.ensure(session)
     rows = (
         session.execute(sqlalchemy.select(dbmod.sweeps).order_by(dbmod.sweeps.c.created_at.desc()))
         .mappings()
         .fetchall()
     )
-    for row in rows:
-        ensure_dispatcher(str(row["id"]), session)
     return [_sweep_row(r, session) for r in rows]
 
 
@@ -567,8 +540,7 @@ def list_sweep_ids(session: sqlalchemy.orm.Session) -> list[str]:
 
 def get_sweep(ref: str, session: sqlalchemy.orm.Session) -> types.SweepDetail:
     sweep_id = resolve_sweep_id(ref, session)
-    _reconcile_runs(session, sweep_id)
-    ensure_dispatcher(sweep_id, session)
+    dispatcher.ensure(session)
     row = _row(sweep_id, session)
     run_rows = (
         session.execute(
@@ -594,6 +566,30 @@ def _set_state(sweep_id: str, state: str, session: sqlalchemy.orm.Session) -> No
     )
 
 
+def _to_back_of_queue(sweep_id: str, session: sqlalchemy.orm.Session) -> None:
+    """Queue the sweep's queued runs behind every run already waiting.
+
+    A sweep's runs join the queue when it starts, not when they were created,
+    and keep grid order among themselves.
+    """
+    now = time.time()
+    queued = (
+        session.execute(
+            sqlalchemy.select(dbmod.runs.c.id)
+            .where((dbmod.runs.c.sweep_id == sweep_id) & (dbmod.runs.c.status == "queued"))
+            .order_by(dbmod.runs.c.created_at)
+        )
+        .scalars()
+        .fetchall()
+    )
+    for i, run_id in enumerate(queued):
+        session.execute(
+            sqlalchemy.update(dbmod.runs)
+            .where(dbmod.runs.c.id == run_id)
+            .values(queued_at=now + i * 1e-6)
+        )
+
+
 def start_sweep(ref: str, session: sqlalchemy.orm.Session) -> str:
     """Hand a draft or paused sweep to a dispatcher. Also how a pause is resumed."""
     sweep_id = resolve_sweep_id(ref, session)
@@ -602,7 +598,8 @@ def start_sweep(ref: str, session: sqlalchemy.orm.Session) -> str:
         raise exceptions.UI("sweep was cancelled; 'sweep retry' requeues its runs")
     _preflight(sweep_id, session)
     _set_state(sweep_id, RUNNING, session)
-    ensure_dispatcher(sweep_id, session)
+    _to_back_of_queue(sweep_id, session)
+    dispatcher.ensure(session)
     return sweep_id
 
 
@@ -631,24 +628,21 @@ def cancel_sweep(ref: str, session: sqlalchemy.orm.Session) -> str:
     """Stop the sweep's running runs and drop its queued ones.
 
     Dropped runs are kept, as `stopped` runs that never started, rather than
-    deleted: the grid stays whole, and `sweep retry` can queue them again.
+    deleted: the grid stays whole, and `sweep retry` can queue them again. A
+    running run reads `stopped` once its orchestrator has exited.
     """
     sweep_id = resolve_sweep_id(ref, session)
     _set_state(sweep_id, CANCELLED, session)
-    _reconcile_runs(session, sweep_id)
-    for run_id, status in session.execute(
-        sqlalchemy.select(dbmod.runs.c.id, dbmod.runs.c.status).where(
-            dbmod.runs.c.sweep_id == sweep_id
-        )
-    ).fetchall():
-        if status == "running":
-            runs.stop_run(str(run_id), session)
-        elif status == "queued":
-            session.execute(
-                sqlalchemy.update(dbmod.runs)
-                .where(dbmod.runs.c.id == run_id)
-                .values(status="stopped")
+    for run_id in (
+        session.execute(
+            sqlalchemy.select(dbmod.runs.c.id).where(
+                (dbmod.runs.c.sweep_id == sweep_id) & dbmod.runs.c.status.in_(["running", "queued"])
             )
+        )
+        .scalars()
+        .fetchall()
+    ):
+        runs.stop_run(str(run_id), session)
     return sweep_id
 
 
@@ -661,14 +655,18 @@ def retry_sweep(ref: str, session: sqlalchemy.orm.Session) -> tuple[str, int]:
     """
     sweep_id = resolve_sweep_id(ref, session)
     _preflight(sweep_id, session)
-    _reconcile_runs(session, sweep_id)
     retryable = (dbmod.runs.c.sweep_id == sweep_id) & (
         dbmod.runs.c.status.in_(["failed", "stopped"])
     )
     n = len(session.execute(sqlalchemy.select(dbmod.runs.c.id).where(retryable)).fetchall())
-    session.execute(sqlalchemy.update(dbmod.runs).where(retryable).values(status="queued"))
+    session.execute(
+        sqlalchemy.update(dbmod.runs)
+        .where(retryable)
+        .values(status="queued", queued_from_phase=None)
+    )
     _set_state(sweep_id, RUNNING, session)
-    ensure_dispatcher(sweep_id, session)
+    _to_back_of_queue(sweep_id, session)
+    dispatcher.ensure(session)
     return sweep_id, n
 
 
@@ -731,14 +729,13 @@ def extend_sweep(
         settings,
         session,
     )
-    ensure_dispatcher(sweep_id, session)
+    dispatcher.ensure(session)
     return sweep_id, len(points)
 
 
 def delete_sweep(ref: str, force: bool, session: sqlalchemy.orm.Session) -> tuple[str, int]:
     """Delete a sweep and every one of its runs. Returns the id and the run count."""
     sweep_id = resolve_sweep_id(ref, session)
-    _reconcile_runs(session, sweep_id)
     run_ids = [
         (str(i), str(s))
         for i, s in session.execute(
@@ -754,154 +751,7 @@ def delete_sweep(ref: str, force: bool, session: sqlalchemy.orm.Session) -> tupl
     for run_id, _ in run_ids:
         runs.delete_run(run_id, force=True, session=session)
     session.execute(sqlalchemy.delete(dbmod.sweeps).where(dbmod.sweeps.c.id == sweep_id))
-    settings: config.Settings = session.info["settings"]
-    shutil.rmtree(settings.sweeps_dir / sweep_id, ignore_errors=True)
     return sweep_id, len(run_ids)
-
-
-# -- dispatching ------------------------------------------------------------
-
-
-def sweep_dir(sweep_id: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
-    settings: config.Settings = session.info["settings"]
-    return settings.sweeps_dir / sweep_id
-
-
-def dispatcher_alive(sweep_id: str, session: sqlalchemy.orm.Session) -> bool:
-    pid = _row(sweep_id, session)["pid"]
-    return lock.is_held(
-        sweep_dir(sweep_id, session), int(pid) if pid is not None else None, lock.DISPATCHER
-    )
-
-
-def ensure_dispatcher(sweep_id: str, session: sqlalchemy.orm.Session) -> None:
-    """Start a dispatcher for a running sweep with work left, if none is alive.
-
-    The repair `reconcile` is for runs, applied to sweeps: called on every read
-    of a sweep, it is a no-op while the dispatcher lives, and restarts one that
-    died -- or that exited because the sweep had run out of work before
-    `extend` or `retry` gave it more.
-    """
-    row = _row(sweep_id, session)
-    if str(row["state"]) != RUNNING:
-        return
-    if "queued" not in _run_statuses(sweep_id, session):
-        return
-    if dispatcher_alive(sweep_id, session):
-        return
-    directory = sweep_dir(sweep_id, session)
-    directory.mkdir(parents=True, exist_ok=True)
-    # Committed first: the dispatcher is another process, and must see the
-    # state and the runs this session has just written.
-    session.commit()
-    # The child keeps its own copy of the descriptor; the parent's is closed.
-    with open(directory / "dispatcher.log", "ab") as log:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "utrain.cli.main", "_dispatch", sweep_id],
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    session.execute(
-        sqlalchemy.update(dbmod.sweeps).where(dbmod.sweeps.c.id == sweep_id).values(pid=proc.pid)
-    )
-    session.commit()
-
-
-def start_queued(run_id: str, session: sqlalchemy.orm.Session) -> None:
-    """Start one queued run: its first attempt, or a new one if it ran before."""
-    if dbmod.latest_attempt(run_id, session) is None:
-        runs.start_run(run_id, session)
-    else:
-        runs.restart_run(run_id, None, session)
-
-
-def dispatch_once(
-    sweep_id: str,
-    session: sqlalchemy.orm.Session,
-    start: typing.Callable[[str, sqlalchemy.orm.Session], None] = start_queued,
-    log: typing.Callable[[str], None] = print,
-) -> bool:
-    """One tick of the dispatcher. Returns whether there is anything left to do.
-
-    For each of the sweep's computes that is free -- no run at all running on
-    it -- start the next queued run assigned to it. A run that cannot be
-    started (its image gone, the GPU toolkit missing) is marked failed rather
-    than retried on every tick, and the reason goes to the dispatcher's log.
-    """
-    row = _row(sweep_id, session)
-    if str(row["state"]) != RUNNING:
-        return False
-    spec = Spec.from_json(str(row["spec"]))
-
-    _reconcile_runs(session)
-    busy = {
-        str(c)
-        for c in session.execute(
-            sqlalchemy.select(dbmod.runs.c.compute).where(dbmod.runs.c.status == "running")
-        )
-        .scalars()
-        .fetchall()
-    }
-    queued = session.execute(
-        sqlalchemy.select(dbmod.runs.c.id, dbmod.runs.c.compute)
-        .where((dbmod.runs.c.sweep_id == sweep_id) & (dbmod.runs.c.status == "queued"))
-        .order_by(dbmod.runs.c.created_at)
-    ).fetchall()
-    if not queued:
-        return False
-
-    for compute in spec.compute:
-        if compute in busy:
-            continue
-        run_id = next((str(i) for i, c in queued if c == compute), None)
-        if run_id is None:
-            continue
-        try:
-            start(run_id, session)
-            log(f"dispatcher: started {run_id} on {compute}")
-        except Exception as e:
-            # Anything, not only a UI error: a dispatcher that dies here is
-            # restarted by the next read of the sweep, to fail on the same run
-            # again. Failing the run instead lets the rest of the grid go on,
-            # and the log says why.
-            session.rollback()
-            log(f"dispatcher: could not start {run_id} on {compute}: {e!r}")
-            session.execute(
-                sqlalchemy.update(dbmod.runs)
-                .where(dbmod.runs.c.id == run_id)
-                .values(status="failed")
-            )
-        busy.add(compute)
-        session.commit()
-    return True
-
-
-def run_dispatcher(sweep_id: str, settings: config.Settings) -> None:
-    """The dispatcher process: tick until the sweep has nothing left to start."""
-    directory = settings.sweeps_dir / sweep_id
-    directory.mkdir(parents=True, exist_ok=True)
-    # Held for the life of the process; the kernel releases it however that
-    # ends, which is what `dispatcher_alive` reads.
-    held = lock.hold(directory, lock.DISPATCHER)
-    engine = dbmod.create_engine(settings)
-    try:
-        while True:
-            with sqlalchemy.orm.Session(engine) as session:
-                session.info["settings"] = settings
-                more = dispatch_once(sweep_id, session, log=_log)
-                session.commit()
-            if not more:
-                _log("dispatcher: nothing left to start")
-                return
-            time.sleep(_TICK_SECONDS)
-    finally:
-        held.close()
-
-
-def _log(message: str) -> None:
-    print(message)
-    sys.stdout.flush()
 
 
 # -- spec files -------------------------------------------------------------

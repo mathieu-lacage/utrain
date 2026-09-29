@@ -15,6 +15,9 @@ Two conventions matter for anything rendering these:
 import dataclasses
 import pathlib
 
+# The statuses a run, an attempt or a phase ends in.
+TERMINAL = ("done", "failed", "stopped")
+
 
 @dataclasses.dataclass(frozen=True)
 class RunRow:

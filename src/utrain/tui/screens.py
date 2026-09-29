@@ -46,7 +46,7 @@ import textual.widgets
 import textual.widgets.option_list
 
 from .. import chat as chatmod
-from .. import exceptions, metrics, reconcile, serve, tuistate, types
+from .. import exceptions, metrics, serve, tuistate, types
 from .. import sweeps as sweepsmod
 from . import commands, data, export, menus, render, widgets
 from . import compare as comparemod
@@ -114,13 +114,12 @@ _CHAT_TEMPERATURE = 0.8
 _CHAT_FLUSH_SECONDS = 0.05
 
 # Refresh cadence. Fast enough that a training curve visibly grows, slow enough
-# that the query layer's reconcile-and-read costs nothing noticeable.
+# that the query layer's reads cost nothing noticeable.
 _REFRESH_SECONDS = 1.0
 
 # How long the cursor must sit still before the panes are fetched for it. Short
 # enough not to feel like lag on a deliberate move, long enough that scanning a
-# list costs one fetch rather than one per row -- and a fetch reconciles every
-# run against its directory, which is a write.
+# list costs one fetch rather than one per row.
 _SETTLE_SECONDS = 0.15
 
 # How long a message that answers a keypress stays up. Every refresh clears the
@@ -1830,7 +1829,8 @@ class MainScreen(_Screen):
             if action == "start_run":
                 return True if run.status == "configuring" else None
             if action == "stop_run":
-                return True if run.status == "running" else None
+                # A queued run is stopped by taking it off the queue.
+                return True if run.status in ("running", "queued") else None
             if action == "restart_run":
                 # Every status but `configuring`, which is the only one
                 # `runs.restart_run` refuses.
@@ -2099,7 +2099,7 @@ class MainScreen(_Screen):
         phase = self.chat_phase()
         if phase is not None and phase not in servable:
             return f"image '{run.image}' does not serve phase '{phase}'"
-        if run.status not in reconcile.TERMINAL:
+        if run.status not in types.TERMINAL:
             return f"run '{run.name}' is still {run.status}; chat needs a finished run"
         if phase is None:
             if not any(e.status == "done" and e.phase in servable for e in self.phases):

@@ -56,6 +56,6 @@ class Settings(pydantic_settings.BaseSettings):
         return self.data_dir / "runs"
 
     @property
-    def sweeps_dir(self) -> pathlib.Path:
-        """Where each sweep's dispatcher keeps its lock and its log."""
-        return self.data_dir / "sweeps"
+    def dispatcher_dir(self) -> pathlib.Path:
+        """Where the dispatcher keeps its lock and its log."""
+        return self.data_dir / "dispatcher"

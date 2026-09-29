@@ -52,7 +52,6 @@ def _seed_sweep(data_dir: pathlib.Path) -> None:
                 image_id=base.IMAGE_ID,
                 spec=json.dumps(spec),
                 state="draft",
-                pid=None,
                 created_at=900.0,
             )
         )

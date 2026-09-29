@@ -3,7 +3,7 @@ import pathlib
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import address, container, exceptions, logs, metrics, reconcile, runs, types
+from . import address, container, dispatcher, exceptions, logs, metrics, runs, types
 from . import db as dbmod
 
 
@@ -39,7 +39,7 @@ def list_phases(
     if attempt_n is None:
         raise exceptions.UI("run has no attempts yet")
 
-    reconcile.reconcile_attempt(run_id, attempt_n, session)
+    dispatcher.ensure(session)
 
     attempt_row = (
         session.execute(
@@ -209,7 +209,7 @@ def _resolve_phase(
     if attempt_n is None:
         raise exceptions.UI("run has no attempts yet")
 
-    reconcile.reconcile_attempt(run_id, attempt_n, session)
+    dispatcher.ensure(session)
 
     run_dir = dbmod.run_dir(run_id, session)
     return run_id, attempt_n, phase, run_dir / "attempt" / str(attempt_n)

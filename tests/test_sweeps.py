@@ -3,11 +3,11 @@
 Podman is stubbed and the dispatcher's `start` is replaced by a recorder, so
 nothing here starts a container: what is under test is which runs a sweep
 creates, with what config, and which of them a tick of the dispatcher picks.
+The dispatcher's own rules, whatever the runs, are in `test_dispatcher`.
 """
 
 import json
 import pathlib
-import types
 import typing
 
 import pytest
@@ -21,6 +21,7 @@ import utrain.config
 import utrain.container.podman
 import utrain.container.schema
 import utrain.db
+import utrain.dispatcher
 import utrain.exceptions
 import utrain.lock
 import utrain.orchestrator
@@ -115,9 +116,6 @@ def podman(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     # The GPU toolkit check has its own test below; everything else here is
     # about which runs start, not whether the host could run them.
     monkeypatch.setattr(utrain.orchestrator, "ensure_gpu_toolkit", lambda compute: None)
-    # No dispatcher process in unit tests: `ensure_dispatcher` is exercised on
-    # its own below, with Popen recorded.
-    monkeypatch.setattr(utrain.sweeps, "ensure_dispatcher", lambda sweep_id, session: None)
 
 
 @pytest.fixture()
@@ -391,23 +389,23 @@ def _ids(session: sqlalchemy.orm.Session) -> list[str]:
     return [r.id for r in utrain.sweeps.get_sweep("lr-depth", session).runs]
 
 
-@pytest.fixture()
-def no_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runs marked running by `_Starts` have no orchestrator to find alive."""
-    monkeypatch.setattr(utrain.sweeps, "_reconcile_runs", lambda session, sweep_id=None: None)
+def _tick(session: sqlalchemy.orm.Session, starts: "_Starts", log: list[str] | None = None) -> bool:
+    return utrain.dispatcher.tick(
+        session, starts, log=log.append if log is not None else lambda m: None
+    )
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_draft_sweep_is_not_dispatched(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
-    sweep_id = _create(session, settings)
+    _create(session, settings)
     starts = _Starts()
-    assert not utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    assert not _tick(session, starts)
     assert starts.started == []
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_tick_starts_one_run_per_free_compute_in_grid_order(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -416,22 +414,22 @@ def test_a_tick_starts_one_run_per_free_compute_in_grid_order(
     ids = _ids(session)
     starts = _Starts()
 
-    assert utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    assert _tick(session, starts)
     assert starts.started == [ids[0], ids[1]]
 
     # Both computes are busy now: the next tick starts nothing.
-    assert utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    assert _tick(session, starts)
     assert starts.started == [ids[0], ids[1]]
 
     # gpu0's run finishes: its next run starts, and only that one.
     session.execute(
         sqlalchemy.update(utrain.db.runs).where(utrain.db.runs.c.id == ids[0]).values(status="done")
     )
-    utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    _tick(session, starts)
     assert starts.started == [ids[0], ids[1], ids[2]]
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_run_waits_for_its_own_compute_even_when_another_is_free(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -439,16 +437,16 @@ def test_a_run_waits_for_its_own_compute_even_when_another_is_free(
     utrain.sweeps.start_sweep(sweep_id, session)
     ids = _ids(session)  # gpu0, gpu1, gpu0
     starts = _Starts()
-    utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    _tick(session, starts)
     # gpu1 finishes, gpu0 is still busy: the third run is gpu0's, so it waits.
     session.execute(
         sqlalchemy.update(utrain.db.runs).where(utrain.db.runs.c.id == ids[1]).values(status="done")
     )
-    utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    _tick(session, starts)
     assert starts.started == [ids[0], ids[1]]
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_compute_busy_with_a_run_started_by_hand_is_left_alone(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -467,11 +465,11 @@ def test_a_compute_busy_with_a_run_started_by_hand_is_left_alone(
         )
     )
     starts = _Starts()
-    utrain.sweeps.dispatch_once(sweep_id, session, starts, log=lambda m: None)
+    _tick(session, starts)
     assert starts.started == [_ids(session)[1]]
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_run_that_cannot_start_is_failed_rather_than_retried_forever(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -482,12 +480,12 @@ def test_a_run_that_cannot_start_is_failed_rather_than_retried_forever(
     session.commit()
     ids = _ids(session)
     messages: list[str] = []
-    utrain.sweeps.dispatch_once(sweep_id, session, _Starts(fail={ids[0]}), log=messages.append)
+    _tick(session, _Starts(fail={ids[0]}), messages)
     assert _statuses(session, sweep_id)[:2] == ["failed", "running"]
     assert any("no toolkit" in m for m in messages)
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_a_paused_sweep_starts_nothing_and_a_finished_one_is_done(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -495,7 +493,7 @@ def test_a_paused_sweep_starts_nothing_and_a_finished_one_is_done(
     utrain.sweeps.start_sweep(sweep_id, session)
     utrain.sweeps.pause_sweep(sweep_id, session)
     assert utrain.sweeps.get_sweep(sweep_id, session).sweep.status == "paused"
-    assert not utrain.sweeps.dispatch_once(sweep_id, session, _Starts(), log=lambda m: None)
+    assert not _tick(session, _Starts())
 
     utrain.sweeps.start_sweep(sweep_id, session)
     session.execute(
@@ -504,7 +502,7 @@ def test_a_paused_sweep_starts_nothing_and_a_finished_one_is_done(
         .values(status="done")
     )
     assert utrain.sweeps.get_sweep(sweep_id, session).sweep.status == "done"
-    assert not utrain.sweeps.dispatch_once(sweep_id, session, _Starts(), log=lambda m: None)
+    assert not _tick(session, _Starts())
 
 
 # -- lifecycle ------------------------------------------------------------
@@ -524,7 +522,7 @@ def test_starting_a_gpu_sweep_without_the_toolkit_is_refused_up_front(
     assert utrain.sweeps.get_sweep(sweep_id, session).sweep.status == "draft"
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_cancel_stops_queued_runs_and_retry_queues_them_again(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -561,7 +559,7 @@ def test_extend_adds_runs_for_new_points_only(
         utrain.sweeps.extend_sweep(sweep_id, {"phases.pretrain.resume": None}, settings, session)
 
 
-@pytest.mark.usefixtures("podman", "no_reconcile")
+@pytest.mark.usefixtures("podman")
 def test_delete_removes_the_sweep_and_its_runs(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
@@ -570,48 +568,6 @@ def test_delete_removes_the_sweep_and_its_runs(
     assert n == 4
     assert utrain.sweeps.list_sweeps(session) == []
     assert session.execute(sqlalchemy.select(utrain.db.runs)).fetchall() == []
-
-
-def test_ensure_dispatcher_starts_one_only_when_there_is_work(
-    monkeypatch: pytest.MonkeyPatch,
-    session: sqlalchemy.orm.Session,
-    settings: utrain.config.Settings,
-    tmp_path: pathlib.Path,
-) -> None:
-    spawned: list[list[str]] = []
-
-    class _Proc:
-        pid = 4242
-
-    def popen(args: list[str], **kwargs: object) -> _Proc:
-        spawned.append(args)
-        return _Proc()
-
-    real_ensure = utrain.sweeps.ensure_dispatcher
-    # Create with the podman stubs, dispatcher disabled...
-    monkeypatch.setattr(utrain.container.podman, "list_presets", lambda: {"img": "localhost/img"})
-    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: FROZEN_ID)
-    monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: _describe())
-    monkeypatch.setattr(utrain.sweeps, "ensure_dispatcher", lambda sweep_id, session: None)
-    sweep_id = _create(session, settings, compute=["cpu"])
-    # ...then the real one, with Popen recorded and no dispatcher alive.
-    monkeypatch.setattr(utrain.sweeps, "ensure_dispatcher", real_ensure)
-    # The module's own name for `subprocess`, not the module: patching
-    # `subprocess.Popen` itself would reach every caller in the process,
-    # conftest's podman sweep at teardown included.
-    monkeypatch.setattr(utrain.sweeps, "subprocess", types.SimpleNamespace(Popen=popen))
-    monkeypatch.setattr(utrain.sweeps.lock, "is_held", lambda *a: False)
-
-    real_ensure(sweep_id, session)
-    assert spawned == []  # still a draft
-
-    utrain.sweeps.start_sweep(sweep_id, session)
-    assert len(spawned) == 1 and spawned[0][-2:] == ["_dispatch", sweep_id]
-    assert utrain.sweeps._row(sweep_id, session)["pid"] == 4242  # pyright: ignore[reportPrivateUsage]
-
-    monkeypatch.setattr(utrain.sweeps.lock, "is_held", lambda *a: True)
-    real_ensure(sweep_id, session)
-    assert len(spawned) == 1  # alive: nothing to do
 
 
 # -- rendering ------------------------------------------------------------

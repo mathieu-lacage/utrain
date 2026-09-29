@@ -1,7 +1,7 @@
 """Creating and migrating the database, from many sessions at once.
 
 The TUI opens sessions from several worker threads the moment it starts, and
-the orchestrator and the sweep dispatcher are processes of their own, so the
+the orchestrator and the dispatcher are processes of their own, so the
 first ones to reach a fresh or older database race to create and migrate it.
 """
 
@@ -68,3 +68,30 @@ def test_many_sessions_on_an_older_database_migrate_it_once(tmp_path: pathlib.Pa
         assert list(names) == ["old"]
         tables = sqlalchemy.inspect(session.connection()).get_table_names()
         assert {"sweeps", "tui_state"} <= set(tables)
+
+
+def test_runs_queued_before_the_queue_had_an_order_wait_in_creation_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = utrain.config.Settings(data_dir=tmp_path)
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute(
+            "CREATE TABLE runs (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT NOT NULL,"
+            " image_id TEXT NOT NULL, compute TEXT NOT NULL, status TEXT NOT NULL,"
+            " config_hash TEXT, created_at FLOAT NOT NULL, sweep_id TEXT, sweep_point TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO runs VALUES ('q', 'q', 'img', 'x', 'cpu', 'queued', NULL, 5.0, NULL, NULL)"
+        )
+        conn.execute(
+            "INSERT INTO runs VALUES ('d', 'd', 'img', 'x', 'cpu', 'done', NULL, 6.0, NULL, NULL)"
+        )
+
+    with utrain.db.with_db(settings) as session:
+        queued_at = dict(
+            session.execute(sqlalchemy.select(utrain.db.runs.c.id, utrain.db.runs.c.queued_at))
+            .tuples()
+            .all()
+        )
+    assert queued_at == {"q": 5.0, "d": None}

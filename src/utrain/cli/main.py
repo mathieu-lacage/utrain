@@ -16,6 +16,7 @@ from .. import (
     attempts,
     compute,
     config,
+    dispatcher,
     exceptions,
     images,
     orchestrator,
@@ -41,6 +42,11 @@ def db_command(
 
 # How much of a phase's stdout log `phase show` echoes.
 _PHASE_LOG_TAIL = 20
+
+# How long `run start`, `run restart` and `run stop` wait for the dispatcher to
+# act on them before printing the run as it stands. Long enough for a stopped
+# container to exit, which a restart of a running run waits for as well.
+_DISPATCH_WAIT_SECONDS = 30.0
 
 
 def _run_id(arg: str) -> str:
@@ -204,12 +210,16 @@ def _cmd_run_create(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
 
 @db_command
 def _cmd_run_start(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(runs.start_run(_run_id(args.id), session), session)
+    run_id = runs.start_run(_run_id(args.id), session)
+    runs.wait_until_started(run_id, session, _DISPATCH_WAIT_SECONDS)
+    _print_run_row(run_id, session)
 
 
 @db_command
 def _cmd_run_stop(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(runs.stop_run(_run_id(args.id), session), session)
+    run_id = runs.stop_run(_run_id(args.id), session)
+    runs.wait_until_ended(run_id, session, _DISPATCH_WAIT_SECONDS)
+    _print_run_row(run_id, session)
 
 
 @db_command
@@ -217,7 +227,9 @@ def _cmd_run_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) 
     a = address.parse(args.addr, session)
     if a.attempt is not None and a.phase is None:
         raise exceptions.UI(f"restart takes RUN or RUN/PHASE, got '{args.addr}'")
-    _print_run_row(runs.restart_run(a.run_id, a.phase, session), session)
+    run_id = runs.restart_run(a.run_id, a.phase, session)
+    runs.wait_until_started(run_id, session, _DISPATCH_WAIT_SECONDS)
+    _print_run_row(run_id, session)
 
 
 def _cmd_run_delete(args: argparse.Namespace) -> None:
@@ -303,7 +315,9 @@ def _cmd_phase_show(session: sqlalchemy.orm.Session, args: argparse.Namespace) -
 
 @db_command
 def _cmd_phase_restart(session: sqlalchemy.orm.Session, args: argparse.Namespace) -> None:
-    _print_run_row(phases.restart_phase(args.addr, session), session)
+    run_id = phases.restart_phase(args.addr, session)
+    runs.wait_until_started(run_id, session, _DISPATCH_WAIT_SECONDS)
+    _print_run_row(run_id, session)
 
 
 def _axes_args(values: list[str] | None) -> dict[str, object]:
@@ -408,7 +422,7 @@ def _cmd_sweep_delete(session: sqlalchemy.orm.Session, args: argparse.Namespace)
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> None:
-    sweeps.run_dispatcher(args.sweep_id, config.Settings())
+    dispatcher.run(config.Settings())
 
 
 def _cmd_store_gc(args: argparse.Namespace) -> None:
@@ -686,9 +700,8 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--from-phase", dest="from_phase", default=None)
     orch.set_defaults(func=_cmd_orchestrate)
 
-    # hidden _dispatch subcommand: a sweep's dispatcher process
+    # hidden _dispatch subcommand: the dispatcher process
     dispatch = sub.add_parser("_dispatch")
-    dispatch.add_argument("sweep_id")
     dispatch.set_defaults(func=_cmd_dispatch)
 
     sub.metavar = "{compute,image,run,attempt,phase,sweep,store,tui}"

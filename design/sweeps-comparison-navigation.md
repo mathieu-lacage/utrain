@@ -116,7 +116,7 @@ The current model (see the module docstring of `tui/screens.py`):
                     ┌─────────┐        ┌─────────┐
                     │  image  │        │ compute │
                     └────▲────┘        └────▲────┘
-                         │ frozen id        │ fixed at creation   
+                         │ frozen id        │ fixed at creation
  ┌─────────┐ generates ┌─┴──────────────────┴─┐  has  ┌─────────┐  has  ┌─────────────────┐
  │  sweep  ├──────────►│          run          ├──────►│ attempt ├──────►│      phase      │
  └────┬────┘           └───────────▲───────────┘       └─────────┘       │ metrics · log   │

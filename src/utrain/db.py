@@ -31,6 +31,14 @@ runs = sqlalchemy.Table(
     # created on its own. See `utrain.sweeps`.
     sqlalchemy.Column("sweep_id", sqlalchemy.Text, nullable=True),
     sqlalchemy.Column("sweep_point", sqlalchemy.Text, nullable=True),
+    # When the run last became `queued`, which orders the dispatcher's queue:
+    # a run requeued by a retry goes behind the runs already waiting. Null for
+    # a run that was never queued.
+    sqlalchemy.Column("queued_at", sqlalchemy.Float, nullable=True),
+    # The phase a queued restart starts from, for the dispatcher to hand the
+    # orchestrator. Null for a restart from the first phase, and for a first
+    # start.
+    sqlalchemy.Column("queued_from_phase", sqlalchemy.Text, nullable=True),
 )
 
 sweeps = sqlalchemy.Table(
@@ -47,12 +55,10 @@ sweeps = sqlalchemy.Table(
     # The spec as JSON: axes, replicate axes, computes and base run. See
     # `sweeps.Spec`.
     sqlalchemy.Column("spec", sqlalchemy.Text, nullable=False),
-    # What the user last asked of the dispatcher: draft, running, paused or
-    # cancelled. Whether the sweep is *done* is derived from its runs.
+    # What the user last asked of the sweep: draft, running, paused or
+    # cancelled. The dispatcher starts a sweep's queued runs only while it is
+    # running. Whether the sweep is *done* is derived from its runs.
     sqlalchemy.Column("state", sqlalchemy.Text, nullable=False),
-    # The detached dispatcher's pid, as `run_attempts.pid` is the
-    # orchestrator's: a fallback for `lock.is_held`.
-    sqlalchemy.Column("pid", sqlalchemy.Integer, nullable=True),
     sqlalchemy.Column("created_at", sqlalchemy.Float, nullable=False),
 )
 
@@ -117,7 +123,7 @@ def init_db(engine: sqlalchemy.Engine) -> None:
     """Create the tables and bring an older schema up to date.
 
     Safe to race. The TUI opens sessions from several threads at once, and the
-    orchestrator and the sweep dispatcher are processes of their own: two of
+    orchestrator and the dispatcher are processes of their own: two of
     them each checking that a table is missing and then creating it would have
     the second fail with "table already exists". So the check-and-create runs
     under `BEGIN IMMEDIATE`, SQLite's write lock, which the others wait on (see
@@ -152,6 +158,8 @@ _RUNS_COLUMNS = [
     ("created_at", "REAL NOT NULL DEFAULT 0"),
     ("sweep_id", "TEXT"),
     ("sweep_point", "TEXT"),
+    ("queued_at", "REAL"),
+    ("queued_from_phase", "TEXT"),
 ]
 
 
@@ -181,6 +189,12 @@ def _migrate(conn: sqlalchemy.Connection) -> None:
         for col, ddl in _RUNS_COLUMNS:
             if col not in existing["runs"]:
                 conn.execute(sqlalchemy.text(f"ALTER TABLE runs ADD COLUMN {col} {ddl}"))
+        # Runs queued before `queued_at` existed wait in the order they were
+        # created, as they did then.
+        if "queued_at" not in existing["runs"]:
+            conn.execute(
+                sqlalchemy.text("UPDATE runs SET queued_at = created_at WHERE status = 'queued'")
+            )
 
     # run_dir used to be stored as an absolute path, frozen at creation time,
     # which broke once the data directory was moved elsewhere. It's now

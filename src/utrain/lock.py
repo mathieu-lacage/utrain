@@ -45,8 +45,8 @@ _ACQUIRE_TIMEOUT = 2.0
 _ACQUIRE_INTERVAL = 0.01
 
 
-# The lock file's name. An orchestrator owns an attempt dir; a sweep's
-# dispatcher owns the sweep's dir and takes the same kind of lock under its
+# The lock file's name. An orchestrator owns an attempt dir; the dispatcher
+# owns its own dir under the data dir and takes the same kind of lock under its
 # own name, so that one reading of "is it alive" serves both.
 ORCHESTRATOR = "orchestrator.lock"
 DISPATCHER = "dispatcher.lock"
@@ -82,7 +82,8 @@ def hold(attempt_dir: pathlib.Path, name: str = ORCHESTRATOR) -> typing.BinaryIO
         except OSError:
             if time.time() >= deadline:
                 f.close()
-                raise exceptions.UI(f"an orchestrator is already running for {attempt_dir}")
+                owner = name.removesuffix(".lock")
+                raise exceptions.UI(f"another {owner} is already running for {attempt_dir}")
             time.sleep(_ACQUIRE_INTERVAL)
 
     f.truncate(0)

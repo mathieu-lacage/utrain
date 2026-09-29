@@ -1,13 +1,10 @@
 import collections.abc
 import contextlib
-import hashlib
 import json
 import os
 import pathlib
 import shutil
 import signal
-import subprocess
-import sys
 import time
 import typing
 import uuid
@@ -16,12 +13,8 @@ import sqlalchemy
 import sqlalchemy.orm
 import yaml
 
-from . import compute, config, container, exceptions, logs, orchestrator, reconcile, types
+from . import compute, config, container, dispatcher, exceptions, logs, orchestrator, types
 from . import db as dbmod
-
-
-def _config_hash(path: pathlib.Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def resolve_compute(compute_spec: str) -> str:
@@ -117,11 +110,7 @@ def _run_row(
 
 
 def list_runs(session: sqlalchemy.orm.Session) -> list[types.RunRow]:
-    for run_id in list_run_ids(session):
-        attempt_n = dbmod.latest_attempt(run_id, session)
-        if attempt_n is not None:
-            reconcile.reconcile_attempt(run_id, attempt_n, session)
-
+    dispatcher.ensure(session)
     rows = (
         session.execute(sqlalchemy.select(dbmod.runs).order_by(dbmod.runs.c.created_at.desc()))
         .mappings()
@@ -336,35 +325,27 @@ def get_run_detail(
     timeout: int = 600,
 ) -> types.RunDetail:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    row = dbmod.get_run(run_id, session)
-
     if wait:
         wait_for_run(run_id, session, timeout)
-        # Re-fetch after waiting
-        row = dbmod.get_run(run_id, session)
+    else:
+        dispatcher.ensure(session)
 
+    row = dbmod.get_run(run_id, session)
     attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
-        row = dbmod.get_run(run_id, session)
-
     return _run_detail(run_id, row, attempt_n, session)
 
 
 def wait_for_run(run_id: str, session: sqlalchemy.orm.Session, timeout: int) -> None:
     deadline = time.time() + timeout if timeout > 0 else None
     while True:
-        attempt_n = dbmod.latest_attempt(run_id, session)
-        if attempt_n is not None:
-            reconcile.reconcile_attempt(run_id, attempt_n, session)
+        # Also ends this poll's transaction, so the next one reads what the
+        # dispatcher has written since.
+        dispatcher.ensure(session)
         row = dbmod.get_run(run_id, session)
-        if str(row["status"]) in ("done", "failed", "stopped"):
+        if str(row["status"]) in types.TERMINAL:
             return
         if deadline is not None and time.time() > deadline:
             raise exceptions.UI(f"run '{run_id}' did not finish within {timeout}s")
-        # Commit so this poll's reconcile writes don't hold the SQLite write lock
-        # across the sleep — the detached orchestrator needs to write concurrently.
-        session.commit()
         time.sleep(1)
 
 
@@ -468,114 +449,104 @@ def create_run(
 
 
 def start_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
+    """Freeze a configuring run's config and queue it.
+
+    The dispatcher starts it as soon as its compute is free: at once, if
+    nothing else is running there.
+    """
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
     status = str(row["status"])
-    if status == "running":
-        raise exceptions.UI("run is already running")
-    if status in ("done", "failed", "stopped"):
+    if status in ("running", "queued"):
+        raise exceptions.UI(f"run is already {status}")
+    if status in types.TERMINAL:
         raise exceptions.UI("run is terminal; use 'run restart' to re-run")
-    # `queued` is a sweep run waiting for its compute. Starting one by hand
-    # jumps the queue, which is the user's call to make.
-    if status not in ("configuring", "queued"):
+    if status != "configuring":
         raise exceptions.UI(f"unexpected run status '{status}'")
 
-    # Preflight while still in the foreground process: the orchestrator runs
-    # detached with its output in orchestrator.log, so a GPU run whose toolkit
-    # is missing must be refused here for the user to see why (issue #26).
+    # Preflight while still in the foreground process: the run is started by
+    # the detached dispatcher, whose output is its log, so a GPU run whose
+    # toolkit is missing must be refused here for the user to see why (issue
+    # #26).
     orchestrator.ensure_gpu_toolkit(str(row["compute"]))
 
-    # Reconcile (no-op if status is configuring)
-    attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
-
-    run_dir = dbmod.run_dir(run_id, session)
-    config_path = run_dir / "config.yaml"
-
-    chash = _config_hash(config_path)
+    config_path = dbmod.run_dir(run_id, session) / "config.yaml"
     session.execute(
-        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(config_hash=chash)
+        sqlalchemy.update(dbmod.runs)
+        .where(dbmod.runs.c.id == run_id)
+        .values(config_hash=orchestrator.config_hash(config_path))
     )
     os.chmod(config_path, 0o444)
 
-    attempt = 1
-    attempt_dir = run_dir / "attempt" / str(attempt)
-    logs_dir = attempt_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    orchestrator.init_mount_dir(attempt_dir, config_path)
-
-    now = time.time()
-    session.execute(
-        sqlalchemy.insert(dbmod.run_attempts).values(
-            run_id=run_id,
-            attempt=attempt,
-            from_phase=None,
-            status="running",
-            pid=None,
-            started_at=now,
-            ended_at=None,
-        )
-    )
-
-    # Determine phase order from the frozen image id
-    describe = container.podman.describe(dbmod.run_image_ref(row))
-    for i, phase in enumerate(describe.phase_order):
-        session.execute(
-            sqlalchemy.insert(dbmod.run_phases).values(
-                run_id=run_id,
-                attempt=attempt,
-                phase=phase,
-                phase_order=i,
-                status="pending",
-                started_at=None,
-                ended_at=None,
-            )
-        )
-
-    # Commit so the orchestrator (separate process) can read these rows
-    session.commit()
-
-    orch_log = attempt_dir / "orchestrator.log"
-    orch_stdout = open(orch_log, "wb")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "utrain.cli.main", "_orchestrate", run_id, str(attempt)],
-        stdout=orch_stdout,
-        stderr=orch_stdout,
-        start_new_session=True,
-    )
-
-    session.execute(
-        sqlalchemy.update(dbmod.run_attempts)
-        .where((dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt))
-        .values(pid=proc.pid)
-    )
-
-    # Optimistically mark first phase as running
-    if describe.phase_order:
-        session.execute(
-            sqlalchemy.update(dbmod.run_phases)
-            .where(
-                (dbmod.run_phases.c.run_id == run_id)
-                & (dbmod.run_phases.c.attempt == attempt)
-                & (dbmod.run_phases.c.phase == describe.phase_order[0])
-            )
-            .values(status="running", started_at=now)
-        )
-
-    session.execute(
-        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="running")
-    )
-
+    _queue(run_id, None, session)
+    dispatcher.ensure(session)
     return run_id
 
 
+def _queue(run_id: str, from_phase: str | None, session: sqlalchemy.orm.Session) -> None:
+    """Put a run at the back of the dispatcher's queue."""
+    session.execute(
+        sqlalchemy.update(dbmod.runs)
+        .where(dbmod.runs.c.id == run_id)
+        .values(status="queued", queued_at=time.time(), queued_from_phase=from_phase)
+    )
+
+
+def wait_until_started(run_id: str, session: sqlalchemy.orm.Session, timeout: float) -> None:
+    """Wait for the dispatcher to start a run just queued, if it is going to.
+
+    Returns once the run has left the queue, or once it is waiting on
+    something other than the dispatcher -- another run on its compute, its
+    sweep held back -- or after `timeout` seconds, whichever comes first.
+
+    It does not start a dispatcher: queueing the run did. Asking again while
+    that one is still starting up would start a second.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if str(dbmod.get_run(run_id, session)["status"]) != "queued":
+            return
+        if dispatcher.is_waiting(run_id, session):
+            return
+        # Ends this poll's transaction, so the next one reads what the
+        # dispatcher has written since.
+        session.commit()
+        time.sleep(0.2)
+
+
+def wait_until_ended(run_id: str, session: sqlalchemy.orm.Session, timeout: float) -> None:
+    """Wait, up to `timeout` seconds, for a run asked to stop to be recorded as ended."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if str(dbmod.get_run(run_id, session)["status"]) in types.TERMINAL:
+            return
+        session.commit()
+        time.sleep(0.2)
+
+
 def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
+    """Take a queued run off the queue, or ask a running one to stop.
+
+    A running run stays `running` until its orchestrator has exited: the
+    dispatcher records it `stopped` then, and until then its compute is busy.
+    """
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
     status = str(row["status"])
+    if status == "queued":
+        # Only if it is still queued: the dispatcher may have claimed it since
+        # it was read, and then it is a running run to stop.
+        dropped = session.execute(
+            sqlalchemy.update(dbmod.runs)
+            .where((dbmod.runs.c.id == run_id) & (dbmod.runs.c.status == "queued"))
+            .values(status="stopped", queued_from_phase=None)
+            .returning(dbmod.runs.c.id)
+        ).first()
+        if dropped is not None:
+            return run_id
+        status = str(dbmod.get_run(run_id, session)["status"])
     if status != "running":
         # Idempotent
         if status == "stopped":
@@ -585,15 +556,12 @@ def stop_run(run_id_prefix: str, session: sqlalchemy.orm.Session) -> str:
     attempt_n = dbmod.latest_attempt(run_id, session)
     if attempt_n is not None:
         _stop_attempt(run_id, attempt_n, session)
-
-    session.execute(
-        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="stopped")
-    )
-
+    dispatcher.ensure(session)
     return run_id
 
 
 def _stop_attempt(run_id: str, attempt_n: int, session: sqlalchemy.orm.Session) -> None:
+    """Ask an attempt's orchestrator to stop. It records the phase it stops."""
     attempt_row = (
         session.execute(
             sqlalchemy.select(dbmod.run_attempts).where(
@@ -618,30 +586,18 @@ def _stop_attempt(run_id: str, attempt_n: int, session: sqlalchemy.orm.Session) 
         except OSError:
             pass
 
-    now = time.time()
-    session.execute(
-        sqlalchemy.update(dbmod.run_phases)
-        .where(
-            (dbmod.run_phases.c.run_id == run_id)
-            & (dbmod.run_phases.c.attempt == attempt_n)
-            & (dbmod.run_phases.c.status.in_(["running", "pending"]))
-        )
-        .values(status="stopped", ended_at=now)
-    )
-    session.execute(
-        sqlalchemy.update(dbmod.run_attempts)
-        .where(
-            (dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == attempt_n)
-        )
-        .values(status="stopped", ended_at=now)
-    )
-
 
 def restart_run(
     run_id_prefix: str,
     from_phase: str | None,
     session: sqlalchemy.orm.Session,
 ) -> str:
+    """Queue a run's next attempt, from its first phase or from `from_phase`.
+
+    A running run is asked to stop first. Its next attempt starts once the
+    dispatcher has seen the current one end, so the two never share the
+    compute.
+    """
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
     row = dbmod.get_run(run_id, session)
 
@@ -649,117 +605,21 @@ def restart_run(
     if status == "configuring":
         raise exceptions.UI("run has not started yet; use 'run start'")
 
-    # Same preflight as start_run: refuse before anything is stopped or created.
+    # Same preflight as start_run: refuse before anything is stopped or queued.
     orchestrator.ensure_gpu_toolkit(str(row["compute"]))
 
-    attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
-        row = dbmod.get_run(run_id, session)
-
-    if str(row["status"]) == "running" and attempt_n is not None:
-        _stop_attempt(run_id, attempt_n, session)
-
-    run_dir = dbmod.run_dir(run_id, session)
-    config_path = run_dir / "config.yaml"
-
     # Validate from_phase against the frozen image id
-    from_phase_order: int | None = None
-    describe = container.podman.describe(dbmod.run_image_ref(row))
-
     if from_phase is not None:
+        describe = container.podman.describe(dbmod.run_image_ref(row))
         if from_phase not in describe.phase_order:
             raise exceptions.UI(f"phase '{from_phase}' not found in image")
-        from_phase_order = describe.phase_order.index(from_phase)
 
-    new_attempt = (attempt_n or 0) + 1
-    attempt_dir = run_dir / "attempt" / str(new_attempt)
-    logs_dir = attempt_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    orchestrator.init_mount_dir(attempt_dir, config_path)
+    attempt_n = dbmod.latest_attempt(run_id, session)
+    if status == "running" and attempt_n is not None:
+        _stop_attempt(run_id, attempt_n, session)
 
-    chash = _config_hash(config_path)
-    session.execute(
-        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(config_hash=chash)
-    )
-
-    now = time.time()
-    session.execute(
-        sqlalchemy.insert(dbmod.run_attempts).values(
-            run_id=run_id,
-            attempt=new_attempt,
-            from_phase=from_phase,
-            status="running",
-            pid=None,
-            started_at=now,
-            ended_at=None,
-        )
-    )
-
-    start_order = from_phase_order if from_phase_order is not None else 0
-    for i, phase in enumerate(describe.phase_order):
-        if i < start_order:
-            continue
-        session.execute(
-            sqlalchemy.insert(dbmod.run_phases).values(
-                run_id=run_id,
-                attempt=new_attempt,
-                phase=phase,
-                phase_order=i,
-                status="pending",
-                started_at=None,
-                ended_at=None,
-            )
-        )
-
-    session.flush()
-
-    orch_log = attempt_dir / "orchestrator.log"
-    orch_stdout = open(orch_log, "wb")
-    orch_args = [
-        sys.executable,
-        "-m",
-        "utrain.cli.main",
-        "_orchestrate",
-        run_id,
-        str(new_attempt),
-    ]
-    if from_phase is not None:
-        orch_args += ["--from-phase", from_phase]
-
-    proc = subprocess.Popen(
-        orch_args,
-        stdout=orch_stdout,
-        stderr=orch_stdout,
-        start_new_session=True,
-    )
-
-    session.execute(
-        sqlalchemy.update(dbmod.run_attempts)
-        .where(
-            (dbmod.run_attempts.c.run_id == run_id) & (dbmod.run_attempts.c.attempt == new_attempt)
-        )
-        .values(pid=proc.pid)
-    )
-
-    first_active = (
-        describe.phase_order[start_order] if start_order < len(describe.phase_order) else None
-    )
-    if first_active:
-        session.execute(
-            sqlalchemy.update(dbmod.run_phases)
-            .where(
-                (dbmod.run_phases.c.run_id == run_id)
-                & (dbmod.run_phases.c.attempt == new_attempt)
-                & (dbmod.run_phases.c.phase == first_active)
-            )
-            .values(status="running", started_at=now)
-        )
-
-    session.execute(
-        sqlalchemy.update(dbmod.runs).where(dbmod.runs.c.id == run_id).values(status="running")
-    )
-
+    _queue(run_id, from_phase, session)
+    dispatcher.ensure(session)
     return run_id
 
 
@@ -768,10 +628,6 @@ def delete_run(run_id_prefix: str, force: bool, session: sqlalchemy.orm.Session)
     row = dbmod.get_run(run_id, session)
 
     attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
-        row = dbmod.get_run(run_id, session)
-
     if str(row["status"]) == "running":
         if not force:
             raise exceptions.UI("run is running; use --force or stop it first")

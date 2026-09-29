@@ -1,7 +1,7 @@
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import address, exceptions, reconcile, runs, types
+from . import address, dispatcher, exceptions, runs, types
 from . import db as dbmod
 
 
@@ -12,9 +12,7 @@ def list_attempts(
     a = address.parse(addr, session)
     run_id = a.run_id
 
-    attempt_n = dbmod.latest_attempt(run_id, session)
-    if attempt_n is not None:
-        reconcile.reconcile_attempt(run_id, attempt_n, session)
+    dispatcher.ensure(session)
 
     query = (
         sqlalchemy.select(dbmod.run_attempts)
@@ -66,7 +64,7 @@ def show_attempt(
     session: sqlalchemy.orm.Session,
 ) -> types.AttemptDetail:
     run_id = dbmod.resolve_run_id(run_id_prefix, session)
-    reconcile.reconcile_attempt(run_id, attempt_n, session)
+    dispatcher.ensure(session)
 
     run_row = dbmod.get_run(run_id, session)
     run_dir = dbmod.run_dir(run_id, session)
