@@ -1191,7 +1191,13 @@ Decided:
      the workspace in front: every command it has, for the ones the
      footer has no room for. There is no other menu to step to, so
      `left`/`right` only open and close submenus, and the "Go to …" items
-     are gone. Every menu ends with Quit.
+     are gone. Every menu ends with Refresh and Quit.
+   * **One rule for the footer:** it lists the keys that move around the
+     workspace (`tab`, `enter` to open what is under the cursor, `z` zoom,
+     `]` the next lens) and then the ones that go anywhere (`Alt+M` menu,
+     `:` goto, `?` help). A command -- anything that acts on something --
+     is in the menu with its key beside it, and not in the footer. It is
+     enforced in one place (`commands.footer`), so a key cannot be in both.
    The mockups in §5 still show the earlier design.
 
 Still open:

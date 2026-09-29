@@ -496,3 +496,30 @@ async def test_every_workspace_lights_its_focused_pane_as_runs_does(
             assert app.focused is screen.query_one(lit), key
             assert _border(screen.query_one(lit)) == focused, key
             assert _border(screen.query_one(unlit)) == blurred, key
+
+
+# -- what the footer lists ------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["alt+r", "alt+s", "alt+c", "alt+y"])
+async def test_the_footer_lists_navigation_and_the_menu_lists_commands(
+    app: utrain.tui.app.UtrainApp, key: str
+) -> None:
+    """No key is in both: what a menu offers is not in the footer."""
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        app.data.set_tray([base.RUN_ID])
+        await pilot.press(key)
+        await _settle(app, pilot)
+        await _settle(app, pilot)
+        shown = [
+            binding for _, binding, _, _ in app.screen.active_bindings.values() if binding.show
+        ]
+        commands = {
+            b.action
+            for b in shown
+            if b.action.split("(", 1)[0].rsplit(".", 1)[-1] in utrain.tui.commands.MENU_ACTIONS
+        }
+        assert commands == set()
+        keys = {b.key for b in shown}
+        assert {"tab", "colon", "question_mark", "alt+m"} <= keys

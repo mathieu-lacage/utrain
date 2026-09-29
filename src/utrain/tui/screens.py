@@ -219,11 +219,21 @@ class Host(typing.Protocol):
 class _Screen(textual.screen.Screen[None]):
     """Shared chrome: a header, a footer, an error line and a refresh timer."""
 
-    BINDINGS = [
-        textual.binding.Binding("r", "force_refresh", "refresh"),
-        textual.binding.Binding("escape", "back", "back", show=False),
-        textual.binding.Binding("question_mark", "help", "help", key_display="?"),
-    ]
+    # Every workspace's bindings go through `commands.footer`: the footer lists
+    # the keys that move around the workspace, and the menu the commands.
+    BINDINGS = commands.footer(
+        [
+            # Textual's own, restated to be listed: moving between panes is what
+            # the footer is for.
+            textual.binding.Binding("tab", "app.focus_next", "pane"),
+            textual.binding.Binding("shift+tab", "app.focus_previous", "pane", show=False),
+            textual.binding.Binding("r", "force_refresh", "refresh"),
+            textual.binding.Binding("escape", "back", "back", show=False),
+            # `?` is the app's, bound to this screen's `help`: an app binding
+            # is listed after the screen's, so the keys that go anywhere --
+            # the menu, goto, help -- come last in every footer.
+        ]
+    )
 
     def __init__(self, host: Host, source: data.Data) -> None:
         super().__init__()
@@ -425,6 +435,8 @@ class _Popover(_Screen, textual.screen.ModalScreen[None]):
         # left. The `i`/`c` of the screen underneath stay there -- a modal
         # keeps them from firing, so there is no sideways step to offer.
         textual.binding.Binding("escape", "back", "close"),
+        # The app's `?` does not reach a modal, so the panel binds its own.
+        textual.binding.Binding("question_mark", "help", "help", key_display="?"),
     ]
 
     def __init__(self, host: Host, source: data.Data) -> None:
@@ -576,36 +588,36 @@ class MainScreen(_Screen):
 
     TITLE = "utrain"
 
-    BINDINGS = [
-        # The pane keys are `show=False`: each pane carries its number in its
-        # title, and a footer that repeated them would leave no room for the
-        # keys that are actually about the focused pane.
-        textual.binding.Binding("tab", "next_pane", "pane", show=False),
-        textual.binding.Binding("shift+tab", "prev_pane", "pane", show=False),
-        textual.binding.Binding("1", "focus_list", "list", show=False),
-        textual.binding.Binding("2", "focus_content", "plots", show=False),
-        textual.binding.Binding("3", "focus_pane('log')", "log", show=False),
-        # The panels: the two resources a run is made of, opened over this
-        # screen and closed with escape.
-        textual.binding.Binding("i", "images", "images", show=False),
-        textual.binding.Binding("c", "compute", "compute", show=False),
-        # Everything below acts on the selected run, and is also in the Runs
-        # menu. Only the few keys that matter most are in the footer; the menu
-        # lists the rest, with their keys.
-        textual.binding.Binding("e", "edit_config", "config"),
-        textual.binding.Binding("s", "start_run", "start", show=False),
-        textual.binding.Binding("S", "stop_run", "stop", show=False),
-        textual.binding.Binding("n", "new_run", "new", show=False),
-        textual.binding.Binding("N", "new_sweep_from_run", "new sweep", show=False),
-        textual.binding.Binding("d", "delete_run", "delete", show=False),
-        # `r` is the base screen's refresh, so restart takes the shifted key --
-        # the same convention `S` follows.
-        textual.binding.Binding("R", "restart_run", "restart", show=False),
-        # `t` for talk: `c` is compute.
-        textual.binding.Binding("t", "chat_run", "chat", show=False),
-        textual.binding.Binding("m", "toggle_metrics", "metrics", show=False),
-        textual.binding.Binding("z", "zoom", "zoom"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            # `tab` is listed; the numbers are not, each pane carrying its own in
+            # its title.
+            textual.binding.Binding("tab", "next_pane", "pane"),
+            textual.binding.Binding("shift+tab", "prev_pane", "pane", show=False),
+            textual.binding.Binding("1", "focus_list", "list", show=False),
+            textual.binding.Binding("2", "focus_content", "plots", show=False),
+            textual.binding.Binding("3", "focus_pane('log')", "log", show=False),
+            # The panels: the two resources a run is made of, opened over this
+            # screen and closed with escape.
+            textual.binding.Binding("i", "images", "images", show=False),
+            textual.binding.Binding("c", "compute", "compute", show=False),
+            # Everything below but `z` acts on the selected run, and is in the Runs
+            # menu with its key, not in the footer.
+            textual.binding.Binding("e", "edit_config", "config"),
+            textual.binding.Binding("s", "start_run", "start", show=False),
+            textual.binding.Binding("S", "stop_run", "stop", show=False),
+            textual.binding.Binding("n", "new_run", "new", show=False),
+            textual.binding.Binding("N", "new_sweep_from_run", "new sweep", show=False),
+            textual.binding.Binding("d", "delete_run", "delete", show=False),
+            # `r` is the base screen's refresh, so restart takes the shifted key --
+            # the same convention `S` follows.
+            textual.binding.Binding("R", "restart_run", "restart", show=False),
+            # `t` for talk: `c` is compute.
+            textual.binding.Binding("t", "chat_run", "chat", show=False),
+            textual.binding.Binding("m", "toggle_metrics", "metrics", show=False),
+            textual.binding.Binding("z", "zoom", "zoom"),
+        ]
+    )
 
     # Every pane in reading order -- the tree, then the content column. This
     # is what `tab` walks, skipping whatever is not on screen.
@@ -2953,13 +2965,15 @@ class SystemScreen(_Screen):
     WORKSPACE = "system"
     HOME = "#images"
 
-    BINDINGS = [
-        textual.binding.Binding("1", "focus_pane('compute')", "compute", show=False),
-        textual.binding.Binding("2", "focus_pane('images')", "images", show=False),
-        textual.binding.Binding("a", "add_image", "add image"),
-        textual.binding.Binding("d", "delete_image", "delete image"),
-        textual.binding.Binding("G", "gc_store", "clean store"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("1", "focus_pane('compute')", "compute", show=False),
+            textual.binding.Binding("2", "focus_pane('images')", "images", show=False),
+            textual.binding.Binding("a", "add_image", "add image"),
+            textual.binding.Binding("d", "delete_image", "delete image"),
+            textual.binding.Binding("G", "gc_store", "clean store"),
+        ]
+    )
 
     DEFAULT_CSS = """
     SystemScreen #compute {
@@ -3167,19 +3181,21 @@ class SweepsScreen(_Screen):
     WORKSPACE = "sweeps"
     HOME = "#sweeps"
 
-    BINDINGS = [
-        textual.binding.Binding("1", "focus_pane('sweeps')", "sweeps", show=False),
-        textual.binding.Binding("2", "focus_pane('matrix')", "grid", show=False),
-        textual.binding.Binding("space", "toggle_mark", "mark"),
-        textual.binding.Binding("N", "new_sweep", "new"),
-        textual.binding.Binding("s", "start_sweep", "start"),
-        textual.binding.Binding("p", "pause_sweep", "pause"),
-        textual.binding.Binding("plus", "extend_sweep", "extend", key_display="+", show=False),
-        textual.binding.Binding("R", "retry_sweep", "retry"),
-        textual.binding.Binding("S", "cancel_sweep", "cancel", show=False),
-        textual.binding.Binding("d", "delete_sweep", "delete", show=False),
-        textual.binding.Binding("C", "compare_sweep", "compare"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("1", "focus_pane('sweeps')", "sweeps", show=False),
+            textual.binding.Binding("2", "focus_pane('matrix')", "grid", show=False),
+            textual.binding.Binding("space", "toggle_mark", "mark"),
+            textual.binding.Binding("N", "new_sweep", "new"),
+            textual.binding.Binding("s", "start_sweep", "start"),
+            textual.binding.Binding("p", "pause_sweep", "pause"),
+            textual.binding.Binding("plus", "extend_sweep", "extend", key_display="+", show=False),
+            textual.binding.Binding("R", "retry_sweep", "retry"),
+            textual.binding.Binding("S", "cancel_sweep", "cancel", show=False),
+            textual.binding.Binding("d", "delete_sweep", "delete", show=False),
+            textual.binding.Binding("C", "compare_sweep", "compare"),
+        ]
+    )
 
     DEFAULT_CSS = """
     SweepsScreen #sweeps {
@@ -3222,9 +3238,9 @@ class SweepsScreen(_Screen):
 
     def compose_body(self) -> textual.app.ComposeResult:
         with textual.containers.Horizontal(id="main"):
-            yield _table("sweeps", "1 sweeps", render.SWEEP_COLUMNS, drill=False, pane=True)
+            yield _table("sweeps", "1 sweeps", render.SWEEP_COLUMNS, pane=True)
             with textual.containers.Vertical(id="sweep-right"):
-                matrix = textual.widgets.DataTable[render.Cell](id="matrix", classes="pane")
+                matrix = widgets.PaneTable(id="matrix", classes="pane")
                 matrix.cursor_type = "cell"
                 matrix.border_title = "2 grid"
                 yield matrix
@@ -3347,14 +3363,12 @@ class SweepsScreen(_Screen):
             self.refresh_bindings()
             self.refresh_data()
 
-    @textual.on(textual.widgets.DataTable.RowSelected, "#sweeps")
-    def _sweep_selected(self) -> None:
-        """`enter` on a sweep: into its grid."""
-        self.action_focus_pane("matrix")
-
-    @textual.on(textual.widgets.DataTable.CellSelected, "#matrix")
-    def _cell_selected(self) -> None:
-        self.action_open_run()
+    def action_drill_in(self) -> None:
+        """`enter`: on a sweep, into its grid; on a cell, its run in Runs."""
+        if self.focused is self.table("#matrix"):
+            self.action_open_run()
+        else:
+            self.action_focus_pane("matrix")
 
     @textual.on(textual.widgets.DataTable.CellHighlighted, "#matrix")
     def _cell_highlighted(self) -> None:
@@ -4124,17 +4138,21 @@ class CompareScreen(_Screen):
     # than watched tick by tick.
     REFRESH_SECONDS = 3.0
 
-    BINDINGS = [
-        textual.binding.Binding(
-            "left_square_bracket", "prev_lens", "lens", key_display="[", show=False
-        ),
-        textual.binding.Binding("right_square_bracket", "next_lens", "lens", key_display="]"),
-        textual.binding.Binding("less_than_sign", "prev_sort", "sort", key_display="<", show=False),
-        textual.binding.Binding("greater_than_sign", "next_sort", "sort", key_display=">"),
-        textual.binding.Binding("1", "focus_table", "table", show=False),
-        textual.binding.Binding("space", "toggle_mark", "mark"),
-        textual.binding.Binding("m", "pick_metric", "metric"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding(
+                "left_square_bracket", "prev_lens", "lens", key_display="[", show=False
+            ),
+            textual.binding.Binding("right_square_bracket", "next_lens", "lens", key_display="]"),
+            textual.binding.Binding(
+                "less_than_sign", "prev_sort", "sort", key_display="<", show=False
+            ),
+            textual.binding.Binding("greater_than_sign", "next_sort", "sort", key_display=">"),
+            textual.binding.Binding("1", "focus_table", "table", show=False),
+            textual.binding.Binding("space", "toggle_mark", "mark"),
+            textual.binding.Binding("m", "pick_metric", "metric"),
+        ]
+    )
 
     DEFAULT_CSS = """
     CompareScreen #lenses {
@@ -4187,7 +4205,7 @@ class CompareScreen(_Screen):
             with textual.containers.VerticalScroll(id="compare-heatmap"):
                 yield textual.widgets.Static("", id="compare-grid")
             yield textual.widgets.Static("", id="compare-empty")
-        runs = textual.widgets.DataTable[render.Cell](id="compare-table", classes="pane")
+        runs = widgets.PaneTable(id="compare-table", classes="pane")
         runs.cursor_type = "row"
         runs.border_title = "1 runs"
         yield runs
@@ -4488,8 +4506,8 @@ class CompareScreen(_Screen):
                 self.draw_curves(self.colour_axis())
             self.refresh_bindings()
 
-    @textual.on(textual.widgets.DataTable.RowSelected, "#compare-table")
-    def _row_selected(self) -> None:
+    def action_drill_in(self) -> None:
+        """`enter` on a run: that run, in Runs."""
         self.action_open_run()
 
     # -- what can be done ----------------------------------------------

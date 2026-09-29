@@ -3395,7 +3395,10 @@ async def test_shift_e_is_greyed_out_when_no_metric_is_drawn(
         await _settle(app, pilot)
         assert _main(app).plotted() == []
 
-        assert _footer(app).get("E") is False
+        # A command, so it is in the Plot menu rather than the footer; greyed
+        # there, and the key itself does nothing.
+        assert "E" not in _footer(app)
+        assert _keys(app)["E"] is False
 
         await pilot.press("E")
         await _settle(app, pilot)

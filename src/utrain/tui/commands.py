@@ -13,7 +13,10 @@ workspace's screen. Actions prefixed `app.` run on the app instead -- quitting
 -- and are always live.
 """
 
+import collections.abc
 import dataclasses
+
+import textual.binding
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,6 +89,7 @@ SEPARATOR = None
 Entry = Item | Submenu | None
 
 
+_REFRESH = Item("Refresh", "force_refresh", "r")
 _QUIT = Item("Quit", "app.quit", "q")
 
 
@@ -118,9 +122,8 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         SEPARATOR,
         Item("Mark for compare", "toggle_mark", "space"),
         Item("Show in Sweeps", "show_in_sweeps"),
-        Item("Expand / collapse", "drill_in", "enter"),
-        Item("Zoom pane", "zoom", "z"),
         SEPARATOR,
+        _REFRESH,
         _QUIT,
     ),
     "sweeps": (
@@ -132,10 +135,10 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Cancel sweep...", "cancel_sweep", "S"),
         Item("Delete sweep...", "delete_sweep", "d"),
         SEPARATOR,
-        Item("Open run in Runs", "open_run", "enter"),
         Item("Mark / unmark", "toggle_mark", "space"),
         Item("Compare this sweep", "compare_sweep", "C"),
         SEPARATOR,
+        _REFRESH,
         _QUIT,
     ),
     "compare": (
@@ -149,12 +152,12 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Metric...", "pick_metric", "m"),
         Item("Reduce by...", "pick_reducer"),
         Item("Colour by...", "pick_colour"),
-        Item("Next lens", "next_lens", "]"),
         Item("Sort by next column", "next_sort", ">"),
+        Item("Sort by previous column", "prev_sort", "<"),
         SEPARATOR,
-        Item("Open run in Runs", "open_run", "enter"),
         Item("Mark / unmark", "toggle_mark", "space"),
         SEPARATOR,
+        _REFRESH,
         _QUIT,
     ),
     "system": (
@@ -164,9 +167,47 @@ MENUS: dict[str, tuple[Entry, ...]] = {
         Item("Check data store", "check_store"),
         Item("Clean up store...", "gc_store", "G"),
         SEPARATOR,
+        _REFRESH,
         _QUIT,
     ),
 }
+
+
+def _actions(entries: tuple[Entry, ...]) -> set[str]:
+    out: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, Item):
+            out.add(_bare(entry.action))
+        elif isinstance(entry, Submenu):
+            out |= _actions(entry.items)
+    return out
+
+
+def _bare(action: str) -> str:
+    """An action's name without its namespace or arguments: `screen.zoom()` is `zoom`."""
+    return action.split("(", 1)[0].rsplit(".", 1)[-1]
+
+
+# Every action some menu offers.
+MENU_ACTIONS = frozenset(set[str]().union(*(_actions(items) for items in MENUS.values())))
+
+
+def footer(
+    bindings: collections.abc.Sequence[textual.binding.Binding],
+) -> list[textual.binding.BindingType]:
+    """`bindings`, with every command a menu offers kept out of the footer.
+
+    The one rule for what the footer shows: keys that move around the
+    workspace you are in -- panes, opening what is under the cursor, views --
+    and the few that go anywhere else (the menu, goto, help). A command, which
+    acts on something, is in the menu with its key beside it; its key still
+    works, it is only not listed twice. Applied to every workspace's bindings,
+    so a key cannot be in both places or drift between them.
+    """
+    return [
+        dataclasses.replace(b, show=False) if _bare(b.action) in MENU_ACTIONS else b
+        for b in bindings
+    ]
 
 
 # What `?` adds to the menus: the keys that move between places rather than
@@ -178,9 +219,11 @@ NAVIGATION = (
     ("right / left", "in a menu: open a submenu, and close it"),
     ("tab / shift+tab", "the next pane on screen, and the previous"),
     ("1 / 2 / 3", "a pane by the number in its title"),
+    ("enter", "open what is under the cursor: a tree row, a sweep, a run"),
+    ("z", "in Runs: give the focused pane the whole right side"),
+    ("[ / ]", "in Compare: the previous lens, and the next"),
     (":", "go to a run, phase, sweep or workspace by name"),
     ("escape", "close a menu, a dialog or a panel; out of a pane"),
-    ("r", "refresh now, dropping the image caches"),
 )
 
 # Keys that belong to one pane and act on the row under its cursor, which is

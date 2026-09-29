@@ -364,28 +364,31 @@ class UtrainApp(textual.app.App[None]):
     }
     """
 
-    BINDINGS = [
-        textual.binding.Binding("q", "quit", "quit"),
-        # Textual's own copy key is ctrl+c (or super+c). ctrl+shift+c is what
-        # a desktop terminal uses to copy its own selection, and the fingers
-        # bring it here -- where there is no terminal selection to copy, only
-        # the one the app made, so it copies that.
-        textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
-        # The workspaces: Alt with the title's underlined letter, or its
-        # function key where the terminal passes those on. A terminal sends
-        # Alt+x as escape then x, in one write; Textual reads the pair as
-        # `alt+x` when the x follows within ESCDELAY (100 ms).
-        *(
-            textual.binding.Binding(
-                f"{ws.alt},{ws.fkey}", f"workspace('{ws.name}')", ws.title, show=False
-            )
-            for ws in commands.WORKSPACES
-        ),
-        # And the workspace's menu: every command it has, where the footer has
-        # room for a few. In the footer itself, being how the rest are found.
-        textual.binding.Binding("alt+m,f10", "menu", "menu", key_display="Alt+M"),
-        textual.binding.Binding("colon", "goto", "goto", key_display=":"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("q", "quit", "quit"),
+            # Textual's own copy key is ctrl+c (or super+c). ctrl+shift+c is what
+            # a desktop terminal uses to copy its own selection, and the fingers
+            # bring it here -- where there is no terminal selection to copy, only
+            # the one the app made, so it copies that.
+            textual.binding.Binding("ctrl+shift+c", "screen.copy_text", show=False),
+            # The workspaces: Alt with the title's underlined letter, or its
+            # function key where the terminal passes those on. A terminal sends
+            # Alt+x as escape then x, in one write; Textual reads the pair as
+            # `alt+x` when the x follows within ESCDELAY (100 ms).
+            *(
+                textual.binding.Binding(
+                    f"{ws.alt},{ws.fkey}", f"workspace('{ws.name}')", ws.title, show=False
+                )
+                for ws in commands.WORKSPACES
+            ),
+            # And the workspace's menu: every command it has, where the footer has
+            # room for a few. In the footer itself, being how the rest are found.
+            textual.binding.Binding("alt+m,f10", "menu", "menu", key_display="Alt+M"),
+            textual.binding.Binding("colon", "goto", "goto", key_display=":"),
+            textual.binding.Binding("question_mark", "screen.help", "help", key_display="?"),
+        ]
+    )
 
     # The workspace the app opens on, before a saved session says otherwise.
     DEFAULT_MODE = "runs"

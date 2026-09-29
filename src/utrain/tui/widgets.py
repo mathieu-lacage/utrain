@@ -24,7 +24,7 @@ import textual.widgets.select
 import uniplot
 
 from .. import container as containermod
-from . import render
+from . import commands, render
 
 # The class every in-place editor carries, so a row can find the one it opened
 # without caring which of the two widgets it is.
@@ -61,9 +61,11 @@ class PaneTable(textual.widgets.DataTable[render.Cell]):
     the arrows, `enter` and `escape` rather than with the pane numbers.
     """
 
-    BINDINGS = [
-        textual.binding.Binding("enter", "screen.drill_in", "open"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("enter", "screen.drill_in", "open"),
+        ]
+    )
 
 
 class RunsTree(PaneTable):
@@ -78,12 +80,14 @@ class RunsTree(PaneTable):
     whose cursor is a whole row has no use for.
     """
 
-    BINDINGS = [
-        textual.binding.Binding("enter", "screen.drill_in", "open/close"),
-        textual.binding.Binding("right", "screen.expand", "open", show=False),
-        textual.binding.Binding("left", "screen.collapse", "close", show=False),
-        textual.binding.Binding("space", "screen.toggle_mark", "mark"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("enter", "screen.drill_in", "open/close"),
+            textual.binding.Binding("right", "screen.expand", "open", show=False),
+            textual.binding.Binding("left", "screen.collapse", "close", show=False),
+            textual.binding.Binding("space", "screen.toggle_mark", "mark"),
+        ]
+    )
 
 
 class MetricPlot(textual.widgets.Static):
@@ -266,17 +270,19 @@ class PlotPane(textual.containers.VerticalScroll):
     `compose`, because a container cannot carry bindings without one.
     """
 
-    BINDINGS = [
-        textual.binding.Binding("l", "screen.log_y", "log y"),
-        # "charset" rather than "braille": which of the two it switches *to*
-        # depends on where it started, and where it starts is a guess about the
-        # viewer's font.
-        textual.binding.Binding("b", "screen.charset", "charset"),
-        # Shifted, the convention `S` and `R` already follow: `e` is the
-        # screen's `edit_config`, and a pane-local `e` would shadow it here and
-        # nowhere else. Offered on the metrics pane too -- see `MetricList`.
-        textual.binding.Binding("E", "screen.export_plot", "export"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("l", "screen.log_y", "log y"),
+            # "charset" rather than "braille": which of the two it switches *to*
+            # depends on where it started, and where it starts is a guess about the
+            # viewer's font.
+            textual.binding.Binding("b", "screen.charset", "charset"),
+            # Shifted, the convention `S` and `R` already follow: `e` is the
+            # screen's `edit_config`, and a pane-local `e` would shadow it here and
+            # nowhere else. Offered on the metrics pane too -- see `MetricList`.
+            textual.binding.Binding("E", "screen.export_plot", "export"),
+        ]
+    )
 
     DEFAULT_CSS = """
     PlotPane {
@@ -299,19 +305,23 @@ class MetricList(textual.widgets.OptionList):
     screen owns the axes.
     """
 
-    BINDINGS = [
-        textual.binding.Binding("space", "screen.toggle_metric", "plot metric"),
-        # One footer entry for the pair: they are the same key with two
-        # directions, and the pane has four other keys to write down.
-        textual.binding.Binding("shift+down", "extend_down", "range", key_display="shift+up/down"),
-        textual.binding.Binding("shift+up", "extend_up", "range", show=False),
-        textual.binding.Binding("y", "screen.solo_metric", "y axis"),
-        textual.binding.Binding("x", "screen.cycle_x", "x axis"),
-        # The same key `PlotPane` offers: which metric is exported is decided by
-        # this pane's cursor, so having to cross to the plots to say "write that
-        # one" would be a hop with nothing to decide in it.
-        textual.binding.Binding("E", "screen.export_plot", "export"),
-    ]
+    BINDINGS = commands.footer(
+        [
+            textual.binding.Binding("space", "screen.toggle_metric", "plot metric"),
+            # One footer entry for the pair: they are the same key with two
+            # directions, and the pane has four other keys to write down.
+            textual.binding.Binding(
+                "shift+down", "extend_down", "range", key_display="shift+up/down"
+            ),
+            textual.binding.Binding("shift+up", "extend_up", "range", show=False),
+            textual.binding.Binding("y", "screen.solo_metric", "y axis"),
+            textual.binding.Binding("x", "screen.cycle_x", "x axis"),
+            # The same key `PlotPane` offers: which metric is exported is decided by
+            # this pane's cursor, so having to cross to the plots to say "write that
+            # one" would be a hop with nothing to decide in it.
+            textual.binding.Binding("E", "screen.export_plot", "export"),
+        ]
+    )
 
     DEFAULT_CSS = """
     MetricList {
@@ -863,17 +873,19 @@ class ConfigPane(textual.containers.VerticalScroll):
     # its editor and a binding is looked up from the focused widget outwards.
     # `e` is the exception and lives on the screen: it has to work from the runs
     # pane too.
-    BINDINGS = [
-        # The list's own cursor. These displace `VerticalScroll`'s scrolling,
-        # which `pageup`, `pagedown`, `home` and `end` still do -- and focusing
-        # a row scrolls it into view anyway.
-        textual.binding.Binding("down", "screen.next_row", "next", show=False),
-        textual.binding.Binding("up", "screen.prev_row", "previous", show=False),
-        textual.binding.Binding("enter", "screen.edit_config", "edit", show=False),
-        # An `Input` binds `enter` but not `escape`, so this is reachable from
-        # inside an editor while `enter` stays the editor's own.
-        textual.binding.Binding("escape", "screen.back", "back", show=False),
-    ]
+    BINDINGS = commands.footer(
+        [
+            # The list's own cursor. These displace `VerticalScroll`'s scrolling,
+            # which `pageup`, `pagedown`, `home` and `end` still do -- and focusing
+            # a row scrolls it into view anyway.
+            textual.binding.Binding("down", "screen.next_row", "next", show=False),
+            textual.binding.Binding("up", "screen.prev_row", "previous", show=False),
+            textual.binding.Binding("enter", "screen.edit_config", "edit", show=False),
+            # An `Input` binds `enter` but not `escape`, so this is reachable from
+            # inside an editor while `enter` stays the editor's own.
+            textual.binding.Binding("escape", "screen.back", "back", show=False),
+        ]
+    )
 
     DEFAULT_CSS = """
     ConfigPane {
