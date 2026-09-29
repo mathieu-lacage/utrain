@@ -86,6 +86,17 @@ class UtrainApp(textual.app.App[None]):
     #sidebar > *:focus, #content > *:focus, #content > *:focus-within {
         border: round $accent;
     }
+    /* The other workspaces' panes, framed and lit the way the Runs panes
+       above are. Here rather than in each screen's own CSS, which ranks
+       below a DataTable's built-in focus style and so never showed: the
+       app's stylesheet is what outranks a widget's defaults. */
+    .pane {
+        border: round $panel;
+        border-title-align: left;
+    }
+    .pane:focus, .pane:focus-within {
+        border: round $accent;
+    }
     #empty {
         padding: 1 2;
         color: $text-muted;

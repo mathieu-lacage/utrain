@@ -8,6 +8,7 @@ import pathlib
 import typing
 
 import pytest
+import textual.widget
 import textual.widgets
 
 import utrain.compute
@@ -461,3 +462,37 @@ async def test_escape_on_a_workspace_comes_back_to_its_list_and_stays(
             await _settle(app, pilot)
         assert app.screen is screen
         assert app.focused is screen.query_one(home)
+
+
+# -- focus looks the same everywhere ------------------------------------------
+
+
+def _border(widget: textual.widget.Widget) -> tuple[str, object]:
+    edge = widget.styles.border_top
+    return edge[0], edge[1]
+
+
+async def test_every_workspace_lights_its_focused_pane_as_runs_does(
+    app: utrain.tui.app.UtrainApp,
+) -> None:
+    """The focused pane's frame, and an unfocused one's, match the Runs panes'."""
+    async with app.run_test(size=base.SIZE) as pilot:
+        await _settle(app, pilot)
+        app.data.set_tray([base.RUN_ID])  # so Compare has a table to show
+        runs = app.screen
+        focused = _border(runs.query_one("#runs"))
+        blurred = _border(runs.query_one("#log"))
+        assert focused != blurred
+
+        for key, lit, unlit in (
+            ("alt+s", "#sweeps", "#matrix"),
+            ("alt+c", "#compare-table", "#compare-view"),
+            ("alt+y", "#images", "#compute"),
+        ):
+            await pilot.press(key)
+            await _settle(app, pilot)
+            await _settle(app, pilot)
+            screen = app.screen
+            assert app.focused is screen.query_one(lit), key
+            assert _border(screen.query_one(lit)) == focused, key
+            assert _border(screen.query_one(unlit)) == blurred, key

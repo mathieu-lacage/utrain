@@ -464,12 +464,15 @@ def _table(
     title: str,
     columns: tuple[str, ...],
     drill: bool = True,
+    pane: bool = False,
 ) -> textual.widgets.DataTable[render.Cell]:
     """One of the screens' lists, framed and titled like a lazygit pane.
 
     `drill=False` for a list with nothing under it -- the images and the
     compute devices are the whole of what there is to see about them -- so that
-    its footer does not offer an `enter` that would do nothing.
+    its footer does not offer an `enter` that would do nothing. `pane=True`
+    for one of a workspace's panes, which the app's `.pane` rule frames and
+    lights up on focus.
     """
     table: textual.widgets.DataTable[render.Cell] = (
         widgets.PaneTable(id=identifier)
@@ -479,6 +482,8 @@ def _table(
     table.cursor_type = "row"
     table.border_title = title
     table.add_columns(*columns)
+    if pane:
+        table.add_class("pane")
     return table
 
 
@@ -2960,22 +2965,13 @@ class SystemScreen(_Screen):
     SystemScreen #compute {
         height: auto;
         max-height: 12;
-        border: round $panel;
-        border-title-align: left;
     }
     SystemScreen #images {
         height: 1fr;
-        border: round $panel;
-        border-title-align: left;
     }
     SystemScreen #store {
         height: 3;
-        border: round $panel;
-        border-title-align: left;
         padding: 0 1;
-    }
-    SystemScreen DataTable:focus {
-        border: round $accent;
     }
     """
 
@@ -2985,9 +2981,9 @@ class SystemScreen(_Screen):
         self.pulling = False
 
     def compose_body(self) -> textual.app.ComposeResult:
-        yield _table("compute", "1 compute", render.SYSTEM_COMPUTE_COLUMNS, drill=False)
-        yield _table("images", "2 images", render.IMAGE_COLUMNS, drill=False)
-        store = textual.widgets.Static("", id="store")
+        yield _table("compute", "1 compute", render.SYSTEM_COMPUTE_COLUMNS, drill=False, pane=True)
+        yield _table("images", "2 images", render.IMAGE_COLUMNS, drill=False, pane=True)
+        store = textual.widgets.Static("", id="store", classes="pane")
         store.border_title = "data store"
         yield store
 
@@ -3189,32 +3185,21 @@ class SweepsScreen(_Screen):
     SweepsScreen #sweeps {
         width: 42;
         height: 1fr;
-        border: round $panel;
-        border-title-align: left;
     }
     SweepsScreen #sweep-right {
         width: 1fr;
     }
     SweepsScreen #matrix {
         height: 1fr;
-        border: round $panel;
-        border-title-align: left;
         border-subtitle-align: left;
     }
     SweepsScreen #queue {
         height: auto;
-        border: round $panel;
-        border-title-align: left;
         padding: 0 1;
     }
     SweepsScreen #spec {
         height: auto;
-        border: round $panel;
-        border-title-align: left;
         padding: 0 1;
-    }
-    SweepsScreen DataTable:focus {
-        border: round $accent;
     }
     """
 
@@ -3237,16 +3222,16 @@ class SweepsScreen(_Screen):
 
     def compose_body(self) -> textual.app.ComposeResult:
         with textual.containers.Horizontal(id="main"):
-            yield _table("sweeps", "1 sweeps", render.SWEEP_COLUMNS, drill=False)
+            yield _table("sweeps", "1 sweeps", render.SWEEP_COLUMNS, drill=False, pane=True)
             with textual.containers.Vertical(id="sweep-right"):
-                matrix = textual.widgets.DataTable[render.Cell](id="matrix")
+                matrix = textual.widgets.DataTable[render.Cell](id="matrix", classes="pane")
                 matrix.cursor_type = "cell"
                 matrix.border_title = "2 grid"
                 yield matrix
-                queue = textual.widgets.Static("", id="queue")
+                queue = textual.widgets.Static("", id="queue", classes="pane")
                 queue.border_title = "queue"
                 yield queue
-                spec = textual.widgets.Static("", id="spec")
+                spec = textual.widgets.Static("", id="spec", classes="pane")
                 spec.border_title = "spec"
                 yield spec
 
@@ -4146,6 +4131,7 @@ class CompareScreen(_Screen):
         textual.binding.Binding("right_square_bracket", "next_lens", "lens", key_display="]"),
         textual.binding.Binding("less_than_sign", "prev_sort", "sort", key_display="<", show=False),
         textual.binding.Binding("greater_than_sign", "next_sort", "sort", key_display=">"),
+        textual.binding.Binding("1", "focus_table", "table", show=False),
         textual.binding.Binding("space", "toggle_mark", "mark"),
         textual.binding.Binding("m", "pick_metric", "metric"),
     ]
@@ -4157,8 +4143,6 @@ class CompareScreen(_Screen):
     }
     CompareScreen #compare-view {
         height: 1fr;
-        border: round $panel;
-        border-title-align: left;
     }
     CompareScreen #compare-legend {
         height: auto;
@@ -4170,16 +4154,9 @@ class CompareScreen(_Screen):
     CompareScreen #compare-table {
         height: auto;
         max-height: 40%;
-        border: round $panel;
-        border-title-align: left;
     }
     CompareScreen #compare-diff {
         height: 1fr;
-        border: round $panel;
-        border-title-align: left;
-    }
-    CompareScreen DataTable:focus {
-        border: round $accent;
     }
     CompareScreen #compare-empty {
         padding: 1 2;
@@ -4202,7 +4179,7 @@ class CompareScreen(_Screen):
 
     def compose_body(self) -> textual.app.ComposeResult:
         yield textual.widgets.Static("", id="lenses")
-        view = textual.containers.Vertical(id="compare-view")
+        view = textual.containers.Vertical(id="compare-view", classes="pane")
         view.border_title = "compare"
         with view:
             yield widgets.ComparePlot(id="compare-plot")
@@ -4210,13 +4187,13 @@ class CompareScreen(_Screen):
             with textual.containers.VerticalScroll(id="compare-heatmap"):
                 yield textual.widgets.Static("", id="compare-grid")
             yield textual.widgets.Static("", id="compare-empty")
-        runs = textual.widgets.DataTable[render.Cell](id="compare-table")
+        runs = textual.widgets.DataTable[render.Cell](id="compare-table", classes="pane")
         runs.cursor_type = "row"
-        runs.border_title = "runs"
+        runs.border_title = "1 runs"
         yield runs
-        diff = textual.widgets.DataTable[render.Cell](id="compare-diff")
+        diff = textual.widgets.DataTable[render.Cell](id="compare-diff", classes="pane")
         diff.cursor_type = "row"
-        diff.border_title = "config fields that differ"
+        diff.border_title = "1 config fields that differ"
         yield diff
 
     def on_mount(self) -> None:
@@ -4339,6 +4316,10 @@ class CompareScreen(_Screen):
         legend.display = plot.display
         heatmap.display = lens == "heatmap" and not nothing
         empty.display = nothing
+        if not nothing and self.focused in (None, runs_table, diff):
+            # A lens change hides one table and shows the other; the focus
+            # follows to the one on screen rather than being left on nothing.
+            self.action_focus_table()
         if nothing:
             view.display = True
             empty.update(
@@ -4369,7 +4350,7 @@ class CompareScreen(_Screen):
             marked,
         )
         self.fill_runs(table)
-        runs_table.border_title = "2 runs" + (
+        runs_table.border_title = "1 runs" + (
             f" · sorted by {state.sort}" if state.sort in table.columns else ""
         )
         if lens == "curves":
@@ -4386,9 +4367,9 @@ class CompareScreen(_Screen):
                 self._diff_columns = columns
             _fill(diff, rows)
             if not rows:
-                diff.border_title = "config fields that differ: none"
+                diff.border_title = "1 config fields that differ: none"
             else:
-                diff.border_title = f"config fields that differ ({len(rows)})"
+                diff.border_title = f"1 config fields that differ ({len(rows)})"
 
     def draw_lenses(self) -> None:
         state = self.state or comparemod.State()
@@ -4536,6 +4517,15 @@ class CompareScreen(_Screen):
         if action in answers:
             return True if answers[action] else None
         return super().check_action(action, parameters)
+
+    def action_focus_table(self) -> None:
+        """`1`: the table on screen -- the runs, or in the diff lens, the diff."""
+        lens = self.state.lens if self.state is not None else "curves"
+        self.query_one("#compare-diff" if lens == "diff" else "#compare-table").focus()
+
+    def action_back(self) -> None:
+        """`escape`: back to the table on screen, whichever lens it is."""
+        self.action_focus_table()
 
     def action_open_run(self) -> None:
         if self.cursor_run is not None:
