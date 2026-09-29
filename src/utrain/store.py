@@ -1,4 +1,5 @@
 import hashlib
+import os
 import pathlib
 
 import sqlalchemy
@@ -19,6 +20,51 @@ def _sha256(fpath: pathlib.Path) -> str:
         for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def consolidate(data_dir: pathlib.Path, settings: config.Settings) -> None:
+    """Hardlink every file under a phase's data dir into the store.
+
+    Afterwards each file shares an inode with the 0o444 store file named after
+    its content's sha256 -- what `check` verifies of a `done` phase. The
+    orchestrator calls this as each phase succeeds, before recording it done.
+
+    Only new files cost anything. A file carried forward from a phase already
+    consolidated (`cp -rl`), or served from the cache, is a store inode
+    already, and is recognised by that rather than hashed again. A new file
+    whose content the store lacks becomes the store file itself, by a link
+    rather than a copy; one whose content is there already is swapped for a
+    link to it, atomically, so the data file is never missing.
+    """
+    store_dir = settings.data_dir / "store"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    if not data_dir.exists():
+        return
+    in_store: set[tuple[int, int]] = set()
+    for fpath in store_dir.iterdir():
+        stat = fpath.stat()
+        in_store.add((stat.st_dev, stat.st_ino))
+
+    for fpath in sorted(data_dir.rglob("*")):
+        if fpath.is_symlink() or not fpath.is_file():
+            continue
+        stat = fpath.stat()
+        if (stat.st_dev, stat.st_ino) in in_store:
+            continue
+        store_path = store_dir / _sha256(fpath)
+        try:
+            os.link(fpath, store_path)
+        except FileExistsError:
+            # The content is there already, from another file, phase or run:
+            # link to that one instead, replacing the data file in one step.
+            tmp = fpath.with_name(f".{fpath.name}.utrain-link")
+            tmp.unlink(missing_ok=True)
+            os.link(store_path, tmp)
+            os.replace(tmp, fpath)
+        else:
+            os.chmod(store_path, 0o444)
+        linked = store_path.stat()
+        in_store.add((linked.st_dev, linked.st_ino))
 
 
 def _resolve_scope(
@@ -113,10 +159,10 @@ def check(
 ) -> types.StoreCheckResult:
     """Verify runs' data is hardlinked into the content-addressed store.
 
-    This is the invariant `orchestrator._deduplicate_data` establishes once a
-    run completes: every file under a done attempt's data dir shares an inode
-    with the store file named after its content's sha256, and every store
-    file's content hashes to its own name.
+    This is the invariant `consolidate` establishes as each phase succeeds:
+    every file under a done phase's data dir shares an inode with the store
+    file named after its content's sha256, and every store file's content
+    hashes to its own name.
 
     Both sides are checked, but the store is hashed only once: a data file
     that shares an inode with a verified store file is verified by
@@ -124,11 +170,12 @@ def check(
     With ``hash_contents`` off only the links are checked; the names are then
     trusted to be hashes.
 
-    Attempts still going, failed or stopped are skipped: their data is
-    legitimately not linked yet, because deduplication runs only when every
-    phase of the attempt has finished. An explicit ``scope`` that names one of
-    those attempts is an error rather than a silent pass -- the caller asked
-    about exactly that data, so "nothing to check" would read as ok.
+    Phases still going, failed or stopped are skipped: their data is
+    legitimately not linked, because only a phase that succeeds is
+    consolidated. The done phases of a failed or stopped attempt are checked
+    like any other. An explicit ``scope`` that names nothing done is an error
+    rather than a silent pass -- the caller asked about exactly that data, so
+    "nothing to check" would read as ok.
 
     ``scope`` narrows the check to a run (`RUN_ID`, prefix ok), an attempt
     (`RUN_ID/N`) or a single phase (`RUN_ID/N/PHASE`); the default checks
@@ -168,63 +215,62 @@ def check(
     if scope is not None:
         scope_run, scope_attempt, scope_phase = _resolve_scope(scope, session)
 
-    query = sqlalchemy.select(dbmod.run_attempts.c.run_id, dbmod.run_attempts.c.attempt).where(
-        dbmod.run_attempts.c.status == "done"
-    )
+    query = sqlalchemy.select(
+        dbmod.run_phases.c.run_id, dbmod.run_phases.c.attempt, dbmod.run_phases.c.phase
+    ).where(dbmod.run_phases.c.status == "done")
     if scope_run is not None:
-        query = query.where(dbmod.run_attempts.c.run_id == scope_run)
+        query = query.where(dbmod.run_phases.c.run_id == scope_run)
     if scope_attempt is not None:
-        query = query.where(dbmod.run_attempts.c.attempt == scope_attempt)
-    done = session.execute(query).all()
+        query = query.where(dbmod.run_phases.c.attempt == scope_attempt)
+    if scope_phase is not None:
+        query = query.where(dbmod.run_phases.c.phase == scope_phase)
+    done = session.execute(
+        query.order_by(
+            dbmod.run_phases.c.run_id, dbmod.run_phases.c.attempt, dbmod.run_phases.c.phase
+        )
+    ).all()
 
     if scope is not None and not done:
-        # A validated attempt reaches here only when it is not done; a
-        # run-only scope when none of its attempts are.
+        not_yet = "its data is not in the store yet"
+        if scope_phase is not None:
+            raise exceptions.UI(
+                f"phase '{scope_phase}' of attempt {scope_attempt} of run '{scope_run}' "
+                f"is not done; {not_yet}"
+            )
         if scope_attempt is not None:
             raise exceptions.UI(
-                f"attempt {scope_attempt} of run '{scope_run}' is not done; "
-                "its data is not in the store yet"
+                f"attempt {scope_attempt} of run '{scope_run}' has no completed phase; {not_yet}"
             )
-        raise exceptions.UI(
-            f"run '{scope_run}' has no completed attempt; its data is not in the store yet"
-        )
+        raise exceptions.UI(f"run '{scope_run}' has no completed phase; {not_yet}")
 
-    attempts = 0
+    checked_attempts: set[tuple[str, int]] = set()
     data_files = 0
     links: list[types.StoreLink] = []
-    for run_id, attempt in done:
-        attempt_data = settings.runs_dir / str(run_id) / "attempt" / str(attempt) / "data"
-        # A phase scope looks in that phase's directory only; anything else
-        # checks the whole attempt.
-        roots = [attempt_data / scope_phase] if scope_phase is not None else [attempt_data]
-        if not any(root.exists() for root in roots):
+    for run_id, attempt, phase in done:
+        root = settings.runs_dir / str(run_id) / "attempt" / str(attempt) / "data" / str(phase)
+        if not root.exists():
             continue
-        attempts += 1
-        for root in roots:
-            if not root.exists():
+        checked_attempts.add((str(run_id), int(attempt)))
+        for fpath in sorted(root.rglob("*")):
+            if not fpath.is_file():
                 continue
-            for fpath in sorted(root.rglob("*")):
-                if not fpath.is_file():
-                    continue
-                data_files += 1
-                stat = fpath.stat()
-                store_name = store_inodes.get((stat.st_dev, stat.st_ino))
-                if store_name is None:
-                    problems.append(
-                        types.StoreProblem(
-                            fpath.relative_to(data_dir), "not a hardlink into the store"
-                        )
+            data_files += 1
+            stat = fpath.stat()
+            store_name = store_inodes.get((stat.st_dev, stat.st_ino))
+            if store_name is None:
+                problems.append(
+                    types.StoreProblem(fpath.relative_to(data_dir), "not a hardlink into the store")
+                )
+            elif verbose:
+                links.append(
+                    types.StoreLink(
+                        data=fpath.relative_to(data_dir),
+                        store=pathlib.Path("store") / store_name,
                     )
-                elif verbose:
-                    links.append(
-                        types.StoreLink(
-                            data=fpath.relative_to(data_dir),
-                            store=pathlib.Path("store") / store_name,
-                        )
-                    )
+                )
 
     return types.StoreCheckResult(
-        attempts=attempts,
+        attempts=len(checked_attempts),
         data_files=data_files,
         store_files=store_files,
         orphaned=orphaned,

@@ -12,7 +12,7 @@ import naw
 import sqlalchemy
 import sqlalchemy.orm
 
-from . import config, container, exceptions, lock
+from . import config, container, exceptions, lock, store
 from . import db as dbmod
 
 # Timeout for a `check-cache` call: it must be cheap (no GPU work, no heavy
@@ -679,6 +679,11 @@ def run_orchestrator(
                 manifest = _check_cache(image, attempt_dir, phase, data_dir)
                 if manifest is not None:
                     cache_hit = _try_serve_from_cache(manifest, data_dir, store_dir)
+            if cache_hit:
+                # As for a phase that ran: into the store before it is
+                # recorded done. What the cache served is store files already,
+                # so this is a stat per file.
+                store.consolidate(data_dir, settings)
             values: dict[str, object] = {
                 "status": "done" if cache_hit else "running",
                 "started_at": now,
@@ -733,6 +738,11 @@ def run_orchestrator(
                 session.commit()
             sys.exit(1 if exit_code != 0 else 0)
 
+        # Into the store before the phase is recorded `done`, which is what a
+        # `done` phase promises readers -- `store check`, `serve`, and a
+        # restart that carries this phase's data forward. Whatever becomes of
+        # the phases after it, this one's data is deduplicated.
+        store.consolidate(data_dir, settings)
         with sqlalchemy.orm.Session(engine) as session:
             session.execute(
                 sqlalchemy.update(dbmod.run_phases)
@@ -748,36 +758,8 @@ def run_orchestrator(
         print(f"orchestrator: phase '{phase}' done")
         sys.stdout.flush()
 
-    # All phases complete. The attempt and the run are the dispatcher's to mark
-    # done, once this process has exited and released its lock, so everything
-    # written before the exit -- the store, notably -- is in place by the time
-    # `run show --wait` returns.
+    # The attempt and the run are the dispatcher's to mark done, once this
+    # process has exited and released its lock. Each phase was consolidated
+    # before it was recorded done, so the store is complete by then.
     if not shutting_down:
-        _deduplicate_data(attempt_dir, phases_to_run, settings)
         print("orchestrator: all phases done")
-
-
-def _deduplicate_data(
-    attempt_dir: pathlib.Path,
-    phases: list[str],
-    settings: config.Settings,
-) -> None:
-    store_dir = settings.data_dir / "store"
-    store_dir.mkdir(parents=True, exist_ok=True)
-
-    for phase in phases:
-        data_dir = attempt_dir / "data" / phase
-        if not data_dir.exists():
-            continue
-        for fpath in data_dir.rglob("*"):
-            if not fpath.is_file():
-                continue
-            content = fpath.read_bytes()
-            sha = hashlib.sha256(content).hexdigest()
-            store_path = store_dir / sha
-            if not store_path.exists():
-                store_path.write_bytes(content)
-                os.chmod(store_path, 0o444)
-            # Replace with hardlink
-            fpath.unlink()
-            os.link(store_path, fpath)
