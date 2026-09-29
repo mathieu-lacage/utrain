@@ -677,35 +677,25 @@ class UtrainApp(textual.app.App[None]):
         if isinstance(screen, screens.SweepsScreen):
             screen.select_sweep(sweep_id)
 
-    def show_run(self, run_id: str, phase: str | None = None) -> None:
+    def show_run(self, run_id: str) -> None:
         screen = self.base_screen("runs")
         if isinstance(screen, screens.MainScreen):
-            screen.reveal_run(run_id, phase)
+            screen.reveal_run(run_id)
 
     # -- the goto line ------------------------------------------------------
 
     def action_goto(self) -> None:
-        """`:`: go somewhere by name. The names are read first, for completion."""
+        """`:`: a workspace or its menu, by name."""
         menus.close_menus(self)
-        self.goto_names()
 
-    @textual.work(thread=True, exclusive=True, group="goto")
-    def goto_names(self) -> None:
-        try:
-            names = self.data.goto_names()
-        except exceptions.UI:
-            names = []
-        self.call_from_thread(self.ask_goto, names)
-
-    def ask_goto(self, names: list[str]) -> None:
         def answered(text: str | None) -> None:
             if text:
                 self.goto(text)
 
-        self.ask(screens.GotoScreen(names), answered)
+        self.ask(screens.GotoScreen(), answered)
 
     def goto(self, text: str) -> None:
-        """Where `text` says: a word, a sweep, or a run and perhaps a phase."""
+        """Where `text` says: a workspace, a menu, or quit."""
         word = text.removeprefix(":").strip()
         lowered = word.lower()
         if lowered in self.workspaces:
@@ -724,24 +714,7 @@ class UtrainApp(textual.app.App[None]):
         if lowered in ("quit", "q"):
             self.call_later(self.run_action, "quit")
             return
-        self.resolve_goto(word)
-
-    @textual.work(thread=True, exclusive=True, group="goto")
-    def resolve_goto(self, word: str) -> None:
-        try:
-            if word.startswith("@"):
-                sweep_id = self.data.resolve_sweep(word)
-                self.call_from_thread(self.show_sweep, sweep_id)
-                return
-            # `run`, `run/phase` or `run/attempt/phase`: the attempt is where
-            # the tree shows it, so only the run and the phase matter here.
-            parts = word.split("/")
-            run_id = self.data.resolve_run(parts[0])
-            phase = parts[-1] if len(parts) > 1 and not parts[-1].isdigit() else None
-        except exceptions.UI as e:
-            self.call_from_thread(self.tell, str(e))
-            return
-        self.call_from_thread(self.show_run, run_id, phase)
+        self.tell(f"no workspace '{word}'")
 
     def compare_sweep(self, sweep_id: str) -> None:
         screen = self.base_screen("compare")

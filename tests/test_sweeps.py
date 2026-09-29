@@ -355,12 +355,11 @@ def test_a_replicate_axis_must_be_an_axis(
 
 
 @pytest.mark.usefixtures("podman")
-def test_a_sweep_is_found_by_name_by_at_name_or_by_id_prefix(
+def test_a_sweep_is_found_by_name_or_by_id_prefix(
     session: sqlalchemy.orm.Session, settings: utrain.config.Settings
 ) -> None:
     sweep_id = _create(session, settings)
     assert utrain.sweeps.resolve_sweep_id("lr-depth", session) == sweep_id
-    assert utrain.sweeps.resolve_sweep_id("@lr-depth", session) == sweep_id
     assert utrain.sweeps.resolve_sweep_id(sweep_id[:6], session) == sweep_id
     with pytest.raises(utrain.exceptions.UI, match="not found"):
         utrain.sweeps.resolve_sweep_id("nope", session)

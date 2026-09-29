@@ -202,7 +202,7 @@ def format_duration(started_at: float | None, ended_at: float | None, now: float
 # a run's phases once it is expanded. A run's name is led by the mark it
 # carries while it is in the tray -- in the name's cell rather than a column of
 # its own, whose padding the 42-cell sidebar cannot spare. There is no id
-# column: a run is addressed by name on screen, and by the goto line otherwise.
+# column: a run is addressed by name on screen.
 TREE_COLUMNS = ("NAME", "POINT", "STATUS")
 
 MARK = "◆"

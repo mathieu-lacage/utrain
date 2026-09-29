@@ -434,10 +434,8 @@ def _create_points(
 def resolve_sweep_id(ref: str, session: sqlalchemy.orm.Session) -> str:
     """A sweep's id, from its name or a unique prefix of its id.
 
-    A leading `@` is accepted and ignored, so the address form the TUI's goto
-    line uses works here too. The name wins: a name is what a person types.
+    The name wins: a name is what a person types.
     """
-    ref = ref.removeprefix("@")
     row = session.execute(
         sqlalchemy.select(dbmod.sweeps.c.id).where(dbmod.sweeps.c.name == ref)
     ).first()
