@@ -10,7 +10,9 @@ import uuid
 
 import pytest
 
+import utrain.config
 import utrain.container.podman
+import utrain.dispatcher
 
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 _CONTAINERS_DIR = pathlib.Path(__file__).parent / "containers"
@@ -67,6 +69,20 @@ def fake_image_url(tmp_path_factory: pytest.TempPathFactory) -> str:
 @pytest.fixture(scope="session")
 def fake_gpu_image_url(tmp_path_factory: pytest.TempPathFactory) -> str:
     return _image_url("fake-gpu", tmp_path_factory)
+
+
+@pytest.fixture(autouse=True)
+def _no_dispatcher(monkeypatch: pytest.MonkeyPatch) -> list[utrain.config.Settings]:
+    """Record the dispatchers the query layer would start, rather than start them.
+
+    Every read of runs makes sure one is alive, and a unit test's database is
+    full of runs a real dispatcher would try to start or finalize. The list is
+    for a test that asks what would have been started. Cram tests run the CLI in
+    a process of its own, which this does not reach.
+    """
+    spawned: list[utrain.config.Settings] = []
+    monkeypatch.setattr(utrain.dispatcher, "_spawn", spawned.append)
+    return spawned
 
 
 @pytest.fixture(autouse=True)

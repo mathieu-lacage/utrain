@@ -438,10 +438,16 @@ to one would corrupt every other run sharing it.
 **`<root>/data`** is a phase-specific scratch/output directory. Anything you
 write here is available to later phases: utrain hardlink-copies the previous
 phase's contents forward as the starting point of the next phase's data dir,
-and deduplicates everything into a content-addressed store once the run
-finishes. For a `cacheable` phase, utrain may skip `run` entirely and populate
-it straight from that store — see [`check-cache`](#check-cache). The trained
-model belongs here too, so that `serve` and later phases can find it.
+and deduplicates each phase's data into a content-addressed store as soon as
+the phase succeeds. For a `cacheable` phase, utrain may skip `run` entirely and
+populate it straight from that store — see [`check-cache`](#check-cache). The
+trained model belongs here too, so that `serve` and later phases can find it.
+
+Files carried forward from an earlier phase are therefore shared: with that
+phase's frozen snapshot, with the store, and with every other run holding the
+same content. **Never modify one in place.** To change such a file, write a new
+one and rename it over the old; deleting one is fine. An in-place write would
+corrupt all of them at once.
 
 Exit code `0` means success; anything else means failure.
 

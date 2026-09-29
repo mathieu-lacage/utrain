@@ -19,11 +19,7 @@ import rich.text
 from .. import compute, metrics, types
 from .. import container as containermod
 
-# The sidebar is narrow, so these carry only what identifies a row; whatever a
-# run's image, compute or attempt is goes in the content pane's title, where
-# there is room for it.
-RUN_COLUMNS = ("ID", "NAME", "STATUS")
-PHASE_COLUMNS = ("PHASE", "STATUS", "STARTED", "DURATION")
+# The images and compute tables, as `image list` and `compute list` print them.
 IMAGE_COLUMNS = ("NAME", "SIZE", "RUNS")
 COMPUTE_COLUMNS = (
     "ID",
@@ -123,11 +119,13 @@ class Plot:
 Cell = str | rich.text.Text
 
 # One mapping, used by both sidebar lists. Run statuses are configuring /
-# running / done / failed / stopped, phase statuses pending / running / done /
+# queued / running / done / failed / stopped (`queued` is a run waiting for
+# its compute), phase statuses pending / running / done /
 # failed / stopped, and the two overlap enough that splitting them would only
 # invite them to drift apart.
 _STATUS_STYLES = {
     "configuring": "cyan",
+    "queued": "dim",
     "pending": "dim",
     "running": "bold yellow",
     "done": "green",
@@ -198,26 +196,385 @@ def format_duration(started_at: float | None, ended_at: float | None, now: float
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
 
 
-def run_cells(run: types.RunRow, prefix_len: int) -> list[Cell]:
+# -- the runs tree ----------------------------------------------------------
+
+# The Runs workspace's one list: sweeps, the runs in them and on their own, and
+# a run's phases once it is expanded. A run's name is led by the mark it
+# carries while it is in the tray -- in the name's cell rather than a column of
+# its own, whose padding the 42-cell sidebar cannot spare. There is no id
+# column: a run is addressed by name on screen, and by the goto line otherwise.
+TREE_COLUMNS = ("NAME", "POINT", "STATUS")
+
+MARK = "◆"
+EXPANDED = "▾"
+COLLAPSED = "▸"
+
+# What a sweep's status grid draws for each run status.
+STATUS_GLYPHS = {
+    "done": "●",
+    "running": "◐",
+    "queued": "○",
+    "failed": "✗",
+    "stopped": "■",
+    "configuring": "·",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class TreeNode:
+    """One row of the runs tree.
+
+    `key` names the thing rather than the row -- `sweep:<id>`, `run:<id>`,
+    `phase:<run id>/<phase>` -- so that the cursor can follow it when rows are
+    inserted above it by an expand or by a new run.
+    """
+
+    key: str
+    kind: typing.Literal["sweep", "run", "phase"]
+    depth: int
+    # Whether the row is open, or None for one that has nothing under it.
+    expanded: bool | None
+    run: types.RunRow | None = None
+    sweep: types.SweepRow | None = None
+    phase: types.PhaseListEntry | None = None
+
+    @property
+    def run_id(self) -> str | None:
+        return self.run.id if self.run is not None else None
+
+
+def sweep_key(sweep_id: str) -> str:
+    return f"sweep:{sweep_id}"
+
+
+def run_key(run_id: str) -> str:
+    return f"run:{run_id}"
+
+
+def phase_key(run_id: str, phase: str) -> str:
+    return f"phase:{run_id}/{phase}"
+
+
+def build_tree(
+    runs: list[types.RunRow],
+    sweeps: list[types.SweepRow],
+    expanded: set[str],
+    phases: dict[str, list[types.PhaseListEntry]],
+) -> list[TreeNode]:
+    """The runs tree, flattened into rows in reading order.
+
+    Sweeps first, newest first, each followed by its runs in grid order when it
+    is open; then the runs that belong to no sweep, newest first, as the list
+    has always had them. A run can be opened on its phases once it has an
+    attempt: before that it has none.
+    """
+    nodes: list[TreeNode] = []
+
+    def add_run(run: types.RunRow, depth: int) -> None:
+        key = run_key(run.id)
+        has_phases = run.attempt is not None
+        is_open = has_phases and key in expanded
+        nodes.append(TreeNode(key, "run", depth, is_open if has_phases else None, run=run))
+        if is_open:
+            for entry in phases.get(run.id, []):
+                nodes.append(
+                    TreeNode(
+                        phase_key(run.id, entry.phase),
+                        "phase",
+                        depth + 1,
+                        None,
+                        run=run,
+                        phase=entry,
+                    )
+                )
+
+    by_sweep: dict[str, list[types.RunRow]] = {}
+    for run in runs:
+        if run.sweep_id is not None:
+            by_sweep.setdefault(run.sweep_id, []).append(run)
+    for sweep in sweeps:
+        key = sweep_key(sweep.id)
+        members = sorted(by_sweep.get(sweep.id, []), key=lambda r: r.created_at)
+        is_open = key in expanded
+        nodes.append(TreeNode(key, "sweep", 0, is_open if members else None, sweep=sweep))
+        if is_open:
+            for run in members:
+                add_run(run, 1)
+    known = {s.id for s in sweeps}
+    for run in runs:
+        if run.sweep_id is None or run.sweep_id not in known:
+            add_run(run, 0)
+    return nodes
+
+
+def _expander(node: TreeNode) -> str:
+    if node.expanded is None:
+        return "  "
+    return f"{EXPANDED if node.expanded else COLLAPSED} "
+
+
+def point_text(point: dict[str, object]) -> str:
+    """A sweep run's coordinates, short: each axis by its last name."""
+    parts: list[str] = []
+    for path, value in point.items():
+        if isinstance(value, bool):
+            shown = "true" if value else "false"
+        elif isinstance(value, float):
+            shown = f"{value:g}"
+        else:
+            shown = str(value)
+        parts.append(f"{path.rsplit('.', 1)[-1]}={shown}")
+    return " ".join(parts)
+
+
+def sweep_progress(sweep: types.SweepRow) -> str:
+    """How far a sweep has got: finished runs over all of them."""
+    return f"{sweep.counts.finished}/{sweep.counts.total}"
+
+
+def tree_cells(node: TreeNode, marked: set[str], now: float) -> list[Cell]:
+    indent = "  " * node.depth
+    if node.kind == "sweep":
+        sweep = node.sweep
+        assert sweep is not None
+        return [
+            f" {indent}{_expander(node)}{sweep.name}",
+            sweep_progress(sweep),
+            status_cell(sweep.status, _SWEEP_STATUS_STYLE.get(sweep.status)),
+        ]
+    if node.kind == "phase":
+        entry = node.phase
+        assert entry is not None
+        status = entry.status if entry.status is not None else "--"
+        return [
+            f" {indent}  {entry.phase}",
+            format_duration(entry.started_at, entry.ended_at, now),
+            status_cell(status, entry.status),
+        ]
+    run = node.run
+    assert run is not None
     return [
-        run.id[:prefix_len],
-        run.name,
+        f"{MARK if run.id in marked else ' '}{indent}{_expander(node)}{run.name}",
+        point_text(run.point),
         status_cell(run.status, run.status),
     ]
 
 
-def phase_cells(entry: types.PhaseListEntry, now: float) -> list[Cell]:
-    # A phase the current attempt skipped keeps the status it finished with:
-    # the run is standing on that phase's output, so what came of it is what
-    # the list should say. Which attempt it came from is in the address, and
-    # does not belong in the status column.
-    status = entry.status if entry.status is not None else "--"
+# A sweep's own statuses, drawn in the run colours they correspond to.
+_SWEEP_STATUS_STYLE = {
+    "draft": "configuring",
+    "running": "running",
+    "paused": "queued",
+    "done": "done",
+    "cancelled": "stopped",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class SweepMatrix:
+    """A sweep's runs laid out on its first two axes.
+
+    The first axis runs down and the second across; a sweep of one axis is one
+    column, whose `col_axis` is None. A sweep of more than two puts every run
+    sharing a cell's first two coordinates in that cell, in grid order.
+    """
+
+    row_axis: str
+    col_axis: str | None
+    row_values: list[object]
+    col_values: list[object]
+    # The runs at each cell, indexed [row][column].
+    members: list[list[list[types.RunRow]]]
+
+    def label(self, path: str | None, value: object) -> str:
+        return "" if path is None else point_text({path: value})
+
+
+def sweep_matrix(sweep: types.SweepRow, runs: list[types.RunRow]) -> SweepMatrix | None:
+    """`runs` placed on `sweep`'s grid, or None for a sweep with no axes."""
+    axes = list(sweep.axes)
+    if not axes:
+        return None
+    row_axis = axes[0]
+    col_axis = axes[1] if len(axes) > 1 else None
+    row_values = list(sweep.axes[row_axis])
+    col_values: list[object] = list(sweep.axes[col_axis]) if col_axis is not None else [None]
+    # Matched on `repr`, which tells 1 from 1.0 and True from 1 where `==`
+    # and hashing do not.
+    rows = {repr(v): i for i, v in enumerate(row_values)}
+    cols = {repr(v): i for i, v in enumerate(col_values)}
+    members: list[list[list[types.RunRow]]] = [[[] for _ in col_values] for _ in row_values]
+    for run in runs:
+        r = rows.get(repr(run.point.get(row_axis)))
+        c = cols.get(repr(run.point.get(col_axis)) if col_axis is not None else "None")
+        if r is not None and c is not None:
+            members[r][c].append(run)
+    return SweepMatrix(row_axis, col_axis, row_values, col_values, members)
+
+
+def matrix_cell(
+    members: list[types.RunRow], values: dict[str, str], marked: set[str] | None = None
+) -> rich.text.Text:
+    """One cell: a status glyph per run, and for a lone run its value or status.
+
+    Led by the mark when any of its runs is marked for comparison.
+    """
+    cell = rich.text.Text()
+    if marked is not None:
+        cell.append(MARK if any(r.id in marked for r in members) else " ")
+    for run in members:
+        cell.append(STATUS_GLYPHS.get(run.status, "?"), style=status_style(run.status))
+    if len(members) == 1:
+        run = members[0]
+        cell.append(f" {values.get(run.id) or run.status}")
+    return cell
+
+
+def sweep_legend() -> rich.text.Text:
+    text = rich.text.Text()
+    for status, glyph in STATUS_GLYPHS.items():
+        text.append(f"{glyph} {status}  ", style=status_style(status))
+    return text
+
+
+def sweep_grid(
+    sweep: types.SweepRow,
+    runs: list[types.RunRow],
+    values: dict[str, str] | None = None,
+) -> rich.text.Text:
+    """A sweep's runs as a grid of text: `sweep_matrix`, drawn.
+
+    Each cell is a run's status glyph and, once there is one, the value
+    `values` gives for it -- a reduced metric, which is what turns the monitor
+    into the result as the sweep finishes.
+    """
+    values = values or {}
+    text = rich.text.Text()
+    matrix = sweep_matrix(sweep, runs)
+    if matrix is None:
+        return text
+    row_width = max(len(matrix.label(matrix.row_axis, v)) for v in matrix.row_values) + 2
+    col_width = max(
+        [14]
+        + [len(matrix.label(matrix.col_axis, v)) + 2 for v in matrix.col_values]
+        + [len(values.get(r.id, "")) + 4 for r in runs]
+    )
+    if matrix.col_axis is not None:
+        text.append(" " * row_width)
+        for value in matrix.col_values:
+            text.append(matrix.label(matrix.col_axis, value).ljust(col_width), style="bold")
+        text.append("\n")
+    for r, row_value in enumerate(matrix.row_values):
+        text.append(matrix.label(matrix.row_axis, row_value).ljust(row_width), style="bold")
+        for c in range(len(matrix.col_values)):
+            cell = matrix_cell(matrix.members[r][c], values)
+            cell.pad_right(max(0, col_width - len(cell.plain)))
+            text.append_text(cell)
+        text.append("\n")
+    text.append("\n")
+    text.append_text(sweep_legend())
+    return text
+
+
+def matrix_table(
+    matrix: SweepMatrix, values: dict[str, str], marked: set[str]
+) -> tuple[list[str], list[list[Cell]]]:
+    """`sweep_matrix` as a table's columns and rows, the row labels first."""
+    columns = [""] + [matrix.label(matrix.col_axis, v) or "run" for v in matrix.col_values]
+    rows: list[list[Cell]] = []
+    for r, row_value in enumerate(matrix.row_values):
+        label = rich.text.Text(matrix.label(matrix.row_axis, row_value), style="bold")
+        rows.append([label, *(matrix_cell(m, values, marked) for m in matrix.members[r])])
+    return columns, rows
+
+
+# The Sweeps workspace's list.
+SWEEP_COLUMNS = ("NAME", "STATUS", "DONE")
+
+
+def sweep_cells(sweep: types.SweepRow) -> list[Cell]:
     return [
-        entry.phase,
-        status_cell(status, entry.status),
-        format_age(entry.started_at, now),
-        format_duration(entry.started_at, entry.ended_at, now),
+        sweep.name,
+        status_cell(sweep.status, _SWEEP_STATUS_STYLE.get(sweep.status)),
+        sweep_progress(sweep),
     ]
+
+
+def sweep_queue(
+    sweep: types.SweepRow, members: list[types.RunRow], everything: list[types.RunRow]
+) -> rich.text.Text:
+    """What each of the sweep's computes is doing, and what it does next.
+
+    One line per compute, whatever is running on it -- one of the sweep's runs
+    or not, since a compute the viewer is using by hand is one the dispatcher
+    waits for -- and one line for the next of the sweep's runs queued on each.
+    Never more, so the pane never scrolls.
+    """
+    text = rich.text.Text()
+    for compute_name in sweep.compute:
+        text.append(f"{compute_name:<6}", style="bold")
+        running = [r for r in everything if r.compute == compute_name and r.status == "running"]
+        if not running:
+            text.append("idle", style="dim")
+        for run in running:
+            text.append(f"{run.name}  ")
+            if run.point:
+                text.append(f"{point_text(run.point)}  ", style="dim")
+            if run.phase:
+                text.append(run.phase)
+            if run.sweep_id != sweep.id:
+                text.append("  (not this sweep's)", style="dim")
+        text.append("\n")
+    upcoming: list[str] = []
+    for compute_name in sweep.compute:
+        queued = next(
+            (r for r in members if r.compute == compute_name and r.status == "queued"), None
+        )
+        if queued is not None:
+            upcoming.append(f"{compute_name} {queued.name}")
+    text.append(f"{'next':<6}", style="bold")
+    if upcoming:
+        text.append(" · ".join(upcoming))
+        if sweep.status in ("draft", "paused"):
+            text.append(f"  ({sweep.status}: start it with s)", style="dim")
+    else:
+        text.append("nothing queued", style="dim")
+    return text
+
+
+def axis_text(path: str, values: list[object]) -> str:
+    """One axis, short: its last name and its values."""
+    shown = [point_text({path: v}).split("=", 1)[1] for v in values]
+    if len(shown) > 5:
+        shown = [shown[0], shown[1], "…", shown[-1]]
+    return f"{path.rsplit('.', 1)[-1]} {','.join(shown)} ×{len(values)}"
+
+
+def sweep_spec(sweep: types.SweepRow, base_name: str | None) -> list[tuple[str, str]]:
+    """A sweep's spec as label/value lines."""
+    axes = " · ".join(axis_text(p, v) for p, v in sweep.axes.items())
+    counts = sweep.counts
+    tally = [
+        f"{n} {what}"
+        for n, what in (
+            (counts.done, "done"),
+            (counts.running, "running"),
+            (counts.queued, "queued"),
+            (counts.failed, "failed"),
+            (counts.stopped, "stopped"),
+        )
+        if n
+    ]
+    lines = [
+        ("image", f"{sweep.image}@{sweep.image_id.removeprefix('sha256:')[:8]}"),
+        ("base", base_name or "the image's defaults"),
+        ("axes", f"{axes} → {counts.total} runs"),
+        ("compute", f"{', '.join(sweep.compute)} (fixed per run)"),
+        ("runs", ", ".join(tally) or "none"),
+    ]
+    if sweep.replicate:
+        lines.insert(3, ("replicate", ", ".join(p.rsplit(".", 1)[-1] for p in sweep.replicate)))
+    return lines
 
 
 def run_summary(detail: types.RunDetail) -> list[tuple[str, str]]:
@@ -359,7 +716,7 @@ def build_plot(
 def compute_options(info: compute.ComputeInfo) -> list[tuple[str, str]]:
     """(label, value) pairs for the new-run dialog's compute picker.
 
-    The values are exactly what `runs._resolve_compute` accepts -- `cpu` and
+    The values are exactly what `runs.resolve_compute` accepts -- `cpu` and
     `gpu<index>` -- because it is the one that decides, and a dialog offering
     anything else would only be rejected on create.
     """
@@ -422,45 +779,58 @@ def compute_rows(info: compute.ComputeInfo) -> list[list[str]]:
     return rows
 
 
-# -- the content column's tabs --------------------------------------------
-
-# The tabs, in order, as (key, name, pane id). The key is the number that
-# selects the tab and the pane id is the widget it shows, so this is the one
-# place the three are tied together.
-CONTENT_TABS = (
-    ("2", "Config", "config"),
-    ("3", "Plots", "plots"),
-    ("4", "Logs", "log"),
-)
+# The System workspace's compute table: `compute list`'s columns, then what is
+# on each device now and how many sweep runs wait for it.
+SYSTEM_COMPUTE_COLUMNS = (*COMPUTE_COLUMNS, "RUNNING", "QUEUED")
 
 
-def content_panes() -> tuple[str, ...]:
-    """The widget ids the tabs switch between."""
-    return tuple(pane for _, _, pane in CONTENT_TABS)
+def system_compute_rows(info: compute.ComputeInfo, runs: list[types.RunRow]) -> list[list[Cell]]:
+    """`compute_rows`, with the run on each device and its queue beside it."""
+    running: dict[str, list[str]] = {}
+    queued: dict[str, int] = {}
+    for run in runs:
+        if run.status == "running":
+            running.setdefault(run.compute, []).append(run.name)
+        elif run.status == "queued":
+            queued[run.compute] = queued.get(run.compute, 0) + 1
+    rows: list[list[Cell]] = []
+    for row in compute_rows(info):
+        device = row[0]
+        names = running.get(device, [])
+        rows.append(
+            [
+                *row,
+                ", ".join(names) if names else "--",
+                str(queued[device]) if device in queued else "--",
+            ]
+        )
+    return rows
 
 
-def content_tabs(active: str) -> rich.text.Text:
-    """The tab strip above the content column, with `active` picked out.
-
-    A line of text rather than a `TabbedContent`: the tabs here are switched by
-    number keys and never by clicking through a bar, so what is wanted is the
-    label and which one is current, not a widget with its own focus and its own
-    key handling to keep out of the way of the screen's.
-    """
-    line = rich.text.Text("  ")
-    for key, name, pane in CONTENT_TABS:
-        if line.plain != "  ":
-            line.append("   ")
-        style = "bold reverse" if pane == active else "dim"
-        line.append(f" {key} {name} ", style=style)
+def store_line(summary: types.StoreSummary) -> str:
+    """The data store in one line: its size, and what a cleanup would reclaim."""
+    line = f"{summary.files} file(s), {human_size(summary.bytes)}"
+    if summary.orphaned:
+        line += (
+            f"; {summary.orphaned} orphaned ({human_size(summary.orphaned_bytes)}), reclaimed by G"
+        )
     return line
+
+
+def human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 # -- the help screen ------------------------------------------------------
 
-# Wide enough for the longest key spelling in `screens._HELP`, so the
+# Wide enough for the longest key spelling in `screens.help_sections`, so the
 # descriptions line up in one column.
-_HELP_KEY_WIDTH = 16
+_HELP_KEY_WIDTH = 18
 
 
 def help_heading(heading: str) -> rich.text.Text:

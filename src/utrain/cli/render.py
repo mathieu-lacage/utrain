@@ -59,6 +59,82 @@ def run_row(run: types.RunRow, all_run_ids: list[str]) -> str:
     return output.format_table(_RUN_HEADERS, [_run_cells(run, prefix_len)])
 
 
+def format_point_value(value: object) -> str:
+    """One axis value as a sweep's tables print it.
+
+    Floats in `g` form, so a learning rate reads `0.0003` and a big one `1e+06`
+    rather than a column of trailing digits.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def axis_label(path: str) -> str:
+    """An axis path's last part, which is what a column of values needs to say."""
+    return path.rsplit(".", 1)[-1]
+
+
+def point_text(point: dict[str, object]) -> str:
+    return " ".join(f"{axis_label(p)}={format_point_value(v)}" for p, v in point.items())
+
+
+_SWEEP_HEADERS = ["ID", "NAME", "IMAGE", "STATUS", "RUNS", "DONE", "FAILED", "COMPUTE", "CREATED"]
+
+
+def _sweep_cells(sweep: types.SweepRow, prefix_len: int) -> list[str]:
+    c = sweep.counts
+    return [
+        sweep.id[:prefix_len],
+        sweep.name,
+        sweep.image,
+        sweep.status,
+        str(c.total),
+        str(c.done),
+        str(c.failed),
+        ",".join(sweep.compute),
+        output.format_time(sweep.created_at),
+    ]
+
+
+def sweep_table(sweeps: list[types.SweepRow]) -> str:
+    prefix_len = min_prefix_len([s.id for s in sweeps])
+    return output.format_table(_SWEEP_HEADERS, [_sweep_cells(s, prefix_len) for s in sweeps])
+
+
+def sweep_detail(detail: types.SweepDetail) -> str:
+    sweep = detail.sweep
+    c = sweep.counts
+    axes = [
+        f"  {path}: {', '.join(format_point_value(v) for v in values)}"
+        + ("  (replicate)" if path in sweep.replicate else "")
+        for path, values in sweep.axes.items()
+    ]
+    lines = [
+        f"id:       {sweep.id}",
+        f"name:     {sweep.name}",
+        f"image:    {sweep.image} ({sweep.image_id[:12]})",
+        f"status:   {sweep.status}",
+        f"compute:  {', '.join(sweep.compute)}",
+        f"base:     {sweep.base if sweep.base else '--'}",
+        f"runs:     {c.total} ({c.done} done, {c.failed} failed, {c.stopped} stopped, "
+        f"{c.running} running, {c.queued} queued)",
+        f"created:  {output.format_time(sweep.created_at)}",
+        "axes:",
+        *axes,
+    ]
+    if detail.runs:
+        prefix_len = min_prefix_len([r.id for r in detail.runs])
+        rows = [
+            [r.id[:prefix_len], r.name, point_text(r.point), r.compute, r.status]
+            for r in detail.runs
+        ]
+        lines += ["", output.format_table(["ID", "NAME", "POINT", "COMPUTE", "STATUS"], rows)]
+    return "\n".join(lines)
+
+
 def gc_result(result: types.GcResult) -> str:
     return (
         f"removed {result.removed} file(s), {output.human_size(result.reclaimed_bytes)} reclaimed"
