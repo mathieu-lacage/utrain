@@ -256,7 +256,6 @@ def write_config(
     run_id_prefix: str,
     values: dict[str, object],
     session: sqlalchemy.orm.Session,
-    described: container.schema.DescribeOutput | None = None,
 ) -> None:
     """Replace a run's config.yaml with `values`, validated against its schema.
 
@@ -274,8 +273,7 @@ def write_config(
     if status != "configuring":
         raise exceptions.UI(f"run '{run_id}' is {status}; only a configuring run can be edited")
 
-    if described is None:
-        described = container.podman.describe(dbmod.run_image_ref(row))
+    described = dbmod.run_description(row, session)
 
     path = dbmod.run_dir(run_id, session) / "config.yaml"
     current = _mapping(yaml.safe_load(path.read_text())) if path.exists() else {}
@@ -420,7 +418,7 @@ def create_run(
     # Freeze the id before describing: the run must keep pointing at exactly
     # this content even if the name is re-tagged to another image later.
     image_id = container.podman.image_id(presets[image])
-    describe = container.podman.describe(image_id)
+    describe = dbmod.describe_image(image_id, session)
     if not describe.phase_order:
         raise exceptions.UI(f"image '{image}' has no phases")
 
@@ -608,10 +606,8 @@ def restart_run(
     # Same preflight as start_run: refuse before anything is stopped or queued.
     orchestrator.ensure_gpu_toolkit(str(row["compute"]))
 
-    # Validate from_phase against the frozen image id
     if from_phase is not None:
-        describe = container.podman.describe(dbmod.run_image_ref(row))
-        if from_phase not in describe.phase_order:
+        if from_phase not in dbmod.run_description(row, session).phase_order:
             raise exceptions.UI(f"phase '{from_phase}' not found in image")
 
     attempt_n = dbmod.latest_attempt(run_id, session)

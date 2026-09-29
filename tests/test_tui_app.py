@@ -20,6 +20,8 @@ import typing
 import naw.wandb
 import pytest
 import sqlalchemy
+import sqlalchemy.dialects.sqlite
+import sqlalchemy.orm
 import textual.coordinate
 import textual.widgets
 import textual.worker
@@ -165,6 +167,15 @@ def _describe() -> utrain.container.schema.DescribeOutput:
     )
 
 
+def _store_description(session: sqlalchemy.orm.Session) -> None:
+    """What `runs.create_run` stores of the image, for runs inserted directly."""
+    session.execute(
+        sqlalchemy.dialects.sqlite.insert(utrain.db.image_descriptions)
+        .values(image_id=IMAGE_ID, describe=_describe().model_dump_json())
+        .on_conflict_do_nothing()
+    )
+
+
 def _seed(data_dir: pathlib.Path) -> None:
     """A finished run with two phases, the second having logged metrics."""
     run_dir = data_dir / "runs" / RUN_ID
@@ -183,6 +194,7 @@ def _seed(data_dir: pathlib.Path) -> None:
 
     settings = utrain.config.Settings(data_dir=data_dir)
     with utrain.db.with_db(settings) as session:
+        _store_description(session)
         session.execute(
             sqlalchemy.insert(utrain.db.runs).values(
                 id=RUN_ID,
@@ -234,6 +246,7 @@ def _seed_draft(data_dir: pathlib.Path) -> None:
         "phases:\n  pretrain:\n    lr: 0.001\n"
     )
     with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        _store_description(session)
         session.execute(
             sqlalchemy.insert(utrain.db.runs).values(
                 id=DRAFT_ID,
@@ -259,6 +272,7 @@ def _seed_running(data_dir: pathlib.Path) -> None:
     run_dir = data_dir / "runs" / LIVE_ID
     (run_dir / "attempt" / "1" / "logs").mkdir(parents=True)
     with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        _store_description(session)
         session.execute(
             sqlalchemy.insert(utrain.db.runs).values(
                 id=LIVE_ID,
@@ -347,6 +361,7 @@ def _seed_restarted(data_dir: pathlib.Path) -> None:
     (run_dir / "attempt" / "2" / "logs").mkdir(parents=True)
 
     with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        _store_description(session)
         session.execute(
             sqlalchemy.insert(utrain.db.runs).values(
                 id=RESTART_ID,
@@ -539,6 +554,7 @@ class _RecordingData(utrain.tui.data.Data):
             "phases:\n  pretrain:\n    lr: 0.001\n"
         )
         with utrain.db.with_db(self.settings) as session:
+            _store_description(session)
             session.execute(
                 sqlalchemy.insert(utrain.db.runs).values(
                     id=NEW_ID,
@@ -3895,6 +3911,7 @@ def _seed_other(data_dir: pathlib.Path) -> None:
     run_dir = data_dir / "runs" / OTHER_ID
     (run_dir / "attempt" / "1" / "logs").mkdir(parents=True)
     with utrain.db.with_db(utrain.config.Settings(data_dir=data_dir)) as session:
+        _store_description(session)
         session.execute(
             sqlalchemy.insert(utrain.db.runs).values(
                 id=OTHER_ID,

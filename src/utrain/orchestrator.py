@@ -252,7 +252,10 @@ def launch(
     """
     row = dbmod.get_run(run_id, session)
     ensure_gpu_toolkit(str(row["compute"]))
-    describe = container.podman.describe(dbmod.run_image_ref(row))
+    # Fails fast if the image has left the store; the phases are the stored
+    # description's.
+    dbmod.run_image_ref(row)
+    describe = dbmod.run_description(row, session)
     start_order = 0
     if from_phase is not None:
         if from_phase not in describe.phase_order:
@@ -628,6 +631,8 @@ def run_orchestrator(
         except exceptions.UI as exc:
             print(f"orchestrator: {exc}", file=sys.stderr)
             sys.exit(1)
+        described = dbmod.run_description(run_row, session)
+        cacheable_phases = {p.name for p in described.phases if p.cacheable}
 
         phase_rows = (
             session.execute(
@@ -653,8 +658,6 @@ def run_orchestrator(
     phases_to_run = [str(r["phase"]) for r in phase_rows]
     phase_orders = {str(r["phase"]): int(r["phase_order"]) for r in phase_rows}
 
-    describe_output = container.podman.describe(image)
-    cacheable_phases = {p.name for p in describe_output.phases if p.cacheable}
     store_dir = settings.data_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
 

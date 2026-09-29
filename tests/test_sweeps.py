@@ -317,6 +317,8 @@ def test_a_sweep_from_a_run_starts_from_that_run_config(
             created_at=1.0,
         )
     )
+    # Stored as `run create` would have, from the stubbed `describe`.
+    utrain.db.describe_image(FROZEN_ID, session)
     _create(session, settings, axes={"phases.pretrain.lr": [0.01]}, compute=["cpu"], base="c")
     detail = utrain.sweeps.get_sweep("lr-depth", session)
     cfg = yaml.safe_load((settings.runs_dir / detail.runs[0].id / "config.yaml").read_text())

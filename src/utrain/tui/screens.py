@@ -16,9 +16,9 @@ of their own: the two resources a run is made of, glanced at from wherever the
 viewer was and closed with `escape`. They are pushed over the screen they were
 asked from, so nothing of what was being watched moves -- see `_Popover`.
 
-Every fetch runs in a thread worker. `podman describe` starts a container and
-`compute.collect_compute` shells out to nvidia-smi; either on the message loop
-would freeze the app for seconds.
+Every fetch runs in a thread worker. The database is read there, podman is
+asked for its images and `compute.collect_compute` shells out to nvidia-smi;
+on the message loop any of them would freeze the app.
 
 Screens reach the app through :class:`Host` rather than through `self.app`.
 Textual types `self.app` as `App[Unknown]`, so every use of it costs a cast; a
@@ -2038,13 +2038,8 @@ class MainScreen(_Screen):
     def lifecycle(self, run_id: str, op: _Op, from_phase: str | None) -> None:
         """Start, stop, restart or delete, off the message loop.
 
-        A thread because all four shell out: `runs.start_run` and
-        `runs.restart_run` resolve the run's frozen image id and call
-        `container.podman.describe`, and the latter starts a container. On the
-        loop that would freeze the app for seconds. They go through the query
-        layer's own uncached describe rather than this app's cache -- what
-        `start_run` needs is the query layer's business, and reaching in to hand
-        it a cached answer would be a way for the two to disagree.
+        A thread because they write the database and signal processes, which
+        the message loop must not wait on.
 
         Its own group, so the 1s refresh -- which is `exclusive` within
         `snapshot` -- can neither cancel this nor be cancelled by it.
@@ -3556,7 +3551,7 @@ class SweepsScreen(_Screen):
 
     @textual.work(thread=True, group="sweep-lifecycle")
     def extend(self, sweep_id: str, axes: dict[str, object]) -> None:
-        """`sweep_extend` describes the image, which starts a container."""
+        """A worker, as every write is: it creates runs and their configs."""
         try:
             added = self.data.extend_sweep(sweep_id, axes)
         except exceptions.UI as e:

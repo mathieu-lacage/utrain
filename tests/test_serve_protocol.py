@@ -22,6 +22,7 @@ import uuid
 
 import pytest
 import sqlalchemy
+import sqlalchemy.dialects.sqlite
 import sqlalchemy.orm
 
 import utrain.chat
@@ -328,7 +329,20 @@ def _make_run(
     return run_id
 
 
-def _patch_describe(monkeypatch: pytest.MonkeyPatch, *, can_serve: bool) -> None:
+def _store(
+    session: sqlalchemy.orm.Session, described: utrain.container.schema.DescribeOutput
+) -> None:
+    """Make `described` what the database says of the chat tests' image."""
+    session.execute(
+        sqlalchemy.dialects.sqlite.insert(utrain.db.image_descriptions)
+        .values(image_id="f" * 64, describe=described.model_dump_json())
+        .on_conflict_do_update(
+            index_elements=["image_id"], set_={"describe": described.model_dump_json()}
+        )
+    )
+
+
+def _store_describe(session: sqlalchemy.orm.Session, *, can_serve: bool) -> None:
     """The image the chat tests talk to: two phases, one of them chattable.
 
     `tokenizer` is deliberately left unservable, so a run of this image has a
@@ -344,7 +358,7 @@ def _patch_describe(monkeypatch: pytest.MonkeyPatch, *, can_serve: bool) -> None
         ],
         phase_order=["tokenizer", "pretrain"],
     )
-    monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: described)
+    _store(session, described)
 
 
 @pytest.fixture()
@@ -361,7 +375,6 @@ def chat_env(
     # Resolving a run's image checks the frozen id against the local store;
     # answer yes rather than shelling out to podman.
     monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: True)
-    _patch_describe(monkeypatch, can_serve=True)
 
     def fake_serve_argv(
         image_key: str,
@@ -400,6 +413,7 @@ def chat_env(
     monkeypatch.setattr(utrain.orchestrator, "serve_argv", fake_serve_argv)
 
     with utrain.db.with_db(utrain.config.Settings()) as session:
+        _store_describe(session, can_serve=True)
         yield session
 
 
@@ -488,7 +502,7 @@ def test_chat_run_refuses_an_image_that_cannot_serve(
     chat_env: sqlalchemy.orm.Session, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"pretrain": "done"})
-    _patch_describe(monkeypatch, can_serve=False)
+    _store_describe(chat_env, can_serve=False)
     _feed(monkeypatch, "")
     with pytest.raises(utrain.exceptions.UI, match="does not support serve"):
         utrain.cli.chat.chat_run(run_id, chat_env, max_tokens=10, temperature=0.8)
@@ -506,7 +520,6 @@ def test_chat_run_serves_the_phase_it_is_asked_for(
     snapshot of the run as it stood then -- which is the whole point of being
     able to ask for it. The banner names which one answered.
     """
-    _patch_describe(monkeypatch, can_serve=True)
     # Both phases servable here, so the choice is the caller's rather than
     # the only one on offer.
     described = utrain.container.schema.DescribeOutput(
@@ -517,7 +530,7 @@ def test_chat_run_serves_the_phase_it_is_asked_for(
         ],
         phase_order=["tokenizer", "pretrain"],
     )
-    monkeypatch.setattr(utrain.container.podman, "describe", lambda ref: described)
+    _store(chat_env, described)
 
     run_id = _make_run(chat_env, tmp_path, phase_statuses={"tokenizer": "done", "pretrain": "done"})
     _feed(monkeypatch, "hello\n/quit\n")

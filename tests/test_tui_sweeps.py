@@ -13,6 +13,7 @@ import textual.widgets
 
 import utrain.compute
 import utrain.config
+import utrain.container.podman
 import utrain.exceptions
 import utrain.tui.app
 import utrain.tui.menus
@@ -79,7 +80,10 @@ class _SweepData(base._RecordingData):  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.fixture()
-def app(tmp_path: pathlib.Path) -> utrain.tui.app.UtrainApp:
+def app(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> utrain.tui.app.UtrainApp:
+    # The presets already name the image by its id, which is what the new-sweep
+    # form resolves them to.
+    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: ref)
     base._seed(tmp_path)  # pyright: ignore[reportPrivateUsage]
     runs_tests._seed_sweep(tmp_path)  # pyright: ignore[reportPrivateUsage]
     source = _SweepData(

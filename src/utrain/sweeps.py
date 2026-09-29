@@ -300,7 +300,7 @@ def _image(
             raise exceptions.UI(
                 f"run '{base}' uses image '{row['image']}', not '{image}'; give one or the other"
             )
-        described = container.podman.describe(dbmod.run_image_ref(row))
+        described = dbmod.run_description(row, session)
         values = runs.read_config(base_id, session)
         return _Image(str(row["image"]), str(row["image_id"]), described), values, base_id
 
@@ -310,7 +310,7 @@ def _image(
     if image not in presets:
         raise exceptions.UI(f"image '{image}' not found")
     image_id = container.podman.image_id(presets[image])
-    described = container.podman.describe(image_id)
+    described = dbmod.describe_image(image_id, session)
     return _Image(image, image_id, described), {}, None
 
 
@@ -687,7 +687,7 @@ def extend_sweep(
     image_ref = str(row["image_id"])
     if not container.podman.image_exists(image_ref):
         raise exceptions.UI(f"image '{row['image']}' of sweep '{row['name']}' is not in the store")
-    described = container.podman.describe(image_ref)
+    described = dbmod.description(image_ref, session)
     schema = described.config_schema
 
     new_axes = {path: list(values) for path, values in spec.axes.items()}

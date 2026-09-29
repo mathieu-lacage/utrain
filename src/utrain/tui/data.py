@@ -7,18 +7,14 @@ and closes it, the way `cli/main._cmd_run_delete` does. A long-lived session
 would hold a SQLite connection for the life of the app against a detached
 orchestrator that is writing, and they share a 5s busy timeout.
 
-**Describe is cached.** `phases.list_phases` and `phases.show_phase` both call
-`container.podman.describe`, which is `podman run --rm <image> describe` -- it
-starts a container -- and `container.podman.list_presets`, which shells out to
-`podman images`. Neither is cached in the query layer, which is right for a CLI
-that runs one command and exits, and unusable for a view that refreshes every
-second: it would launch a container per frame. An image's phase list does not
-change under a running app, so it is fetched once per image and kept.
+**Descriptions are memoized.** What an image says about itself -- its phases,
+their labels and plots, its config schema -- is stored in the database when a
+run is created from it (`db.description`), and cannot change: runs are frozen
+to an image id. So it is read once per image and kept, which also lets the
+message loop ask for it (`described`) without touching the database.
 
-The cache is held here rather than in `container.podman` deliberately. A global
-memo there would change what the CLI does and would leave a long-lived process
-believing a stale answer after an image was rebuilt; here it is scoped to one
-app, and `refresh()` drops it.
+**Presets are cached briefly.** `container.podman.list_presets` shells out to
+`podman images`; a few seconds of staleness keeps it off the refresh path.
 """
 
 import collections.abc
@@ -288,11 +284,10 @@ class _Curves:
 
 
 class Data:
-    """Typed reads for the TUI, with the podman work cached.
+    """Typed reads for the TUI, with image descriptions memoized.
 
-    ``describe_cache`` is injectable so tests can seed it: with it primed,
-    nothing in the phase or run screens shells out, which is what lets the TUI
-    tests run in CI. The cram suite cannot -- CI has no podman at all.
+    ``describe_cache`` is injectable so tests can seed the memo, keyed by
+    image id, for the message-loop reads of `described`.
     """
 
     def __init__(
@@ -317,8 +312,11 @@ class Data:
         return self._settings
 
     def refresh(self) -> None:
-        """Drop the caches, so the next read reflects a rebuilt image."""
-        self._describe.clear()
+        """Drop the preset cache, so the next read sees an image added or removed.
+
+        The descriptions stay: they are keyed by image id, and an id's content
+        cannot change.
+        """
         self._presets = {}
         self._presets_at = 0.0
 
@@ -329,24 +327,23 @@ class Data:
             self._presets_at = now
         return self._presets
 
-    def described(self, ref: str) -> containermod.schema.DescribeOutput | None:
-        """What is already known about an image, or None -- never a container.
+    def described(self, image_id: str) -> containermod.schema.DescribeOutput | None:
+        """What is already known about an image, or None -- never a query.
 
-        `describe` shells out on a miss, which is right everywhere it is called
-        from a worker and wrong on the message loop: `check_action` runs there,
-        once per key and once per footer rebuild, and a `podman run` from it
-        would freeze the app. The cache is warmed by every snapshot fetch, so
-        the answer is at worst one tick late.
+        For the message loop: `check_action` runs there, once per key and once
+        per footer rebuild. The memo is warmed by every snapshot fetch, so the
+        answer is at worst one tick late.
         """
-        return self._describe.get(ref)
+        return self._describe.get(image_id)
 
-    def describe(self, ref: str) -> containermod.schema.DescribeOutput:
-        """An image's phase list, fetched at most once per image per app."""
-        cached = self._describe.get(ref)
+    def describe(self, image_id: str) -> containermod.schema.DescribeOutput:
+        """An image's stored description, read at most once per image per app."""
+        cached = self._describe.get(image_id)
         if cached is not None:
             return cached
-        described = phases.describe_image(ref)
-        self._describe[ref] = described
+        with dbmod.with_db(self._settings) as session:
+            described = dbmod.description(image_id, session)
+        self._describe[image_id] = described
         return described
 
     def phase_order(self, ref: str) -> list[str]:
@@ -372,21 +369,18 @@ class Data:
 
     def list_phases(self, run_id: str) -> list[types.PhaseListEntry]:
         with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(run_id, session)
-            return phases.list_phases(run_id, session, self.describe(run.image_id))
+            return phases.list_phases(run_id, session)
 
     def phase_detail(self, addr: str) -> types.PhaseDetail:
         with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(addr.split("/")[0], session)
-            return phases.show_phase(addr, session, self.describe(run.image_id))
+            return phases.show_phase(addr, session)
 
     def phase_log_tail(self, detail: types.PhaseDetail, n: int) -> list[str]:
         return phases.read_log_tail(detail, n)
 
     def write_run_config(self, run_id: str, values: dict[str, object]) -> None:
         with dbmod.with_db(self._settings) as session:
-            run = runs.get_run(run_id, session)
-            runs.write_config(run_id, values, session, self.describe(run.image_id))
+            runs.write_config(run_id, values, session)
             session.commit()
 
     # -- lifecycle --------------------------------------------------------
@@ -498,7 +492,7 @@ class Data:
             described = self.describe(detail.run.image_id)
             config = runs.read_config(run_id, session)
             try:
-                entries = phases.list_phases(run_id, session, described)
+                entries = phases.list_phases(run_id, session)
             except exceptions.UI:
                 entries = []
 
@@ -574,7 +568,7 @@ class Data:
             if run is None or run.attempt is None:
                 continue
             try:
-                out[run_id] = phases.list_phases(run_id, session, self.describe(run.image_id))
+                out[run_id] = phases.list_phases(run_id, session)
             except exceptions.UI:
                 out[run_id] = []
         return out
@@ -630,7 +624,8 @@ class Data:
     def sweep_form(self, image: str, base: str | None) -> SweepForm:
         """The fields a new sweep can vary, valued from its base run or defaults.
 
-        `describe` starts a container on a miss, so this is a worker's.
+        A worker's: an image no run was created from yet is described by
+        starting a container.
         """
         with dbmod.with_db(self._settings) as session:
             if base is not None:
@@ -641,7 +636,8 @@ class Data:
                 presets = self.presets()
                 if image not in presets:
                     raise exceptions.UI(f"image '{image}' not found")
-                described = self.describe(presets[image])
+                image_id = containermod.podman.image_id(presets[image])
+                described = self._describe.get(image_id) or dbmod.describe_image(image_id, session)
                 values = {}
         return SweepForm(
             schema=described.config_schema,
@@ -753,7 +749,7 @@ class Data:
                 if run.attempt is None:
                     continue
                 try:
-                    entries[run.id] = phases.list_phases(run.id, session, described)
+                    entries[run.id] = phases.list_phases(run.id, session)
                 except exceptions.UI:
                     entries[run.id] = []
 

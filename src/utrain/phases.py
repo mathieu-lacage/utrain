@@ -7,30 +7,9 @@ from . import address, container, dispatcher, exceptions, logs, metrics, runs, t
 from . import db as dbmod
 
 
-def describe_image(
-    image: str,
-    described: container.schema.DescribeOutput | None = None,
-) -> container.schema.DescribeOutput:
-    """An image's description, fetching it unless the caller already has one.
-
-    `podman.describe` starts a container. That is fine once per CLI invocation
-    and ruinous for a view that refreshes every second, so a long-lived caller
-    can pass in a cached description instead -- an image's phase list does not
-    change while it is being watched. Passing nothing keeps the CLI's
-    behaviour, which is to ask podman every time.
-
-    `image` is what podman accepts directly -- a run's frozen id
-    (`db.run_image_ref`), which is how every run-scoped caller asks.
-    """
-    if described is not None:
-        return described
-    return container.podman.describe(image)
-
-
 def list_phases(
     addr: str,
     session: sqlalchemy.orm.Session,
-    described: container.schema.DescribeOutput | None = None,
 ) -> list[types.PhaseListEntry]:
     run_id, attempt_n, _ = address.parse(addr, session)
 
@@ -55,9 +34,7 @@ def list_phases(
 
     # Get all phases from the image to show pre-from_phase entries
     run_row = dbmod.get_run(run_id, session)
-    if described is None:
-        described = describe_image(dbmod.run_image_ref(run_row))
-    all_phases = described.phase_order
+    all_phases = dbmod.run_description(run_row, session).phase_order
 
     from_phase_order = 0
     if from_phase and from_phase in all_phases:
@@ -164,9 +141,8 @@ def list_phase_ids(addr: str, session: sqlalchemy.orm.Session) -> list[str]:
         raise exceptions.UI("run has no attempts yet")
 
     run_row = dbmod.get_run(run_id, session)
-    describe = container.podman.describe(dbmod.run_image_ref(run_row))
-
-    return [f"{run_id}/{attempt_n}/{phase}" for phase in describe.phase_order]
+    described = dbmod.run_description(run_row, session)
+    return [f"{run_id}/{attempt_n}/{phase}" for phase in described.phase_order]
 
 
 def read_metric(
@@ -218,7 +194,6 @@ def _resolve_phase(
 def show_phase(
     addr: str,
     session: sqlalchemy.orm.Session,
-    described: container.schema.DescribeOutput | None = None,
 ) -> types.PhaseDetail:
     run_id, attempt_n, phase, attempt_dir = _resolve_phase(addr, session)
     run_row = dbmod.get_run(run_id, session)
@@ -237,9 +212,7 @@ def show_phase(
     if phase_row is None:
         raise exceptions.UI(f"phase '{phase}' not found in attempt {attempt_n}")
 
-    # Resolve phase label from image describe
-    if described is None:
-        described = describe_image(dbmod.run_image_ref(run_row))
+    described = dbmod.run_description(run_row, session)
     phase_label = phase
     for pi in described.phases:
         if pi.name == phase:

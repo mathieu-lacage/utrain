@@ -65,6 +65,15 @@ def _run(
     return run_id
 
 
+def _store(session: sqlalchemy.orm.Session, described: S.DescribeOutput) -> None:
+    """What `run create` stores of the image every run here is frozen to."""
+    session.execute(
+        sqlalchemy.insert(utrain.db.image_descriptions).values(
+            image_id="ab" * 32, describe=described.model_dump_json()
+        )
+    )
+
+
 def _sweep(session: sqlalchemy.orm.Session, name: str, state: str = "running") -> str:
     sweep_id = name.ljust(32, "0")
     session.execute(
@@ -396,15 +405,12 @@ def test_stopping_a_running_run_leaves_its_status_to_the_dispatcher(
 def test_restart_from_a_phase_queues_it(
     monkeypatch: pytest.MonkeyPatch, session: sqlalchemy.orm.Session
 ) -> None:
-    monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: True)
-    monkeypatch.setattr(
-        utrain.container.podman,
-        "describe",
-        lambda ref: S.DescribeOutput(
+    _store(
+        session,
+        S.DescribeOutput(
             name="img",
             phases=[S.PhaseInfo(name="prep", label="Prep"), S.PhaseInfo(name="train", label="T")],
             phase_order=["prep", "train"],
-            config_schema=S.ConfigSchema(),
         ),
     )
     run_id = _run(session, "again", status="failed")
@@ -458,14 +464,10 @@ def test_launching_a_run_taken_off_the_queue_does_nothing(
     settings: utrain.config.Settings,
 ) -> None:
     monkeypatch.setattr(utrain.container.podman, "image_exists", lambda ref: True)
-    monkeypatch.setattr(
-        utrain.container.podman,
-        "describe",
-        lambda ref: S.DescribeOutput(
-            name="img",
-            phases=[S.PhaseInfo(name="train", label="Train")],
-            phase_order=["train"],
-            config_schema=S.ConfigSchema(),
+    _store(
+        session,
+        S.DescribeOutput(
+            name="img", phases=[S.PhaseInfo(name="train", label="Train")], phase_order=["train"]
         ),
     )
     run_id = _run(session, "stopped", status="stopped")

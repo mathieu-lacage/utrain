@@ -6,6 +6,7 @@ through captured stdout. Nothing here needs podman, so unlike the cram suite
 these do run in CI.
 """
 
+import ast
 import os
 import pathlib
 import random
@@ -61,6 +62,17 @@ def _insert_run(
             status=status,
             config_hash=None,
             created_at=created_at,
+        )
+    )
+
+
+def _store_description(
+    session: sqlalchemy.orm.Session, described: utrain.container.schema.DescribeOutput
+) -> None:
+    """What `runs.create_run` stores of the image, for runs inserted directly."""
+    session.execute(
+        sqlalchemy.insert(utrain.db.image_descriptions).values(
+            image_id=FROZEN_ID, describe=described.model_dump_json()
         )
     )
 
@@ -175,7 +187,8 @@ def test_a_phase_a_restart_skipped_keeps_the_status_it_finished_with(
         )
     )
 
-    entries = utrain.phases.list_phases(run_id, session, _described())
+    _store_description(session, _described())
+    entries = utrain.phases.list_phases(run_id, session)
 
     assert [e.phase for e in entries] == ["prepare", "train"]
     prepare, train = entries
@@ -380,6 +393,7 @@ def _configurable_run(
             created_at=100.0,
         )
     )
+    _store_description(session, _config_describe())
     return run_id
 
 
@@ -423,7 +437,6 @@ def test_write_config_coerces_form_strings_to_the_declared_types(
             "phases": {"pretrain": {"lr": "3e-4"}},
         },
         session,
-        _config_describe(),
     )
 
     written = utrain.runs.read_config(run_id, session)
@@ -439,9 +452,7 @@ def test_write_config_writes_the_first_config_of_a_run_that_has_none(
     path = utrain.runs.config_path(run_id, session)
     path.unlink()
 
-    utrain.runs.write_config(
-        run_id, {"globals": {"model": {"n_layer": 8}}}, session, _config_describe()
-    )
+    utrain.runs.write_config(run_id, {"globals": {"model": {"n_layer": 8}}}, session)
 
     written = utrain.runs.read_config(run_id, session)
     assert written["globals"] == {"model": {"n_layer": 8, "dtype": "fp32"}}
@@ -452,9 +463,7 @@ def test_write_config_keeps_the_run_id_and_compute(
 ) -> None:
     """Neither is a config field, so neither is the form's to change."""
     run_id = _configurable_run(session, tmp_path)
-    utrain.runs.write_config(
-        run_id, {"run_id": "nope", "compute": "gpu0"}, session, _config_describe()
-    )
+    utrain.runs.write_config(run_id, {"run_id": "nope", "compute": "gpu0"}, session)
 
     written = utrain.runs.read_config(run_id, session)
     assert written["run_id"] == run_id
@@ -466,9 +475,7 @@ def test_write_config_rejects_a_value_outside_the_declared_range(
 ) -> None:
     run_id = _configurable_run(session, tmp_path)
     with pytest.raises(utrain.exceptions.UI, match="at most 48"):
-        utrain.runs.write_config(
-            run_id, {"globals": {"model": {"n_layer": 999}}}, session, _config_describe()
-        )
+        utrain.runs.write_config(run_id, {"globals": {"model": {"n_layer": 999}}}, session)
     assert utrain.runs.read_config(run_id, session)["globals"] == {
         "model": {"n_layer": 4, "dtype": "fp32"}
     }
@@ -479,9 +486,7 @@ def test_write_config_rejects_a_value_outside_an_enum(
 ) -> None:
     run_id = _configurable_run(session, tmp_path)
     with pytest.raises(utrain.exceptions.UI, match="must be one of"):
-        utrain.runs.write_config(
-            run_id, {"globals": {"model": {"dtype": "int4"}}}, session, _config_describe()
-        )
+        utrain.runs.write_config(run_id, {"globals": {"model": {"dtype": "int4"}}}, session)
 
 
 def test_write_config_rejects_text_where_a_number_was_declared(
@@ -489,9 +494,7 @@ def test_write_config_rejects_text_where_a_number_was_declared(
 ) -> None:
     run_id = _configurable_run(session, tmp_path)
     with pytest.raises(utrain.exceptions.UI, match="must be an int"):
-        utrain.runs.write_config(
-            run_id, {"globals": {"model": {"n_layer": "many"}}}, session, _config_describe()
-        )
+        utrain.runs.write_config(run_id, {"globals": {"model": {"n_layer": "many"}}}, session)
 
 
 def test_write_config_refuses_a_run_that_has_started(
@@ -500,9 +503,7 @@ def test_write_config_refuses_a_run_that_has_started(
     """Once started, `runs.config_hash` records what the attempt ran with."""
     run_id = _configurable_run(session, tmp_path, status="running")
     with pytest.raises(utrain.exceptions.UI, match="only a configuring run"):
-        utrain.runs.write_config(
-            run_id, {"globals": {"model": {"n_layer": 8}}}, session, _config_describe()
-        )
+        utrain.runs.write_config(run_id, {"globals": {"model": {"n_layer": 8}}}, session)
 
 
 def test_write_config_puts_a_read_only_file_back_the_way_it_found_it(
@@ -621,3 +622,86 @@ def test_create_run_freezes_the_image_id(
     # Describing went to the id, not the tag: whatever the tag does later, the
     # config this run was seeded from is the frozen image's.
     assert described_calls == [FROZEN_ID]
+
+
+def test_an_image_is_described_once_whatever_is_created_from_it(
+    tmp_path: pathlib.Path, session: sqlalchemy.orm.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        utrain.container.podman, "list_presets", lambda: {"img": "localhost/utrain-img:utrain"}
+    )
+    monkeypatch.setattr(utrain.container.podman, "image_id", lambda ref: FROZEN_ID)
+    calls: list[str] = []
+
+    def describe(ref: str) -> utrain.container.schema.DescribeOutput:
+        calls.append(ref)
+        return _described()
+
+    monkeypatch.setattr(utrain.container.podman, "describe", describe)
+    settings = utrain.config.Settings(data_dir=tmp_path)
+    utrain.runs.create_run("one", "img", "cpu", settings, session)
+    utrain.runs.create_run("two", "img", "cpu", settings, session)
+
+    assert calls == [FROZEN_ID]
+    stored = session.execute(sqlalchemy.select(utrain.db.image_descriptions)).fetchall()
+    assert len(stored) == 1
+
+
+def test_reading_a_run_never_starts_a_container(
+    session: sqlalchemy.orm.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def describe(ref: str) -> utrain.container.schema.DescribeOutput:
+        raise AssertionError("a read started a container")
+
+    monkeypatch.setattr(utrain.container.podman, "describe", describe)
+    run_id = "e" * 32
+    _insert_run(session, run_id, "busy", created_at=1.0, status="running")
+    session.execute(
+        sqlalchemy.insert(utrain.db.run_attempts).values(
+            run_id=run_id, attempt=1, from_phase=None, status="running", pid=None, started_at=1.0
+        )
+    )
+    for order, (phase, status) in enumerate([("prepare", "running"), ("train", "pending")]):
+        session.execute(
+            sqlalchemy.insert(utrain.db.run_phases).values(
+                run_id=run_id, attempt=1, phase=phase, phase_order=order, status=status
+            )
+        )
+    _store_description(session, _described())
+
+    entries = utrain.phases.list_phases(run_id, session)
+    assert [e.phase for e in entries] == ["prepare", "train"]
+    assert utrain.phases.list_phase_ids(run_id, session) == [
+        f"{run_id}/1/prepare",
+        f"{run_id}/1/train",
+    ]
+
+
+def test_a_run_whose_image_description_is_missing_says_so(
+    session: sqlalchemy.orm.Session,
+) -> None:
+    run_id = "e" * 32
+    _insert_run(session, run_id, "orphan", created_at=1.0, status="running")
+    session.execute(
+        sqlalchemy.insert(utrain.db.run_attempts).values(
+            run_id=run_id, attempt=1, from_phase=None, status="running", pid=None, started_at=1.0
+        )
+    )
+    with pytest.raises(utrain.exceptions.UI, match="no description of image"):
+        utrain.phases.list_phases(run_id, session)
+
+
+def test_only_the_database_layer_asks_an_image_to_describe_itself() -> None:
+    """Everything else reads the stored description, so no read starts a container."""
+    src = pathlib.Path(utrain.db.__file__).parent
+    callers = {
+        path.relative_to(src).as_posix()
+        for path in src.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "describe"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "podman"
+    }
+    assert callers == {"db.py"}

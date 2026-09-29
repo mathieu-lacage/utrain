@@ -131,8 +131,7 @@ def start(
     # the run's frozen image id, so a re-tagged name cannot change the answer.
     image_key = str(row["image"])
     image = dbmod.run_image_ref(row)
-    describe = container.podman.describe(image)
-    servable = servable_phases(describe)
+    servable = servable_phases(dbmod.run_description(row, session))
     if not servable:
         raise exceptions.UI(f"image '{image_key}' does not support serve")
     if phase is not None and phase not in servable:

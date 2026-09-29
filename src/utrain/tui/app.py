@@ -738,8 +738,8 @@ class UtrainApp(textual.app.App[None]):
     def new_sweep(self, base: str | None) -> None:
         """Three hops, each a worker or a dialog: the choices, the dialog, then
         the form -- built from the image's schema, which `describe` reads --
-        and last the create, which describes the image again and writes a
-        config per point."""
+        and last the create, which describes the image again to store its
+        description, and writes a config per point."""
         self.sweep_choices(base)
 
     @textual.work(thread=True, exclusive=True, group="new-sweep")

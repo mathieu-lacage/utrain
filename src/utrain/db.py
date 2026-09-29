@@ -4,6 +4,7 @@ import pathlib
 import sqlite3
 
 import sqlalchemy
+import sqlalchemy.dialects.sqlite
 import sqlalchemy.event
 import sqlalchemy.exc
 import sqlalchemy.orm
@@ -70,6 +71,19 @@ tui_state = sqlalchemy.Table(
     metadata,
     sqlalchemy.Column("key", sqlalchemy.Text, primary_key=True),
     sqlalchemy.Column("value", sqlalchemy.Text, nullable=False),
+)
+
+# What each image said about itself -- its phases, their labels and plots, its
+# config schema -- as `container.schema.DescribeOutput` JSON. Asking means
+# starting a container, which for an image that imports its training stack
+# takes seconds, and the answer cannot change: an image id is immutable, and
+# runs and sweeps are frozen to one. So it is asked once, when a run or sweep
+# is first created from the image, and read from here ever after.
+image_descriptions = sqlalchemy.Table(
+    "image_descriptions",
+    metadata,
+    sqlalchemy.Column("image_id", sqlalchemy.Text, primary_key=True),
+    sqlalchemy.Column("describe", sqlalchemy.Text, nullable=False),
 )
 
 run_attempts = sqlalchemy.Table(
@@ -304,6 +318,55 @@ def run_image_ref(row: sqlalchemy.engine.RowMapping) -> str:
             f"image '{name}' ({image_id[:12]}) frozen for run '{run_id}' is not in the local store"
         )
     return image_id
+
+
+def describe_image(
+    image_id: str, session: sqlalchemy.orm.Session
+) -> container.schema.DescribeOutput:
+    """An image's description: the stored one, or asked of the image and stored.
+
+    For the paths that create runs and sweeps from an image, and so may be the
+    first to meet it. Asking starts a container; every later reader takes the
+    stored answer through `description`.
+    """
+    stored = _stored_description(image_id, session)
+    if stored is not None:
+        return stored
+    described = container.podman.describe(image_id)
+    session.execute(
+        sqlalchemy.dialects.sqlite.insert(image_descriptions)
+        .values(image_id=image_id, describe=described.model_dump_json())
+        .on_conflict_do_nothing()
+    )
+    return described
+
+
+def _stored_description(
+    image_id: str, session: sqlalchemy.orm.Session
+) -> container.schema.DescribeOutput | None:
+    stored = session.execute(
+        sqlalchemy.select(image_descriptions.c.describe).where(
+            image_descriptions.c.image_id == image_id
+        )
+    ).scalar_one_or_none()
+    if stored is None:
+        return None
+    return container.schema.DescribeOutput.model_validate_json(str(stored))
+
+
+def description(image_id: str, session: sqlalchemy.orm.Session) -> container.schema.DescribeOutput:
+    """An image's description, as stored when a run or sweep was created from it."""
+    stored = _stored_description(image_id, session)
+    if stored is None:
+        raise exceptions.UI(f"no description of image {image_id[:12]} is stored; recreate the run")
+    return stored
+
+
+def run_description(
+    row: sqlalchemy.engine.RowMapping, session: sqlalchemy.orm.Session
+) -> container.schema.DescribeOutput:
+    """The description of the image a run is frozen to."""
+    return description(str(row["image_id"]), session)
 
 
 def run_dir(run_id: str, session: sqlalchemy.orm.Session) -> pathlib.Path:
